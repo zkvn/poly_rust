@@ -1,0 +1,15 @@
+[package]
+name = "price_feed"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "price_feed"
+path = "src/main.rs"
+
+[dependencies]
+polymarket_client_sdk_v2 = { git = "https://github.com/Polymarket/rs-clob-client-v2", features = ["rtds"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
