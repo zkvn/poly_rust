@@ -11,6 +11,13 @@
 //!
 //! Ctrl-C triggers a graceful shutdown: remaining buffer is flushed and the
 //! parquet file is properly closed before exit.
+//!
+//! A Few "Pro-Level" Tweaks
+//! Your logic is rock solid. If you want to polish it for a "serious" production environment, consider these three minor adjustments:
+//! Switch to tracing: Instead of eprintln!, use the tracing crate. It allows you to output logs in JSON format, which is much easier to ingest into log-aggregation tools like Datadog, Grafana Loki, or ELK.
+//! Buffer Capacity: You are currently clone()-ing the Vecs inside your flush method. While this is perfectly fine for your current throughput (5 assets/sec), if you ever scale to thousands of updates per second, you can optimize this by using std::mem::take to swap the vectors out of the buffer, which avoids the allocation/cloning cost entirely.
+//!  Error Logging: In your match result block, if the RTDS stream returns a terminal error (e.g., connection lost), the current code will simply print the error and continue. If the stream closes permanently, you might want the code to attempt a reconnection (exponential backoff) rather than just waiting indefinitely.
+//!
 
 use std::fs::{self, File};
 use std::sync::Arc;
