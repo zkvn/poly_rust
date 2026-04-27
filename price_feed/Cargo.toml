@@ -13,3 +13,5 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+arrow = { version = "54", features = ["prettyprint"] }
+parquet = { version = "54", features = ["arrow"] }
