@@ -57,8 +57,9 @@ async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketDat
         .and_then(|a| a.first())
         .ok_or_else(|| anyhow::anyhow!("no market in event"))?;
 
-    let prices: Vec<f64> =
+    let price_strs: Vec<String> =
         serde_json::from_str(market["outcomePrices"].as_str().unwrap_or("[]"))?;
+    let prices: Vec<f64> = price_strs.iter().map(|s| s.parse().unwrap_or(0.0)).collect();
     let outcomes: Vec<String> =
         serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
 
@@ -121,7 +122,10 @@ async fn run_app(
         let asset = asset.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0")
+                .build()
+                .expect("http client");
             loop {
                 let data = match fetch_market(&client, &asset).await {
                     Ok(d) => d,
