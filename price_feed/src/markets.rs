@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::StreamExt as _;
+use polymarket_client_sdk_v2::rtds::Client as RtdsClient;
 use ratatui::{
     backend::CrosstermBackend,
     layout::Constraint,
@@ -18,15 +19,25 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
+const CL_SYMBOLS: &[(&str, &str)] = &[
+    ("btc/usd", "BTC"),
+    ("eth/usd", "ETH"),
+    ("sol/usd", "SOL"),
+    ("bnb/usd", "BNB"),
+];
+
 #[derive(Clone)]
 struct MarketData {
     asset: String,
     up_price: f64,
     down_price: f64,
     volume: f64,
-    last_updated: String, // HKT
-    latency_ms: f64,      // -1 = waiting, >=0 = last fetch duration
+    last_updated: String,
+    poly_latency_ms: f64,
     error: Option<String>,
+    // chainlink fields — preserved across gamma API refreshes
+    cl_price: Option<f64>,
+    cl_latency_ms: f64, // now_ms - oracle_timestamp_ms; -1 = no data yet
 }
 
 impl Default for MarketData {
@@ -37,20 +48,33 @@ impl Default for MarketData {
             down_price: 0.0,
             volume: 0.0,
             last_updated: String::new(),
-            latency_ms: -1.0,
+            poly_latency_ms: -1.0,
             error: None,
+            cl_price: None,
+            cl_latency_ms: -1.0,
         }
     }
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
 fn current_slot() -> u64 {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    (now / 300) * 300
+    let s = now_secs();
+    (s / 300) * 300
 }
 
 fn secs_until_next_slot() -> u64 {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    300 - (now % 300)
+    let s = now_secs();
+    300 - (s % 300)
 }
 
 fn make_slug(asset: &str, slot: u64) -> String {
@@ -61,13 +85,24 @@ fn hkt() -> FixedOffset {
     FixedOffset::east_opt(8 * 3600).unwrap()
 }
 
+fn slot_label(slot: u64) -> String {
+    let tz = hkt();
+    match (
+        tz.timestamp_opt(slot as i64, 0).single(),
+        tz.timestamp_opt((slot + 300) as i64, 0).single(),
+    ) {
+        (Some(s), Some(e)) => format!("{}-{} HKT", s.format("%H:%M"), e.format("%H:%M")),
+        _ => "?".to_string(),
+    }
+}
+
 async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketData> {
     let slug = make_slug(asset, current_slot());
     let url = format!("https://gamma-api.polymarket.com/events?slug={slug}");
 
     let t0 = Instant::now();
     let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
-    let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let poly_latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let event = resp
         .as_array()
@@ -101,9 +136,8 @@ async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketDat
         }
     }
 
-    let hkt = hkt();
     let last_updated = chrono::Utc::now()
-        .with_timezone(&hkt)
+        .with_timezone(&hkt())
         .format("%H:%M:%S HKT")
         .to_string();
 
@@ -113,8 +147,11 @@ async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketDat
         down_price,
         volume,
         last_updated,
-        latency_ms,
+        poly_latency_ms,
         error: None,
+        // caller preserves cl fields from previous state
+        cl_price: None,
+        cl_latency_ms: -1.0,
     })
 }
 
@@ -136,19 +173,19 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     assets: Vec<String>,
 ) -> Result<()> {
-    let (tx, mut rx) = mpsc::channel::<(usize, MarketData)>(64);
+    let (poly_tx, mut poly_rx) = mpsc::channel::<(usize, MarketData)>(64);
+    // (asset_uppercase, price_f64, oracle_timestamp_ms)
+    let (cl_tx, mut cl_rx) = mpsc::channel::<(String, f64, i64)>(128);
 
     let mut state: Vec<MarketData> = assets
         .iter()
-        .map(|a| MarketData {
-            asset: a.to_uppercase(),
-            ..Default::default()
-        })
+        .map(|a| MarketData { asset: a.to_uppercase(), ..Default::default() })
         .collect();
 
+    // Gamma polling — one task per asset
     for (idx, asset) in assets.iter().enumerate() {
         let asset = asset.clone();
-        let tx = tx.clone();
+        let tx = poly_tx.clone();
         tokio::spawn(async move {
             let client = reqwest::Client::builder()
                 .user_agent("Mozilla/5.0")
@@ -169,6 +206,27 @@ async fn run_app(
         });
     }
 
+    // Chainlink RTDS — single task, all assets
+    {
+        let tx = cl_tx;
+        tokio::spawn(async move {
+            let client = RtdsClient::default();
+            let Ok(stream) = client.subscribe_chainlink_prices(None) else { return };
+            let mut stream = Box::pin(stream);
+            while let Some(Ok(price)) = stream.next().await {
+                let sym = price.symbol.to_lowercase();
+                let Some(&(_, asset)) = CL_SYMBOLS.iter().find(|(s, _)| *s == sym) else {
+                    continue;
+                };
+                let value: f64 = price.value.try_into().unwrap_or(f64::NAN);
+                if !value.is_finite() {
+                    continue;
+                }
+                let _ = tx.send((asset.to_string(), value, price.timestamp)).await;
+            }
+        });
+    }
+
     let mut events = EventStream::new();
     let mut redraw = tokio::time::interval(Duration::from_millis(500));
 
@@ -178,10 +236,19 @@ async fn run_app(
                 let secs = secs_until_next_slot();
                 terminal.draw(|f| draw(f, &state, secs))?;
             }
-            Some(msg) = rx.recv() => {
-                let (idx, data) = msg;
+            Some((idx, mut data)) = poly_rx.recv() => {
                 if idx < state.len() {
+                    // preserve chainlink fields across gamma refresh
+                    data.cl_price = state[idx].cl_price;
+                    data.cl_latency_ms = state[idx].cl_latency_ms;
                     state[idx] = data;
+                }
+            }
+            Some((asset, value, ts_ms)) = cl_rx.recv() => {
+                let latency_ms = (now_ms() - ts_ms).max(0) as f64;
+                if let Some(d) = state.iter_mut().find(|d| d.asset == asset) {
+                    d.cl_price = Some(value);
+                    d.cl_latency_ms = latency_ms;
                 }
             }
             Some(Ok(event)) = events.next() => {
@@ -215,74 +282,91 @@ fn latency_cell(ms: f64) -> Cell<'static> {
 
 fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
     let slot = current_slot();
-    let window_start = hkt()
-        .timestamp_opt(slot as i64, 0)
-        .single()
-        .map(|dt| dt.format("%Y-%m-%d %H:%M HKT").to_string())
-        .unwrap_or_else(|| "?".to_string());
     let mins = secs_left / 60;
     let secs = secs_left % 60;
 
     let title = format!(
-        " Polymarket 5-min │ {window_start} │ rotates in {mins}m{secs:02}s │ q = quit "
+        " Polymarket 5-min │ {} │ rotates in {mins}m{secs:02}s │ q = quit ",
+        slot_label(slot)
     );
 
     let header = Row::new([
+        Cell::from("Slot"),
         Cell::from("Asset"),
         Cell::from("UP"),
         Cell::from("DOWN"),
+        Cell::from("CL Price"),
         Cell::from("Volume"),
         Cell::from("Updated"),
-        Cell::from("Feed"),
+        Cell::from("poly_ws"),
+        Cell::from("cl_ws"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
 
     let rows: Vec<Row> = state
         .iter()
         .map(|d| {
+            let slot_cell = Cell::from(slot_label(current_slot()));
+            let cl_price_cell = match d.cl_price {
+                Some(p) => Cell::from(format!("${p:.2}")),
+                None => Cell::from("…").style(Style::default().fg(Color::DarkGray)),
+            };
+
             if let Some(ref err) = d.error {
                 Row::new([
+                    slot_cell,
                     Cell::from(d.asset.clone()),
                     Cell::from(format!("err: {err}")).style(Style::default().fg(Color::Red)),
                     Cell::from(""),
+                    cl_price_cell,
                     Cell::from(""),
                     Cell::from(""),
                     Cell::from("● stale")
                         .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    latency_cell(d.cl_latency_ms),
                 ])
             } else if d.last_updated.is_empty() {
                 Row::new([
+                    slot_cell,
                     Cell::from(d.asset.clone()),
                     Cell::from("loading…").style(Style::default().fg(Color::DarkGray)),
                     Cell::from(""),
+                    cl_price_cell,
                     Cell::from(""),
                     Cell::from(""),
                     latency_cell(-1.0),
+                    latency_cell(d.cl_latency_ms),
                 ])
             } else {
                 let up_color = if d.up_price >= 0.5 { Color::Green } else { Color::Red };
                 let dn_color = if d.down_price >= 0.5 { Color::Green } else { Color::Red };
                 Row::new([
+                    slot_cell,
                     Cell::from(d.asset.clone()),
                     Cell::from(format!("{:.1}%", d.up_price * 100.0))
                         .style(Style::default().fg(up_color)),
                     Cell::from(format!("{:.1}%", d.down_price * 100.0))
                         .style(Style::default().fg(dn_color)),
+                    cl_price_cell,
                     Cell::from(format!("${:.0}", d.volume)),
                     Cell::from(d.last_updated.clone()),
-                    latency_cell(d.latency_ms),
+                    latency_cell(d.poly_latency_ms),
+                    latency_cell(d.cl_latency_ms),
                 ])
             }
         })
         .collect();
 
     let widths = [
-        Constraint::Length(6),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(9),
-        Constraint::Length(14),
-        Constraint::Length(14),
+        Constraint::Length(15), // "13:50-13:55 HKT"
+        Constraint::Length(5),  // Asset
+        Constraint::Length(6),  // UP
+        Constraint::Length(6),  // DOWN
+        Constraint::Length(11), // CL Price "$94532.50"
+        Constraint::Length(8),  // Volume
+        Constraint::Length(12), // Updated
+        Constraint::Length(13), // poly_ws
+        Constraint::Length(13), // cl_ws
     ];
 
     let table = Table::new(rows, widths)
