@@ -1,7 +1,8 @@
 use std::io::stdout;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use chrono::{FixedOffset, TimeZone as _};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -17,14 +18,29 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct MarketData {
     asset: String,
     up_price: f64,
     down_price: f64,
     volume: f64,
-    last_updated: String,
+    last_updated: String, // HKT
+    latency_ms: f64,      // -1 = waiting, >=0 = last fetch duration
     error: Option<String>,
+}
+
+impl Default for MarketData {
+    fn default() -> Self {
+        Self {
+            asset: String::new(),
+            up_price: 0.0,
+            down_price: 0.0,
+            volume: 0.0,
+            last_updated: String::new(),
+            latency_ms: -1.0,
+            error: None,
+        }
+    }
 }
 
 fn current_slot() -> u64 {
@@ -41,11 +57,17 @@ fn make_slug(asset: &str, slot: u64) -> String {
     format!("{}-updown-5m-{}", asset.to_lowercase(), slot)
 }
 
+fn hkt() -> FixedOffset {
+    FixedOffset::east_opt(8 * 3600).unwrap()
+}
+
 async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketData> {
     let slug = make_slug(asset, current_slot());
     let url = format!("https://gamma-api.polymarket.com/events?slug={slug}");
 
+    let t0 = Instant::now();
     let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let event = resp
         .as_array()
@@ -63,7 +85,6 @@ async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketDat
     let outcomes: Vec<String> =
         serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
 
-    // volumeNum is already a float; fall back to the string "volume" field
     let volume = market["volumeNum"]
         .as_f64()
         .or_else(|| market["volume"].as_f64())
@@ -80,12 +101,19 @@ async fn fetch_market(client: &reqwest::Client, asset: &str) -> Result<MarketDat
         }
     }
 
+    let hkt = hkt();
+    let last_updated = chrono::Utc::now()
+        .with_timezone(&hkt)
+        .format("%H:%M:%S HKT")
+        .to_string();
+
     Ok(MarketData {
         asset: asset.to_uppercase(),
         up_price,
         down_price,
         volume,
-        last_updated: chrono::Utc::now().format("%H:%M:%S").to_string(),
+        last_updated,
+        latency_ms,
         error: None,
     })
 }
@@ -173,14 +201,24 @@ async fn run_app(
     Ok(())
 }
 
-fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
-    use chrono::TimeZone as _;
+fn latency_cell(ms: f64) -> Cell<'static> {
+    if ms < 0.0 {
+        Cell::from("● wait").style(Style::default().fg(Color::DarkGray))
+    } else if ms < 500.0 {
+        Cell::from(format!("● ok {ms:.0}ms")).style(Style::default().fg(Color::Green))
+    } else if ms < 2000.0 {
+        Cell::from(format!("● slow {ms:.0}ms")).style(Style::default().fg(Color::Yellow))
+    } else {
+        Cell::from("● stale").style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+    }
+}
 
+fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
     let slot = current_slot();
-    let window_start = chrono::Utc
+    let window_start = hkt()
         .timestamp_opt(slot as i64, 0)
         .single()
-        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|dt| dt.format("%Y-%m-%d %H:%M HKT").to_string())
         .unwrap_or_else(|| "?".to_string());
     let mins = secs_left / 60;
     let secs = secs_left % 60;
@@ -195,6 +233,7 @@ fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
         Cell::from("DOWN"),
         Cell::from("Volume"),
         Cell::from("Updated"),
+        Cell::from("Feed"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
 
@@ -204,11 +243,12 @@ fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
             if let Some(ref err) = d.error {
                 Row::new([
                     Cell::from(d.asset.clone()),
-                    Cell::from(format!("err: {err}"))
-                        .style(Style::default().fg(Color::Red)),
+                    Cell::from(format!("err: {err}")).style(Style::default().fg(Color::Red)),
                     Cell::from(""),
                     Cell::from(""),
                     Cell::from(""),
+                    Cell::from("● stale")
+                        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
                 ])
             } else if d.last_updated.is_empty() {
                 Row::new([
@@ -217,6 +257,7 @@ fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
                     Cell::from(""),
                     Cell::from(""),
                     Cell::from(""),
+                    latency_cell(-1.0),
                 ])
             } else {
                 let up_color = if d.up_price >= 0.5 { Color::Green } else { Color::Red };
@@ -229,6 +270,7 @@ fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
                         .style(Style::default().fg(dn_color)),
                     Cell::from(format!("${:.0}", d.volume)),
                     Cell::from(d.last_updated.clone()),
+                    latency_cell(d.latency_ms),
                 ])
             }
         })
@@ -236,10 +278,11 @@ fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
 
     let widths = [
         Constraint::Length(6),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(10),
-        Constraint::Length(10),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(9),
+        Constraint::Length(14),
+        Constraint::Length(14),
     ];
 
     let table = Table::new(rows, widths)
