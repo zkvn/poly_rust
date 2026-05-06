@@ -8,7 +8,8 @@ name = "price_feed"
 path = "src/main.rs"
 
 [dependencies]
-polymarket_client_sdk_v2 = { git = "https://github.com/Polymarket/rs-clob-client-v2", features = ["rtds"] }
+polymarket_client_sdk_v2 = { version = "0.6.0-canary.1", features = ["ws", "clob", "rtds"] }
+#polymarket_client_sdk_v2 = { git = "https://github.com/Polymarket/rs-clob-client-v2", features = ["rtds"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 anyhow = "1"

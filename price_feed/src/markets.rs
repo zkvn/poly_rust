@@ -1,4 +1,5 @@
 use std::io::stdout;
+use std::str::FromStr as _;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -9,7 +10,9 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::StreamExt as _;
+use polymarket_client_sdk_v2::clob::ws::Client as ClobWsClient;
 use polymarket_client_sdk_v2::rtds::Client as RtdsClient;
+use polymarket_client_sdk_v2::types::U256;
 use ratatui::{
     backend::CrosstermBackend,
     layout::Constraint,
@@ -115,7 +118,6 @@ async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<Sl
     let outcomes: Vec<String> =
         serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
 
-    // Find the "Up" token
     let up_token_id = outcomes.iter().zip(token_ids.iter())
         .find(|(o, _)| o.to_lowercase() == "up")
         .map(|(_, tid)| tid.clone())
@@ -127,16 +129,6 @@ async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<Sl
         .unwrap_or(0.0);
 
     Ok(SlotMeta { slot, up_token_id, volume, fetched_at: Instant::now() })
-}
-
-// Fetch real-time midpoint from the CLOB order book
-async fn fetch_clob_mid(http: &reqwest::Client, up_token_id: &str) -> Result<(f64, f64)> {
-    let url = format!("https://clob.polymarket.com/midpoint?token_id={up_token_id}");
-    let resp: serde_json::Value = http.get(&url).send().await?.json().await?;
-    let up: f64 = resp["mid"].as_str()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| anyhow::anyhow!("missing mid in CLOB response"))?;
-    Ok((up, 1.0 - up))
 }
 
 pub async fn run(assets: Vec<String>) -> Result<()> {
@@ -157,18 +149,31 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     assets: Vec<String>,
 ) -> Result<()> {
-    let (poly_tx, mut poly_rx) = mpsc::channel::<(usize, MarketData)>(64);
+    // (idx, up_midpoint, server_timestamp_ms) — from CLOB WS
+    let (price_tx, mut price_rx) = mpsc::channel::<(usize, f64, i64)>(128);
+    // (idx, volume) — from Gamma, refreshed each slot
+    let (vol_tx, mut vol_rx) = mpsc::channel::<(usize, f64)>(16);
     let (cl_tx, mut cl_rx) = mpsc::channel::<(String, f64, i64)>(128);
 
     let mut state: Vec<MarketData> = assets
         .iter()
-        .map(|a| MarketData { asset: a.to_uppercase(), ..Default::default() })
+        .map(|a| MarketData {
+            asset: a.to_uppercase(),
+            error: Some("loading metadata…".to_string()),
+            ..Default::default()
+        })
         .collect();
 
-    // One polling task per asset
+    let clob_client = ClobWsClient::default();
+
+    // One task per asset: fetches Gamma metadata and manages the CLOB WS subscription.
+    // Prices arrive via the WS stream task spawned here; volume comes via vol_tx.
     for (idx, asset) in assets.iter().enumerate() {
+        let clob = clob_client.clone();
+        let price_tx = price_tx.clone();
+        let vol_tx = vol_tx.clone();
         let asset = asset.clone();
-        let tx = poly_tx.clone();
+
         tokio::spawn(async move {
             let http = reqwest::Client::builder()
                 .user_agent("Mozilla/5.0")
@@ -176,53 +181,51 @@ async fn run_app(
                 .expect("http client");
 
             let mut meta: Option<SlotMeta> = None;
+            let mut current_token_id: Option<U256> = None;
+            // Abort handle for the current WS stream task; replaced on each slot rotation.
+            let mut stream_task: Option<tokio::task::JoinHandle<()>> = None;
 
             loop {
                 let slot = current_slot();
-
-                // Refresh gamma metadata on slot rotation or every 30s for volume
                 let stale = meta.as_ref().map(|m| {
                     m.slot != slot || m.fetched_at.elapsed() > Duration::from_secs(30)
                 }).unwrap_or(true);
 
                 if stale {
-                    meta = fetch_meta(&http, &asset, slot).await.ok();
+                    if let Ok(new_meta) = fetch_meta(&http, &asset, slot).await {
+                        let _ = vol_tx.send((idx, new_meta.volume)).await;
+
+                        if let Ok(new_id) = U256::from_str(&new_meta.up_token_id) {
+                            if Some(new_id) != current_token_id {
+                                // Abort old stream task and unsubscribe old token on slot rotation.
+                                if let Some(old_task) = stream_task.take() {
+                                    old_task.abort();
+                                }
+                                if let Some(old_id) = current_token_id {
+                                    let _ = clob.unsubscribe_midpoints(&[old_id]);
+                                }
+                                if let Ok(stream) = clob.subscribe_midpoints(vec![new_id]) {
+                                    let tx = price_tx.clone();
+                                    stream_task = Some(tokio::spawn(async move {
+                                        let mut s = Box::pin(stream);
+                                        while let Some(Ok(update)) = s.next().await {
+                                            let mid: f64 = update.midpoint
+                                                .to_string()
+                                                .parse()
+                                                .unwrap_or(f64::NAN);
+                                            if !mid.is_finite() { continue; }
+                                            let _ = tx.send((idx, mid, update.timestamp)).await;
+                                        }
+                                    }));
+                                }
+                                current_token_id = Some(new_id);
+                            }
+                        }
+                        meta = Some(new_meta);
+                    }
                 }
 
-                let data = match &meta {
-                    None => MarketData {
-                        asset: asset.to_uppercase(),
-                        error: Some(format!("loading metadata…")),
-                        ..Default::default()
-                    },
-                    Some(m) => {
-                        let t0 = Instant::now();
-                        match fetch_clob_mid(&http, &m.up_token_id).await {
-                            Ok((up, down)) => MarketData {
-                                asset: asset.to_uppercase(),
-                                up_price: up,
-                                down_price: down,
-                                volume: m.volume,
-                                last_updated: chrono::Utc::now()
-                                    .with_timezone(&hkt())
-                                    .format("%H:%M:%S HKT")
-                                    .to_string(),
-                                poly_latency_ms: t0.elapsed().as_secs_f64() * 1000.0,
-                                error: None,
-                                cl_price: None,
-                                cl_latency_ms: -1.0,
-                            },
-                            Err(e) => MarketData {
-                                asset: asset.to_uppercase(),
-                                error: Some(e.to_string()),
-                                ..Default::default()
-                            },
-                        }
-                    }
-                };
-
-                let _ = tx.send((idx, data)).await;
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(Duration::from_secs(10)).await;
             }
         });
     }
@@ -255,12 +258,23 @@ async fn run_app(
                 let secs = secs_until_next_slot();
                 terminal.draw(|f| draw(f, &state, secs))?;
             }
-            Some((idx, mut data)) = poly_rx.recv() => {
+            Some((idx, mid, ts_ms)) = price_rx.recv() => {
                 if idx < state.len() {
-                    // preserve chainlink fields across gamma/CLOB refreshes
-                    data.cl_price = state[idx].cl_price;
-                    data.cl_latency_ms = state[idx].cl_latency_ms;
-                    state[idx] = data;
+                    let d = &mut state[idx];
+                    d.up_price = mid;
+                    d.down_price = 1.0 - mid;
+                    // Latency = time since the server emitted the book update
+                    d.poly_latency_ms = (now_ms() - ts_ms).max(0) as f64;
+                    d.last_updated = chrono::Utc::now()
+                        .with_timezone(&hkt())
+                        .format("%H:%M:%S HKT")
+                        .to_string();
+                    d.error = None;
+                }
+            }
+            Some((idx, volume)) = vol_rx.recv() => {
+                if idx < state.len() {
+                    state[idx].volume = volume;
                 }
             }
             Some((asset, value, ts_ms)) = cl_rx.recv() => {
@@ -271,13 +285,12 @@ async fn run_app(
                 }
             }
             Some(Ok(event)) = events.next() => {
-                if let Event::Key(k) = event {
-                    if k.kind == KeyEventKind::Press {
-                        match k.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
-                            _ => {}
-                        }
+                if let Event::Key(k) = event
+                    && k.kind == KeyEventKind::Press {
+                    match k.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
+                        _ => {}
                     }
                 }
             }
