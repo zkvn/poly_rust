@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 use arrow::array::{ArrayRef, Float32Builder, Float64Builder, ListBuilder, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use chrono::{FixedOffset, TimeZone as _, Utc};
+use chrono::{Duration as ChronoDuration, FixedOffset, TimeZone as _, Utc};
 use futures::{SinkExt as _, StreamExt as _};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -55,6 +55,46 @@ struct AssetState {
     latest_book: Option<BookUpdate>,
     latest_trade: f64,
     slug: String,
+}
+
+// ── Gamma asset discovery ─────────────────────────────────────────────────────
+
+async fn discover_assets(http: &reqwest::Client) -> Result<Vec<String>> {
+    let start_min = (Utc::now() - ChronoDuration::hours(1))
+        .format("%Y-%m-%dT%H:%M:%SZ");
+    let url = format!(
+        "https://gamma-api.polymarket.com/events?tag_id=102127&active=true&closed=false&start_date_min={start_min}&limit=100"
+    );
+    let resp: serde_json::Value = http
+        .get(&url)
+        .send()
+        .await
+        .context("discover request")?
+        .json()
+        .await
+        .context("discover json")?;
+
+    let mut assets = std::collections::BTreeSet::new();
+    if let Some(arr) = resp.as_array() {
+        for event in arr {
+            if let Some(slug) = event["slug"].as_str() {
+                // slug pattern: {asset}-updown-{5m|15m}-{slot}
+                if let Some(pos) = slug.find("-updown-") {
+                    let asset = slug[..pos].to_uppercase();
+                    assets.insert(asset);
+                }
+            }
+        }
+    }
+    if assets.is_empty() {
+        anyhow::bail!("discovery returned no assets — Gamma API may be down");
+    }
+    eprintln!(
+        "discovered {} assets: {}",
+        assets.len(),
+        assets.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+    Ok(assets.into_iter().collect())
 }
 
 // ── Gamma meta fetch ─────────────────────────────────────────────────────────
@@ -735,7 +775,19 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     fs::create_dir_all(&raw_5m).context("create raw/")?;
     fs::create_dir_all(&raw_15m).context("create raw_15_mins/")?;
 
-    let assets: Vec<String> = assets.iter().map(|a| a.to_uppercase()).collect();
+    let http = Arc::new(
+        reqwest::Client::builder()
+            .user_agent("Mozilla/5.0")
+            .build()
+            .context("http client")?,
+    );
+
+    let assets: Vec<String> = if assets.is_empty() {
+        eprintln!("no assets specified — auto-discovering from Polymarket…");
+        discover_assets(&http).await?
+    } else {
+        assets.iter().map(|a| a.to_uppercase()).collect()
+    };
     let n = assets.len();
 
     eprintln!(
@@ -744,12 +796,6 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     );
 
     let clob = ClobWsClient::default();
-    let http = Arc::new(
-        reqwest::Client::builder()
-            .user_agent("Mozilla/5.0")
-            .build()
-            .context("http client")?,
-    );
 
     // ── 5-min Polymarket feed ────────────────────────────────────────────────
     let state_5m = Arc::new(Mutex::new(vec![AssetState::default(); n]));

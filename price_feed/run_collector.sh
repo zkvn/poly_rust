@@ -4,7 +4,6 @@ set -euo pipefail
 # Ensure cargo is on PATH (needed when launched via nohup without a login shell)
 source "$HOME/.cargo/env" 2>/dev/null || true
 
-ASSETS="${ASSETS:-btc eth sol bnb xrp doge}"
 LOG_DIR="log"
 PID_FILE="collector.pid"
 
@@ -20,7 +19,7 @@ fi
 
 LOG="$LOG_DIR/collector_$(date +%Y%m%d_%H%M%S).log"
 
-nohup cargo run --release -- collect $ASSETS > "$LOG" 2>&1 &
+nohup cargo run --release -- collect > "$LOG" 2>&1 &
 PID=$!
 echo $PID > "$PID_FILE"
 echo "started pid=$PID  log=$LOG"

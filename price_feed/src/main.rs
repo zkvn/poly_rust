@@ -21,8 +21,8 @@ enum Cmd {
     },
     /// Headless CLOB data collector — writes raw/*.parquet files
     Collect {
-        /// Assets to collect, e.g. btc eth sol bnb xrp doge
-        #[arg(required = true, num_args = 1..)]
+        /// Assets to collect; omit to auto-discover from Polymarket (recommended)
+        #[arg(num_args = 0..)]
         assets: Vec<String>,
     },
 }
