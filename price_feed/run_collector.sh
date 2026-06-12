@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure cargo is on PATH (needed when launched via nohup without a login shell)
+source "$HOME/.cargo/env" 2>/dev/null || true
+
 ASSETS="${ASSETS:-btc eth sol bnb xrp doge}"
 LOG_DIR="log"
 PID_FILE="collector.pid"
 
-mkdir -p "$LOG_DIR" raw
+mkdir -p "$LOG_DIR" raw raw_15_mins
 
 if [[ -f "$PID_FILE" ]]; then
     OLD_PID=$(cat "$PID_FILE")
