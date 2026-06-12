@@ -521,10 +521,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
         let mut rx = slot_rx.clone();
 
         tokio::spawn(async move {
-            let mut active_ids: Vec<U256> = Vec::new();
-            // (token_id, asset_idx, is_up_token)
-            let mut token_map: Vec<(U256, usize, bool)> = Vec::new();
-            let mut book_stream: Option<tokio::task::JoinHandle<()>> = None;
+            let mut book_task: Option<tokio::task::JoinHandle<()>> = None;
 
             loop {
                 if rx.changed().await.is_err() {
@@ -532,13 +529,8 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                 }
                 let tokens = rx.borrow_and_update().clone();
 
-                if !active_ids.is_empty() {
-                    if let Some(h) = book_stream.take() {
-                        h.abort();
-                    }
-                    let _ = clob.unsubscribe_orderbook(&active_ids);
-                    active_ids.clear();
-                    token_map.clear();
+                if let Some(h) = book_task.take() {
+                    h.abort();
                 }
 
                 let mut new_ids: Vec<U256> = Vec::new();
@@ -557,32 +549,32 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                     continue;
                 }
 
-                match clob.subscribe_orderbook(new_ids.clone()) {
-                    Ok(stream) => {
-                        let state = Arc::clone(&state);
-                        let map = new_map.clone();
-                        let handle = tokio::spawn(async move {
-                            let mut s = Box::pin(stream);
-                            while let Some(Ok(update)) = s.next().await {
-                                if let Some(&(_, idx, is_up)) =
-                                    map.iter().find(|(id, _, _)| *id == update.asset_id)
-                                {
-                                    if is_up {
-                                        let mut st = state.lock().unwrap();
-                                        if idx < st.len() {
-                                            st[idx].latest_book = Some(update);
+                let clob = clob.clone();
+                let state = Arc::clone(&state);
+                book_task = Some(tokio::spawn(async move {
+                    loop {
+                        match clob.subscribe_orderbook(new_ids.clone()) {
+                            Ok(stream) => {
+                                let mut s = Box::pin(stream);
+                                while let Some(Ok(update)) = s.next().await {
+                                    if let Some(&(_, idx, is_up)) =
+                                        new_map.iter().find(|(id, _, _)| *id == update.asset_id)
+                                    {
+                                        if is_up {
+                                            let mut st = state.lock().unwrap();
+                                            if idx < st.len() {
+                                                st[idx].latest_book = Some(update);
+                                            }
                                         }
                                     }
                                 }
+                                eprintln!("book stream closed, reconnecting…");
                             }
-                        });
-                        book_stream = Some(handle);
+                            Err(e) => eprintln!("subscribe_orderbook failed: {e:#}, retrying…"),
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
                     }
-                    Err(e) => eprintln!("subscribe_orderbook error: {e:#}"),
-                }
-
-                active_ids = new_ids;
-                token_map = new_map;
+                }));
             }
         });
     }
@@ -594,9 +586,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
         let mut rx = slot_rx.clone();
 
         tokio::spawn(async move {
-            let mut active_ids: Vec<U256> = Vec::new();
-            let mut token_map: Vec<(U256, usize)> = Vec::new();
-            let mut trade_stream: Option<tokio::task::JoinHandle<()>> = None;
+            let mut trade_task: Option<tokio::task::JoinHandle<()>> = None;
 
             loop {
                 if rx.changed().await.is_err() {
@@ -604,13 +594,8 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                 }
                 let tokens = rx.borrow_and_update().clone();
 
-                if !active_ids.is_empty() {
-                    if let Some(h) = trade_stream.take() {
-                        h.abort();
-                    }
-                    let _ = clob.unsubscribe_orderbook(&active_ids);
-                    active_ids.clear();
-                    token_map.clear();
+                if let Some(h) = trade_task.take() {
+                    h.abort();
                 }
 
                 let mut new_ids: Vec<U256> = Vec::new();
@@ -629,33 +614,35 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                     continue;
                 }
 
-                match clob.subscribe_last_trade_price(new_ids.clone()) {
-                    Ok(stream) => {
-                        let state = Arc::clone(&state);
-                        let map = new_map.clone();
-                        let handle = tokio::spawn(async move {
-                            let mut s = Box::pin(stream);
-                            while let Some(Ok(update)) = s.next().await {
-                                if let Some(&(_, idx)) =
-                                    map.iter().find(|(id, _)| *id == update.asset_id)
-                                {
-                                    let price = decimal_to_f64(&update.price);
-                                    if price.is_finite() {
-                                        let mut st = state.lock().unwrap();
-                                        if idx < st.len() {
-                                            st[idx].latest_trade = price;
+                let clob = clob.clone();
+                let state = Arc::clone(&state);
+                trade_task = Some(tokio::spawn(async move {
+                    loop {
+                        match clob.subscribe_last_trade_price(new_ids.clone()) {
+                            Ok(stream) => {
+                                let mut s = Box::pin(stream);
+                                while let Some(Ok(update)) = s.next().await {
+                                    if let Some(&(_, idx)) =
+                                        new_map.iter().find(|(id, _)| *id == update.asset_id)
+                                    {
+                                        let price = decimal_to_f64(&update.price);
+                                        if price.is_finite() {
+                                            let mut st = state.lock().unwrap();
+                                            if idx < st.len() {
+                                                st[idx].latest_trade = price;
+                                            }
                                         }
                                     }
                                 }
+                                eprintln!("last-trade stream closed, reconnecting…");
                             }
-                        });
-                        trade_stream = Some(handle);
+                            Err(e) => {
+                                eprintln!("subscribe_last_trade_price failed: {e:#}, retrying…")
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
                     }
-                    Err(e) => eprintln!("subscribe_last_trade_price error: {e:#}"),
-                }
-
-                active_ids = new_ids;
-                token_map = new_map;
+                }));
             }
         });
     }
