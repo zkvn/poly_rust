@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr as _;
@@ -5,13 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
-use arrow::array::{
-    ArrayRef, Float32Builder, Float64Builder, ListBuilder, StringArray, StringBuilder,
-};
+use arrow::array::{ArrayRef, Float32Builder, Float64Builder, ListBuilder, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::{FixedOffset, TimeZone as _, Utc};
-use futures::StreamExt as _;
+use futures::{SinkExt as _, StreamExt as _};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
@@ -21,30 +20,28 @@ use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
 use polymarket_client_sdk_v2::types::U256;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+use tokio_tungstenite::tungstenite::Message;
 
-// ── HKT helpers (mirrors markets.rs) ─────────────────────────────────────────
+// ── Time helpers ─────────────────────────────────────────────────────────────
 
 fn hkt() -> FixedOffset {
     FixedOffset::east_opt(8 * 3600).unwrap()
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
 fn now_secs_f64() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
 }
 
-fn current_slot() -> u64 {
-    let s = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    (s / 300) * 300
+fn current_slot_for(interval: u64) -> u64 {
+    (now_secs() / interval) * interval
 }
 
-fn make_slug(asset: &str, slot: u64) -> String {
-    format!("{}-updown-5m-{}", asset.to_lowercase(), slot)
+fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
+    format!("{}-updown-{}-{}", asset.to_lowercase(), suffix, slot)
 }
 
 fn hkt_date_string() -> String {
@@ -58,21 +55,17 @@ struct AssetState {
     latest_book: Option<BookUpdate>,
     latest_trade: f64,
     slug: String,
-    up_id: Option<U256>,
-    dn_id: Option<U256>,
 }
 
 // ── Gamma meta fetch ─────────────────────────────────────────────────────────
 
-struct SlotTokens {
+async fn fetch_meta(
+    http: &reqwest::Client,
+    asset: &str,
     slot: u64,
-    slug: String,
-    up_id: U256,
-    dn_id: U256,
-}
-
-async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<SlotTokens> {
-    let slug = make_slug(asset, slot);
+    suffix: &str,
+) -> Result<(U256, U256, String)> {
+    let slug = make_slug(asset, slot, suffix);
     let url = format!("https://gamma-api.polymarket.com/events?slug={slug}");
     let resp: serde_json::Value = http
         .get(&url)
@@ -90,7 +83,7 @@ async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<Sl
     let market = event["markets"]
         .as_array()
         .and_then(|a| a.first())
-        .ok_or_else(|| anyhow::anyhow!("no market in event for {slug}"))?;
+        .ok_or_else(|| anyhow::anyhow!("no market for {slug}"))?;
 
     let token_ids: Vec<String> =
         serde_json::from_str(market["clobTokenIds"].as_str().unwrap_or("[]"))?;
@@ -102,24 +95,16 @@ async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<Sl
             .iter()
             .zip(token_ids.iter())
             .find(|(o, _)| o.to_lowercase() == target)
-            .map(|(_, tid)| {
-                U256::from_str(tid).with_context(|| format!("parse {target} token id"))
-            })
+            .map(|(_, tid)| U256::from_str(tid).with_context(|| format!("parse {target} id")))
             .ok_or_else(|| anyhow::anyhow!("no {} token in {}", target, slug))?
     };
 
     let up_id = find("up")?;
     let dn_id = find("down")?;
-
-    Ok(SlotTokens {
-        slot,
-        slug,
-        up_id,
-        dn_id,
-    })
+    Ok((up_id, dn_id, slug))
 }
 
-// ── Parquet schemas ───────────────────────────────────────────────────────────
+// ── Arrow schemas ─────────────────────────────────────────────────────────────
 
 fn poly_schema() -> Schema {
     Schema::new(vec![
@@ -162,10 +147,17 @@ fn book_schema() -> Schema {
     ])
 }
 
-// ── Parquet writer with rotation + carry ─────────────────────────────────────
+fn hl_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("ts", DataType::Float64, false),
+        Field::new("asset", DataType::Utf8, false),
+        Field::new("mid", DataType::Float64, false),
+    ])
+}
+
+// ── Parquet writer ────────────────────────────────────────────────────────────
 
 struct ParquetBuf {
-    schema: Schema,
     path: PathBuf,
     writer: ArrowWriter<fs::File>,
     rows_since_flush: usize,
@@ -177,19 +169,15 @@ impl ParquetBuf {
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
             .build();
-
         let file = fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&path)
             .with_context(|| format!("open {path:?}"))?;
-
-        let writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))
-            .context("create ArrowWriter")?;
-
+        let writer = ArrowWriter::try_new(file, Arc::new(schema), Some(props))
+            .context("ArrowWriter")?;
         Ok(Self {
-            schema,
             path,
             writer,
             rows_since_flush: 0,
@@ -197,56 +185,44 @@ impl ParquetBuf {
         })
     }
 
-    /// Open file for writing, carrying forward any existing valid rows.
     fn open_with_carry(path: PathBuf, schema: Schema) -> Result<Self> {
         let carry = if path.exists() {
-            Self::read_carry(&path, &schema)
+            Self::try_carry(&path, &schema)
         } else {
             None
         };
-
         let mut buf = Self::open(path, schema)?;
-
         if let Some(batches) = carry {
+            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            eprintln!("  carry: loaded {rows} rows from {:?}", buf.path);
             for batch in batches {
                 buf.writer.write(&batch).context("carry write")?;
             }
-            eprintln!("  carry: replayed {} batches", 0); // count logged inside read_carry
         }
-
         Ok(buf)
     }
 
-    fn read_carry(path: &PathBuf, expected_schema: &Schema) -> Option<Vec<RecordBatch>> {
+    fn try_carry(path: &PathBuf, expected: &Schema) -> Option<Vec<RecordBatch>> {
         let file = fs::File::open(path).ok()?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
-
-        let file_schema = builder.schema().clone();
-        // Verify field names match
-        let ok = file_schema
+        let ok = builder
+            .schema()
             .fields()
             .iter()
-            .zip(expected_schema.fields().iter())
+            .zip(expected.fields().iter())
             .all(|(a, b)| a.name() == b.name());
         if !ok {
             eprintln!("  carry: schema mismatch, discarding {path:?}");
             return None;
         }
-
-        let reader = builder.build().ok()?;
-        let batches: Vec<RecordBatch> = reader.flatten().collect();
-        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        eprintln!("  carry: loaded {rows} rows from {path:?}");
-        Some(batches)
+        Some(builder.build().ok()?.flatten().collect())
     }
 
-    fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let n = batch.num_rows();
+    fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        self.rows_since_flush += batch.num_rows();
         self.writer.write(&batch).context("parquet write")?;
-        self.rows_since_flush += n;
-
         if self.rows_since_flush >= 500 || self.last_flush.elapsed() >= Duration::from_secs(10) {
-            self.writer.flush().context("parquet flush")?;
+            self.writer.flush().context("flush")?;
             self.rows_since_flush = 0;
             self.last_flush = std::time::Instant::now();
         }
@@ -254,28 +230,35 @@ impl ParquetBuf {
     }
 
     fn finish(self) -> Result<()> {
-        self.writer.close().with_context(|| format!("close {:?}", self.path))?;
+        self.writer
+            .close()
+            .with_context(|| format!("close {:?}", self.path))?;
         Ok(())
     }
 }
 
-// ── Row builders ─────────────────────────────────────────────────────────────
+// ── Decimal helper ────────────────────────────────────────────────────────────
 
-fn decimal_to_f64(d: &polymarket_client_sdk_v2::types::Decimal) -> f64 {
+fn d2f(d: &polymarket_client_sdk_v2::types::Decimal) -> f64 {
     d.to_string().parse::<f64>().unwrap_or(f64::NAN)
 }
 
-fn make_poly_batch(schema: &Schema, ts: f64, up: f64, slug: &str) -> Result<RecordBatch> {
-    let ts_arr = Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef;
-    let up_arr = Arc::new(arrow::array::Float64Array::from(vec![up])) as ArrayRef;
-    let dn_arr = Arc::new(arrow::array::Float64Array::from(vec![1.0 - up])) as ArrayRef;
-    let slug_arr = Arc::new(StringArray::from(vec![slug])) as ArrayRef;
+// ── Poly + book row builders ──────────────────────────────────────────────────
 
-    RecordBatch::try_new(Arc::new(schema.clone()), vec![ts_arr, up_arr, dn_arr, slug_arr])
-        .context("poly batch")
+fn poly_row(schema: &Schema, ts: f64, up: f64, slug: &str) -> Result<RecordBatch> {
+    RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(arrow::array::Float64Array::from(vec![up])) as ArrayRef,
+            Arc::new(arrow::array::Float64Array::from(vec![1.0 - up])) as ArrayRef,
+            Arc::new(StringArray::from(vec![slug])) as ArrayRef,
+        ],
+    )
+    .context("poly row")
 }
 
-fn make_book_batch(
+fn book_row(
     schema: &Schema,
     ts: f64,
     asset: &str,
@@ -289,49 +272,52 @@ fn make_book_batch(
     ask_prices: &[f32],
     ask_sizes: &[f32],
 ) -> Result<RecordBatch> {
-    let n = 1usize;
-
-    let ts_arr = Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef;
-    let asset_arr = Arc::new(StringArray::from(vec![asset])) as ArrayRef;
-    let slug_arr = Arc::new(StringArray::from(vec![slug])) as ArrayRef;
-    let side_arr = Arc::new(StringArray::from(vec![side])) as ArrayRef;
-    let bb_arr = Arc::new(arrow::array::Float64Array::from(vec![best_bid])) as ArrayRef;
-    let ba_arr = Arc::new(arrow::array::Float64Array::from(vec![best_ask])) as ArrayRef;
-    let lt_arr = Arc::new(arrow::array::Float64Array::from(vec![last_trade])) as ArrayRef;
-
-    fn list_col(data: &[f32], n: usize) -> ArrayRef {
+    fn list_col(data: &[f32]) -> ArrayRef {
         let mut b = ListBuilder::new(Float32Builder::new());
-        for _ in 0..n {
-            b.values().append_slice(data);
-            b.append(true);
-        }
+        b.values().append_slice(data);
+        b.append(true);
         Arc::new(b.finish()) as ArrayRef
     }
-
-    let bp_arr = list_col(bid_prices, n);
-    let bs_arr = list_col(bid_sizes, n);
-    let ap_arr = list_col(ask_prices, n);
-    let as_arr = list_col(ask_sizes, n);
-
     RecordBatch::try_new(
         Arc::new(schema.clone()),
         vec![
-            ts_arr, asset_arr, slug_arr, side_arr, bb_arr, ba_arr, lt_arr, bp_arr, bs_arr,
-            ap_arr, as_arr,
+            Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(StringArray::from(vec![asset])) as ArrayRef,
+            Arc::new(StringArray::from(vec![slug])) as ArrayRef,
+            Arc::new(StringArray::from(vec![side])) as ArrayRef,
+            Arc::new(arrow::array::Float64Array::from(vec![best_bid])) as ArrayRef,
+            Arc::new(arrow::array::Float64Array::from(vec![best_ask])) as ArrayRef,
+            Arc::new(arrow::array::Float64Array::from(vec![last_trade])) as ArrayRef,
+            list_col(bid_prices),
+            list_col(bid_sizes),
+            list_col(ask_prices),
+            list_col(ask_sizes),
         ],
     )
-    .context("book batch")
+    .context("book row")
 }
 
-// ── Writer pair (poly + book) per asset ──────────────────────────────────────
+fn hl_row(schema: &Schema, ts: f64, asset: &str, mid: f64) -> Result<RecordBatch> {
+    RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(StringArray::from(vec![asset])) as ArrayRef,
+            Arc::new(arrow::array::Float64Array::from(vec![mid])) as ArrayRef,
+        ],
+    )
+    .context("hl row")
+}
+
+// ── Per-asset poly+book writer pair ──────────────────────────────────────────
 
 struct AssetWriters {
     asset: String,
     poly: ParquetBuf,
     book: ParquetBuf,
-    date: String,
     poly_schema: Schema,
     book_schema: Schema,
+    date: String,
     raw_dir: PathBuf,
 }
 
@@ -340,114 +326,422 @@ impl AssetWriters {
         let date = hkt_date_string();
         let ps = poly_schema();
         let bs = book_schema();
-
         let poly_path = raw_dir.join(format!("{asset}_poly_{date}.parquet"));
         let book_path = raw_dir.join(format!("{asset}_book_{date}.parquet"));
-
-        eprintln!(
-            "[{asset}] opening poly={poly_path:?} book={book_path:?}"
-        );
-
-        let poly = ParquetBuf::open_with_carry(poly_path, ps.clone())?;
-        let book = ParquetBuf::open_with_carry(book_path, bs.clone())?;
-
+        eprintln!("[{asset}] opening poly={poly_path:?} book={book_path:?}");
         Ok(Self {
             asset: asset.to_string(),
-            poly,
-            book,
-            date,
+            poly: ParquetBuf::open_with_carry(poly_path, ps.clone())?,
+            book: ParquetBuf::open_with_carry(book_path, bs.clone())?,
             poly_schema: ps,
             book_schema: bs,
+            date,
             raw_dir: raw_dir.clone(),
         })
     }
 
-    /// Rotate to a new date file if HKT calendar day has changed.
     fn rotate_if_needed(&mut self) -> Result<()> {
         let today = hkt_date_string();
         if today == self.date {
             return Ok(());
         }
-        eprintln!("[{}] rotating: {} → {}", self.asset, self.date, today);
-
-        let poly_path = self.raw_dir.join(format!("{}_poly_{today}.parquet", self.asset));
-        let book_path = self.raw_dir.join(format!("{}_book_{today}.parquet", self.asset));
-
-        // Swap in new writers; finish the old ones (take ownership to call finish())
+        eprintln!("[{}] rotating {} → {}", self.asset, self.date, today);
+        let poly_path = self
+            .raw_dir
+            .join(format!("{}_poly_{today}.parquet", self.asset));
+        let book_path = self
+            .raw_dir
+            .join(format!("{}_book_{today}.parquet", self.asset));
         let old_poly = std::mem::replace(
             &mut self.poly,
             ParquetBuf::open(poly_path, self.poly_schema.clone())?,
         );
         old_poly.finish()?;
-
         let old_book = std::mem::replace(
             &mut self.book,
             ParquetBuf::open(book_path, self.book_schema.clone())?,
         );
         old_book.finish()?;
-
         self.date = today;
         Ok(())
     }
 
-    fn write_poly(&mut self, ts: f64, up: f64, slug: &str) -> Result<()> {
-        let batch = make_poly_batch(&self.poly_schema, ts, up, slug)?;
-        self.poly.write_batch(batch)
-    }
-
-    fn write_book(
+    fn write_sample(
         &mut self,
         ts: f64,
-        side: &str,
-        best_bid: f64,
-        best_ask: f64,
+        book: &BookUpdate,
         last_trade: f64,
-        bid_prices: &[f32],
-        bid_sizes: &[f32],
-        ask_prices: &[f32],
-        ask_sizes: &[f32],
         slug: &str,
     ) -> Result<()> {
-        let batch = make_book_batch(
+        let best_bid = book.bids.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
+        let best_ask = book.asks.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
+        if best_bid <= 0.0 || best_ask <= 0.0 {
+            return Ok(());
+        }
+        let up_mid = (best_bid + best_ask) / 2.0;
+
+        self.poly
+            .write(poly_row(&self.poly_schema, ts, up_mid, slug)?)?;
+
+        // Build depth ladders reversed: worst→best (matches Python's REST order)
+        let mut bid_p: Vec<f32> = book.bids.iter().map(|l| d2f(&l.price) as f32).collect();
+        let mut bid_s: Vec<f32> = book.bids.iter().map(|l| d2f(&l.size) as f32).collect();
+        let mut ask_p: Vec<f32> = book.asks.iter().map(|l| d2f(&l.price) as f32).collect();
+        let mut ask_s: Vec<f32> = book.asks.iter().map(|l| d2f(&l.size) as f32).collect();
+        bid_p.reverse();
+        bid_s.reverse();
+        ask_p.reverse();
+        ask_s.reverse();
+
+        // UP row
+        self.book.write(book_row(
             &self.book_schema,
             ts,
             &self.asset,
             slug,
-            side,
+            "UP",
             best_bid,
             best_ask,
             last_trade,
-            bid_prices,
-            bid_sizes,
-            ask_prices,
-            ask_sizes,
-        )?;
-        self.book.write_batch(batch)
+            &bid_p,
+            &bid_s,
+            &ask_p,
+            &ask_s,
+        )?)?;
+
+        // DN row (1-complement of UP)
+        let dn_bid_p: Vec<f32> = ask_p.iter().map(|p| 1.0 - p).collect();
+        let dn_ask_p: Vec<f32> = bid_p.iter().map(|p| 1.0 - p).collect();
+        self.book.write(book_row(
+            &self.book_schema,
+            ts,
+            &self.asset,
+            slug,
+            "DN",
+            1.0 - best_ask,
+            1.0 - best_bid,
+            last_trade,
+            &dn_bid_p,
+            &ask_s,
+            &dn_ask_p,
+            &bid_s,
+        )?)?;
+
+        Ok(())
     }
 
     fn finish(self) -> Result<()> {
         self.poly.finish()?;
-        self.book.finish()?;
+        self.book.finish()
+    }
+}
+
+// ── Per-asset Hyperliquid writer ──────────────────────────────────────────────
+
+struct HlWriter {
+    asset: String,
+    buf: ParquetBuf,
+    schema: Schema,
+    date: String,
+    raw_dir: PathBuf,
+}
+
+impl HlWriter {
+    fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
+        let date = hkt_date_string();
+        let schema = hl_schema();
+        let path = raw_dir.join(format!("{asset}_hl_{date}.parquet"));
+        eprintln!("[{asset}] opening hl={path:?}");
+        Ok(Self {
+            asset: asset.to_string(),
+            buf: ParquetBuf::open_with_carry(path, schema.clone())?,
+            schema,
+            date,
+            raw_dir: raw_dir.clone(),
+        })
+    }
+
+    fn rotate_if_needed(&mut self) -> Result<()> {
+        let today = hkt_date_string();
+        if today == self.date {
+            return Ok(());
+        }
+        let path = self
+            .raw_dir
+            .join(format!("{}_hl_{today}.parquet", self.asset));
+        let old = std::mem::replace(
+            &mut self.buf,
+            ParquetBuf::open(path, self.schema.clone())?,
+        );
+        old.finish()?;
+        self.date = today;
         Ok(())
     }
+
+    fn write_sample(&mut self, ts: f64, mid: f64) -> Result<()> {
+        self.buf.write(hl_row(&self.schema, ts, &self.asset, mid)?)
+    }
+
+    fn finish(self) -> Result<()> {
+        self.buf.finish()
+    }
+}
+
+// ── Task spawners ─────────────────────────────────────────────────────────────
+
+fn spawn_meta_task(
+    assets: Vec<String>,
+    state: Arc<Mutex<Vec<AssetState>>>,
+    slot_tx: watch::Sender<Vec<Option<(U256, U256, String)>>>,
+    http: Arc<reqwest::Client>,
+    slot_interval: u64,
+    suffix: &'static str,
+) {
+    tokio::spawn(async move {
+        let mut slots: Vec<Option<(u64, U256, U256, String)>> = vec![None; assets.len()];
+
+        loop {
+            let current = current_slot_for(slot_interval);
+            let mut changed = false;
+
+            for (i, asset) in assets.iter().enumerate() {
+                let stale = slots[i]
+                    .as_ref()
+                    .map(|(s, ..)| *s != current)
+                    .unwrap_or(true);
+
+                if stale {
+                    match fetch_meta(&http, asset, current, suffix).await {
+                        Ok((up, dn, slug)) => {
+                            eprintln!("[{asset}/{suffix}] slot {current} slug={slug}");
+                            {
+                                let mut st = state.lock().unwrap();
+                                st[i].slug = slug.clone();
+                            }
+                            slots[i] = Some((current, up, dn, slug));
+                            changed = true;
+                        }
+                        Err(e) => eprintln!("[{asset}/{suffix}] meta error: {e:#}"),
+                    }
+                }
+            }
+
+            if changed {
+                let payload = slots
+                    .iter()
+                    .map(|s| s.as_ref().map(|(_, u, d, sl)| (*u, *d, sl.clone())))
+                    .collect();
+                let _ = slot_tx.send(payload);
+            }
+
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
+}
+
+fn spawn_book_task(
+    clob: ClobWsClient,
+    state: Arc<Mutex<Vec<AssetState>>>,
+    mut slot_rx: watch::Receiver<Vec<Option<(U256, U256, String)>>>,
+) {
+    tokio::spawn(async move {
+        let mut book_task: Option<tokio::task::JoinHandle<()>> = None;
+
+        loop {
+            if slot_rx.changed().await.is_err() {
+                break;
+            }
+            let tokens = slot_rx.borrow_and_update().clone();
+
+            if let Some(h) = book_task.take() {
+                h.abort();
+            }
+
+            let mut ids: Vec<U256> = Vec::new();
+            let mut map: Vec<(U256, usize, bool)> = Vec::new();
+
+            for (i, slot) in tokens.iter().enumerate() {
+                if let Some((up, dn, _)) = slot {
+                    ids.push(*up);
+                    ids.push(*dn);
+                    map.push((*up, i, true));
+                    map.push((*dn, i, false));
+                }
+            }
+
+            if ids.is_empty() {
+                continue;
+            }
+
+            let clob = clob.clone();
+            let state = Arc::clone(&state);
+            book_task = Some(tokio::spawn(async move {
+                loop {
+                    match clob.subscribe_orderbook(ids.clone()) {
+                        Ok(stream) => {
+                            let mut s = Box::pin(stream);
+                            while let Some(Ok(update)) = s.next().await {
+                                if let Some(&(_, idx, is_up)) =
+                                    map.iter().find(|(id, _, _)| *id == update.asset_id)
+                                {
+                                    if is_up {
+                                        let mut st = state.lock().unwrap();
+                                        if idx < st.len() {
+                                            st[idx].latest_book = Some(update);
+                                        }
+                                    }
+                                }
+                            }
+                            eprintln!("book stream closed, reconnecting…");
+                        }
+                        Err(e) => eprintln!("subscribe_orderbook failed: {e:#}, retrying…"),
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }));
+        }
+    });
+}
+
+fn spawn_trade_task(
+    clob: ClobWsClient,
+    state: Arc<Mutex<Vec<AssetState>>>,
+    mut slot_rx: watch::Receiver<Vec<Option<(U256, U256, String)>>>,
+) {
+    tokio::spawn(async move {
+        let mut trade_task: Option<tokio::task::JoinHandle<()>> = None;
+
+        loop {
+            if slot_rx.changed().await.is_err() {
+                break;
+            }
+            let tokens = slot_rx.borrow_and_update().clone();
+
+            if let Some(h) = trade_task.take() {
+                h.abort();
+            }
+
+            let mut ids: Vec<U256> = Vec::new();
+            let mut map: Vec<(U256, usize)> = Vec::new();
+
+            for (i, slot) in tokens.iter().enumerate() {
+                if let Some((up, dn, _)) = slot {
+                    ids.push(*up);
+                    ids.push(*dn);
+                    map.push((*up, i));
+                    map.push((*dn, i));
+                }
+            }
+
+            if ids.is_empty() {
+                continue;
+            }
+
+            let clob = clob.clone();
+            let state = Arc::clone(&state);
+            trade_task = Some(tokio::spawn(async move {
+                loop {
+                    match clob.subscribe_last_trade_price(ids.clone()) {
+                        Ok(stream) => {
+                            let mut s = Box::pin(stream);
+                            while let Some(Ok(update)) = s.next().await {
+                                if let Some(&(_, idx)) =
+                                    map.iter().find(|(id, _)| *id == update.asset_id)
+                                {
+                                    let price = d2f(&update.price);
+                                    if price.is_finite() {
+                                        let mut st = state.lock().unwrap();
+                                        if idx < st.len() {
+                                            st[idx].latest_trade = price;
+                                        }
+                                    }
+                                }
+                            }
+                            eprintln!("last-trade stream closed, reconnecting…");
+                        }
+                        Err(e) => eprintln!("subscribe_last_trade_price failed: {e:#}, retrying…"),
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }));
+        }
+    });
+}
+
+// Hyperliquid allMids WS — returns shared mid-price map updated in background
+fn spawn_hl_task(assets: Vec<String>) -> Arc<Mutex<HashMap<String, f64>>> {
+    let mids: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mids2 = Arc::clone(&mids);
+
+    tokio::spawn(async move {
+        loop {
+            match tokio_tungstenite::connect_async("wss://api.hyperliquid.xyz/ws").await {
+                Ok((ws, _)) => {
+                    let (mut write, mut read) = ws.split();
+                    let sub = serde_json::json!({
+                        "method": "subscribe",
+                        "subscription": {"type": "allMids"}
+                    });
+                    if write
+                        .send(Message::Text(sub.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        eprintln!("HL subscribe send failed, reconnecting…");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    eprintln!("[HL] connected");
+                    while let Some(Ok(msg)) = read.next().await {
+                        if let Message::Text(text) = msg {
+                            if let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(text.as_str())
+                            {
+                                if val["channel"] == "allMids" {
+                                    if let Some(obj) = val["data"]["mids"].as_object() {
+                                        let mut m = mids2.lock().unwrap();
+                                        for asset in &assets {
+                                            if let Some(v) = obj.get(asset.as_str()) {
+                                                let price = v
+                                                    .as_str()
+                                                    .and_then(|s| s.parse::<f64>().ok())
+                                                    .or_else(|| v.as_f64());
+                                                if let Some(p) = price {
+                                                    m.insert(asset.clone(), p);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    eprintln!("[HL] WS closed, reconnecting…");
+                }
+                Err(e) => eprintln!("[HL] connect error: {e:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+
+    mids
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 pub async fn run(assets: Vec<String>) -> Result<()> {
-    let raw_dir = PathBuf::from("raw");
-    fs::create_dir_all(&raw_dir).context("create raw/")?;
+    let raw_5m = PathBuf::from("raw");
+    let raw_15m = PathBuf::from("raw_15_mins");
+    fs::create_dir_all(&raw_5m).context("create raw/")?;
+    fs::create_dir_all(&raw_15m).context("create raw_15_mins/")?;
 
     let assets: Vec<String> = assets.iter().map(|a| a.to_uppercase()).collect();
     let n = assets.len();
 
-    eprintln!("collector starting for: {}", assets.join(", "));
-
-    // Shared state per asset
-    let state: Arc<Mutex<Vec<AssetState>>> = Arc::new(Mutex::new(vec![AssetState::default(); n]));
-
-    // Watch channels for slot tokens: meta task → WS tasks
-    let (slot_tx, slot_rx) = watch::channel::<Vec<Option<(U256, U256, String)>>>(vec![None; n]);
+    eprintln!(
+        "collector starting for: {}  (5m + 15m + HL)",
+        assets.join(", ")
+    );
 
     let clob = ClobWsClient::default();
     let http = Arc::new(
@@ -457,302 +751,143 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
             .context("http client")?,
     );
 
-    // Meta task: polls Gamma, pushes updated slot tokens
-    {
-        let assets = assets.clone();
-        let state = Arc::clone(&state);
-        let slot_tx = slot_tx;
-        let http = Arc::clone(&http);
+    // ── 5-min Polymarket feed ────────────────────────────────────────────────
+    let state_5m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
+    let (slot_tx_5m, slot_rx_5m) = watch::channel(vec![None; n]);
+    spawn_meta_task(
+        assets.clone(),
+        Arc::clone(&state_5m),
+        slot_tx_5m,
+        Arc::clone(&http),
+        300,
+        "5m",
+    );
+    spawn_book_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
+    spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
 
-        tokio::spawn(async move {
-            let mut slots: Vec<Option<(u64, U256, U256, String)>> = vec![None; assets.len()];
+    // ── 15-min Polymarket feed ───────────────────────────────────────────────
+    let state_15m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
+    let (slot_tx_15m, slot_rx_15m) = watch::channel(vec![None; n]);
+    spawn_meta_task(
+        assets.clone(),
+        Arc::clone(&state_15m),
+        slot_tx_15m,
+        Arc::clone(&http),
+        900,
+        "15m",
+    );
+    spawn_book_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
+    spawn_trade_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m);
 
-            loop {
-                let current = current_slot();
-                let mut changed = false;
+    // ── Hyperliquid feed ─────────────────────────────────────────────────────
+    let hl_mids = spawn_hl_task(assets.clone());
 
-                for (i, asset) in assets.iter().enumerate() {
-                    let needs_refresh = slots[i]
-                        .as_ref()
-                        .map(|(slot, ..)| *slot != current)
-                        .unwrap_or(true);
-
-                    if needs_refresh {
-                        match fetch_meta(&http, asset, current).await {
-                            Ok(meta) => {
-                                eprintln!(
-                                    "[{asset}] slot {} → slug={} up={} dn={}",
-                                    current,
-                                    meta.slug,
-                                    meta.up_id,
-                                    meta.dn_id,
-                                );
-                                {
-                                    let mut st = state.lock().unwrap();
-                                    st[i].slug = meta.slug.clone();
-                                    st[i].up_id = Some(meta.up_id);
-                                    st[i].dn_id = Some(meta.dn_id);
-                                }
-                                slots[i] = Some((current, meta.up_id, meta.dn_id, meta.slug));
-                                changed = true;
-                            }
-                            Err(e) => eprintln!("[{asset}] meta error: {e:#}"),
-                        }
-                    }
-                }
-
-                if changed {
-                    let payload: Vec<Option<(U256, U256, String)>> = slots
-                        .iter()
-                        .map(|s| s.as_ref().map(|(_, u, d, sl)| (*u, *d, sl.clone())))
-                        .collect();
-                    let _ = slot_tx.send(payload);
-                }
-
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            }
-        });
-    }
-
-    // Orderbook WS task — stores only UP-token book updates; DN rows are derived as 1-complement
-    {
-        let clob = clob.clone();
-        let state = Arc::clone(&state);
-        let mut rx = slot_rx.clone();
-
-        tokio::spawn(async move {
-            let mut book_task: Option<tokio::task::JoinHandle<()>> = None;
-
-            loop {
-                if rx.changed().await.is_err() {
-                    break;
-                }
-                let tokens = rx.borrow_and_update().clone();
-
-                if let Some(h) = book_task.take() {
-                    h.abort();
-                }
-
-                let mut new_ids: Vec<U256> = Vec::new();
-                let mut new_map: Vec<(U256, usize, bool)> = Vec::new();
-
-                for (i, slot) in tokens.iter().enumerate() {
-                    if let Some((up, dn, _)) = slot {
-                        new_ids.push(*up);
-                        new_ids.push(*dn);
-                        new_map.push((*up, i, true));
-                        new_map.push((*dn, i, false));
-                    }
-                }
-
-                if new_ids.is_empty() {
-                    continue;
-                }
-
-                let clob = clob.clone();
-                let state = Arc::clone(&state);
-                book_task = Some(tokio::spawn(async move {
-                    loop {
-                        match clob.subscribe_orderbook(new_ids.clone()) {
-                            Ok(stream) => {
-                                let mut s = Box::pin(stream);
-                                while let Some(Ok(update)) = s.next().await {
-                                    if let Some(&(_, idx, is_up)) =
-                                        new_map.iter().find(|(id, _, _)| *id == update.asset_id)
-                                    {
-                                        if is_up {
-                                            let mut st = state.lock().unwrap();
-                                            if idx < st.len() {
-                                                st[idx].latest_book = Some(update);
-                                            }
-                                        }
-                                    }
-                                }
-                                eprintln!("book stream closed, reconnecting…");
-                            }
-                            Err(e) => eprintln!("subscribe_orderbook failed: {e:#}, retrying…"),
-                        }
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                }));
-            }
-        });
-    }
-
-    // Last-trade WS task
-    {
-        let clob = clob.clone();
-        let state = Arc::clone(&state);
-        let mut rx = slot_rx.clone();
-
-        tokio::spawn(async move {
-            let mut trade_task: Option<tokio::task::JoinHandle<()>> = None;
-
-            loop {
-                if rx.changed().await.is_err() {
-                    break;
-                }
-                let tokens = rx.borrow_and_update().clone();
-
-                if let Some(h) = trade_task.take() {
-                    h.abort();
-                }
-
-                let mut new_ids: Vec<U256> = Vec::new();
-                let mut new_map: Vec<(U256, usize)> = Vec::new();
-
-                for (i, slot) in tokens.iter().enumerate() {
-                    if let Some((up, dn, _)) = slot {
-                        new_ids.push(*up);
-                        new_ids.push(*dn);
-                        new_map.push((*up, i));
-                        new_map.push((*dn, i));
-                    }
-                }
-
-                if new_ids.is_empty() {
-                    continue;
-                }
-
-                let clob = clob.clone();
-                let state = Arc::clone(&state);
-                trade_task = Some(tokio::spawn(async move {
-                    loop {
-                        match clob.subscribe_last_trade_price(new_ids.clone()) {
-                            Ok(stream) => {
-                                let mut s = Box::pin(stream);
-                                while let Some(Ok(update)) = s.next().await {
-                                    if let Some(&(_, idx)) =
-                                        new_map.iter().find(|(id, _)| *id == update.asset_id)
-                                    {
-                                        let price = decimal_to_f64(&update.price);
-                                        if price.is_finite() {
-                                            let mut st = state.lock().unwrap();
-                                            if idx < st.len() {
-                                                st[idx].latest_trade = price;
-                                            }
-                                        }
-                                    }
-                                }
-                                eprintln!("last-trade stream closed, reconnecting…");
-                            }
-                            Err(e) => {
-                                eprintln!("subscribe_last_trade_price failed: {e:#}, retrying…")
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                }));
-            }
-        });
-    }
-
-    // Sampler + writers (main loop)
-    let mut writers: Vec<AssetWriters> = assets
+    // ── Writers ──────────────────────────────────────────────────────────────
+    let mut writers_5m: Vec<AssetWriters> = assets
         .iter()
-        .map(|a| AssetWriters::new(a, &raw_dir))
-        .collect::<Result<Vec<_>>>()?;
+        .map(|a| AssetWriters::new(a, &raw_5m))
+        .collect::<Result<_>>()?;
+    let mut writers_15m: Vec<AssetWriters> = assets
+        .iter()
+        .map(|a| AssetWriters::new(a, &raw_15m))
+        .collect::<Result<_>>()?;
+    let mut hl_writers: Vec<HlWriter> = assets
+        .iter()
+        .map(|a| HlWriter::new(a, &raw_5m))
+        .collect::<Result<_>>()?;
 
-    let mut interval = tokio::time::interval(Duration::from_millis(200));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
+    // ── Sampler ───────────────────────────────────────────────────────────────
+    let mut ticker = tokio::time::interval(Duration::from_millis(200));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = signal(SignalKind::terminate()).context("sigterm")?;
 
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                let now = now_secs_f64();
-                let ts = (now * 5.0).round() / 5.0;
+            _ = ticker.tick() => {
+                let ts = (now_secs_f64() * 5.0).round() / 5.0;
 
-                let snapshots: Vec<Option<(BookUpdate, f64, String)>> = {
-                    let st = state.lock().unwrap();
+                // Snapshot shared state under brief lock holds
+                let snaps_5m: Vec<Option<(BookUpdate, f64, String)>> = {
+                    let st = state_5m.lock().unwrap();
                     st.iter()
-                        .map(|s| {
-                            s.latest_book.clone().map(|b| (b, s.latest_trade, s.slug.clone()))
-                        })
+                        .map(|s| s.latest_book.clone().map(|b| (b, s.latest_trade, s.slug.clone())))
                         .collect()
                 };
+                let snaps_15m: Vec<Option<(BookUpdate, f64, String)>> = {
+                    let st = state_15m.lock().unwrap();
+                    st.iter()
+                        .map(|s| s.latest_book.clone().map(|b| (b, s.latest_trade, s.slug.clone())))
+                        .collect()
+                };
+                let hl_snap: HashMap<String, f64> = hl_mids.lock().unwrap().clone();
 
-                for (i, snap) in snapshots.into_iter().enumerate() {
+                // Write 5m
+                for (i, snap) in snaps_5m.into_iter().enumerate() {
                     let Some((book, last_trade, slug)) = snap else { continue };
                     if slug.is_empty() { continue; }
-
-                    if let Err(e) = writers[i].rotate_if_needed() {
-                        eprintln!("[{}] rotate error: {e:#}", assets[i]);
+                    if let Err(e) = writers_5m[i].rotate_if_needed() {
+                        eprintln!("[{}] 5m rotate: {e:#}", assets[i]);
                     }
-
-                    // Compute mid from UP token's book (bids.first() = best bid)
-                    let best_bid = book.bids.first().map(|l| decimal_to_f64(&l.price)).unwrap_or(0.0);
-                    let best_ask = book.asks.first().map(|l| decimal_to_f64(&l.price)).unwrap_or(0.0);
-
-                    if best_bid <= 0.0 || best_ask <= 0.0 {
-                        continue; // Zero Means Zero — skip rows with no real book
+                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug) {
+                        eprintln!("[{}] 5m write: {e:#}", assets[i]);
                     }
+                }
 
-                    let up_mid = (best_bid + best_ask) / 2.0;
-
-                    // poly row
-                    if let Err(e) = writers[i].write_poly(ts, up_mid, &slug) {
-                        eprintln!("[{}] poly write error: {e:#}", assets[i]);
+                // Write 15m
+                for (i, snap) in snaps_15m.into_iter().enumerate() {
+                    let Some((book, last_trade, slug)) = snap else { continue };
+                    if slug.is_empty() { continue; }
+                    if let Err(e) = writers_15m[i].rotate_if_needed() {
+                        eprintln!("[{}] 15m rotate: {e:#}", assets[i]);
                     }
-
-                    // Build depth ladders — reverse so best is last (Python order: worst→best)
-                    let mut bid_prices: Vec<f32> = book.bids.iter().map(|l| decimal_to_f64(&l.price) as f32).collect();
-                    let mut bid_sizes: Vec<f32> = book.bids.iter().map(|l| decimal_to_f64(&l.size) as f32).collect();
-                    let mut ask_prices: Vec<f32> = book.asks.iter().map(|l| decimal_to_f64(&l.price) as f32).collect();
-                    let mut ask_sizes: Vec<f32> = book.asks.iter().map(|l| decimal_to_f64(&l.size) as f32).collect();
-
-                    bid_prices.reverse();
-                    bid_sizes.reverse();
-                    ask_prices.reverse();
-                    ask_sizes.reverse();
-
-                    // UP book row
-                    if let Err(e) = writers[i].write_book(
-                        ts, "UP", best_bid, best_ask, last_trade,
-                        &bid_prices, &bid_sizes, &ask_prices, &ask_sizes, &slug,
-                    ) {
-                        eprintln!("[{}] book UP write error: {e:#}", assets[i]);
+                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug) {
+                        eprintln!("[{}] 15m write: {e:#}", assets[i]);
                     }
+                }
 
-                    // DN row: dn_mid = 1 - up_mid, best_bid/ask are symmetric
-                    let dn_best_bid = 1.0 - best_ask;
-                    let dn_best_ask = 1.0 - best_bid;
-
-                    // DN depth is the complement of UP depth, reversed
-                    let dn_bid_prices: Vec<f32> = ask_prices.iter().map(|p| 1.0 - p).collect();
-                    let dn_bid_sizes: Vec<f32> = ask_sizes.clone();
-                    let dn_ask_prices: Vec<f32> = bid_prices.iter().map(|p| 1.0 - p).collect();
-                    let dn_ask_sizes: Vec<f32> = bid_sizes.clone();
-
-                    if let Err(e) = writers[i].write_book(
-                        ts, "DN", dn_best_bid, dn_best_ask, last_trade,
-                        &dn_bid_prices, &dn_bid_sizes, &dn_ask_prices, &dn_ask_sizes, &slug,
-                    ) {
-                        eprintln!("[{}] book DN write error: {e:#}", assets[i]);
+                // Write HL
+                for (i, hw) in hl_writers.iter_mut().enumerate() {
+                    if let Some(&mid) = hl_snap.get(&assets[i]) {
+                        if mid > 0.0 {
+                            if let Err(e) = hw.rotate_if_needed() {
+                                eprintln!("[{}] hl rotate: {e:#}", assets[i]);
+                            }
+                            if let Err(e) = hw.write_sample(ts, mid) {
+                                eprintln!("[{}] hl write: {e:#}", assets[i]);
+                            }
+                        }
                     }
                 }
             }
 
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("\nctrl-c: flushing and closing writers…");
-                for w in writers {
-                    if let Err(e) = w.finish() {
-                        eprintln!("close error: {e:#}");
-                    }
-                }
+                eprintln!("\nshutting down — flushing writers…");
+                flush_all(writers_5m, writers_15m, hl_writers);
                 return Ok(());
             }
 
             _ = sigterm.recv() => {
-                eprintln!("SIGTERM: flushing and closing writers…");
-                for w in writers {
-                    if let Err(e) = w.finish() {
-                        eprintln!("close error: {e:#}");
-                    }
-                }
+                eprintln!("SIGTERM — flushing writers…");
+                flush_all(writers_5m, writers_15m, hl_writers);
                 return Ok(());
             }
+        }
+    }
+}
+
+fn flush_all(
+    writers_5m: Vec<AssetWriters>,
+    writers_15m: Vec<AssetWriters>,
+    hl_writers: Vec<HlWriter>,
+) {
+    for w in writers_5m.into_iter().chain(writers_15m) {
+        if let Err(e) = w.finish() {
+            eprintln!("close error: {e:#}");
+        }
+    }
+    for w in hl_writers {
+        if let Err(e) = w.finish() {
+            eprintln!("close error: {e:#}");
         }
     }
 }
