@@ -1,4 +1,5 @@
 mod chainlink;
+mod collect;
 mod markets;
 
 use clap::{Parser, Subcommand};
@@ -18,6 +19,12 @@ enum Cmd {
         #[arg(required = true, num_args = 1..)]
         assets: Vec<String>,
     },
+    /// Headless CLOB data collector — writes raw/*.parquet files
+    Collect {
+        /// Assets to collect, e.g. btc eth sol bnb xrp doge
+        #[arg(required = true, num_args = 1..)]
+        assets: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -25,5 +32,6 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         None => chainlink::run().await,
         Some(Cmd::Markets { assets }) => markets::run(assets).await,
+        Some(Cmd::Collect { assets }) => collect::run(assets).await,
     }
 }
