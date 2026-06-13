@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
-use arrow::array::{ArrayRef, Float32Builder, Float64Builder, ListBuilder, StringArray};
+use arrow::array::{ArrayRef, Float32Builder, Float64Array, Float64Builder, ListBuilder, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::{Duration as ChronoDuration, FixedOffset, TimeZone as _, Utc};
@@ -36,6 +36,10 @@ fn now_secs_f64() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
 }
 
+fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
 fn current_slot_for(interval: u64) -> u64 {
     (now_secs() / interval) * interval
 }
@@ -53,6 +57,8 @@ fn hkt_date_string() -> String {
 #[derive(Clone, Default)]
 struct AssetState {
     latest_book: Option<BookUpdate>,
+    book_server_ts_ms: i64,   // BookUpdate.timestamp (server-side ms)
+    book_received_at_ms: i64, // client-side ms when the WS message was received
     latest_trade: f64,
     slug: String,
 }
@@ -78,10 +84,8 @@ async fn discover_assets(http: &reqwest::Client) -> Result<Vec<String>> {
     if let Some(arr) = resp.as_array() {
         for event in arr {
             if let Some(slug) = event["slug"].as_str() {
-                // slug pattern: {asset}-updown-{5m|15m}-{slot}
                 if let Some(pos) = slug.find("-updown-") {
-                    let asset = slug[..pos].to_uppercase();
-                    assets.insert(asset);
+                    assets.insert(slug[..pos].to_uppercase());
                 }
             }
         }
@@ -152,6 +156,8 @@ fn poly_schema() -> Schema {
         Field::new("up", DataType::Float64, false),
         Field::new("dn", DataType::Float64, false),
         Field::new("slug", DataType::Utf8, false),
+        Field::new("server_ts", DataType::Float64, true),  // ms; null for carried rows pre-schema
+        Field::new("latency_ms", DataType::Float64, true), // receive_ms - server_ts; null for old rows
     ])
 }
 
@@ -184,6 +190,8 @@ fn book_schema() -> Schema {
             DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
             false,
         ),
+        Field::new("server_ts", DataType::Float64, true),
+        Field::new("latency_ms", DataType::Float64, true),
     ])
 }
 
@@ -245,17 +253,35 @@ impl ParquetBuf {
     fn try_carry(path: &PathBuf, expected: &Schema) -> Option<Vec<RecordBatch>> {
         let file = fs::File::open(path).ok()?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
-        let ok = builder
-            .schema()
+        let old_schema = builder.schema().clone();
+
+        // All old fields must exist by name in the new schema.
+        let compatible = old_schema
             .fields()
             .iter()
-            .zip(expected.fields().iter())
-            .all(|(a, b)| a.name() == b.name());
-        if !ok {
-            eprintln!("  carry: schema mismatch, discarding {path:?}");
+            .all(|f| expected.field_with_name(f.name()).is_ok());
+        if !compatible {
+            eprintln!("  carry: incompatible schema (unknown columns), discarding {path:?}");
             return None;
         }
-        Some(builder.build().ok()?.flatten().collect())
+
+        let needs_adapt = old_schema.fields().len() < expected.fields().len();
+        let batches: Vec<RecordBatch> = builder.build().ok()?.flatten().collect();
+
+        if needs_adapt {
+            eprintln!(
+                "  carry: schema evolving {} → {} cols, padding nulls for {path:?}",
+                old_schema.fields().len(),
+                expected.fields().len()
+            );
+            batches
+                .into_iter()
+                .map(|b| adapt_to_schema(b, expected))
+                .collect::<Result<_>>()
+                .ok()
+        } else {
+            Some(batches)
+        }
     }
 
     fn write(&mut self, batch: RecordBatch) -> Result<()> {
@@ -277,27 +303,69 @@ impl ParquetBuf {
     }
 }
 
+// Pad an old RecordBatch to a wider schema by filling missing Float64 columns with nulls.
+fn adapt_to_schema(batch: RecordBatch, schema: &Schema) -> Result<RecordBatch> {
+    let n = batch.num_rows();
+    let cols: Vec<ArrayRef> = schema
+        .fields()
+        .iter()
+        .map(|f| {
+            if let Ok(idx) = batch.schema().index_of(f.name()) {
+                Ok(batch.column(idx).clone())
+            } else {
+                let mut b = Float64Builder::with_capacity(n);
+                for _ in 0..n {
+                    b.append_null();
+                }
+                Ok(Arc::new(b.finish()) as ArrayRef)
+            }
+        })
+        .collect::<Result<_>>()?;
+    RecordBatch::try_new(Arc::new(schema.clone()), cols).context("adapt schema")
+}
+
 // ── Decimal helper ────────────────────────────────────────────────────────────
 
 fn d2f(d: &polymarket_client_sdk_v2::types::Decimal) -> f64 {
     d.to_string().parse::<f64>().unwrap_or(f64::NAN)
 }
 
+// ── Nullable Float64 array helper ─────────────────────────────────────────────
+
+fn opt_f64_col(v: Option<f64>) -> ArrayRef {
+    let mut b = Float64Builder::new();
+    match v {
+        Some(x) => b.append_value(x),
+        None => b.append_null(),
+    }
+    Arc::new(b.finish()) as ArrayRef
+}
+
 // ── Poly + book row builders ──────────────────────────────────────────────────
 
-fn poly_row(schema: &Schema, ts: f64, up: f64, slug: &str) -> Result<RecordBatch> {
+fn poly_row(
+    schema: &Schema,
+    ts: f64,
+    up: f64,
+    slug: &str,
+    server_ts: Option<f64>,
+    latency_ms: Option<f64>,
+) -> Result<RecordBatch> {
     RecordBatch::try_new(
         Arc::new(schema.clone()),
         vec![
-            Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef,
-            Arc::new(arrow::array::Float64Array::from(vec![up])) as ArrayRef,
-            Arc::new(arrow::array::Float64Array::from(vec![1.0 - up])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![up])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0 - up])) as ArrayRef,
             Arc::new(StringArray::from(vec![slug])) as ArrayRef,
+            opt_f64_col(server_ts),
+            opt_f64_col(latency_ms),
         ],
     )
     .context("poly row")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn book_row(
     schema: &Schema,
     ts: f64,
@@ -311,6 +379,8 @@ fn book_row(
     bid_sizes: &[f32],
     ask_prices: &[f32],
     ask_sizes: &[f32],
+    server_ts: Option<f64>,
+    latency_ms: Option<f64>,
 ) -> Result<RecordBatch> {
     fn list_col(data: &[f32]) -> ArrayRef {
         let mut b = ListBuilder::new(Float32Builder::new());
@@ -321,17 +391,19 @@ fn book_row(
     RecordBatch::try_new(
         Arc::new(schema.clone()),
         vec![
-            Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![ts])) as ArrayRef,
             Arc::new(StringArray::from(vec![asset])) as ArrayRef,
             Arc::new(StringArray::from(vec![slug])) as ArrayRef,
             Arc::new(StringArray::from(vec![side])) as ArrayRef,
-            Arc::new(arrow::array::Float64Array::from(vec![best_bid])) as ArrayRef,
-            Arc::new(arrow::array::Float64Array::from(vec![best_ask])) as ArrayRef,
-            Arc::new(arrow::array::Float64Array::from(vec![last_trade])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![best_bid])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![best_ask])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![last_trade])) as ArrayRef,
             list_col(bid_prices),
             list_col(bid_sizes),
             list_col(ask_prices),
             list_col(ask_sizes),
+            opt_f64_col(server_ts),
+            opt_f64_col(latency_ms),
         ],
     )
     .context("book row")
@@ -341,9 +413,9 @@ fn hl_row(schema: &Schema, ts: f64, asset: &str, mid: f64) -> Result<RecordBatch
     RecordBatch::try_new(
         Arc::new(schema.clone()),
         vec![
-            Arc::new(arrow::array::Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![ts])) as ArrayRef,
             Arc::new(StringArray::from(vec![asset])) as ArrayRef,
-            Arc::new(arrow::array::Float64Array::from(vec![mid])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![mid])) as ArrayRef,
         ],
     )
     .context("hl row")
@@ -412,6 +484,8 @@ impl AssetWriters {
         book: &BookUpdate,
         last_trade: f64,
         slug: &str,
+        server_ts_ms: i64,
+        received_at_ms: i64,
     ) -> Result<()> {
         let best_bid = book.bids.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
         let best_ask = book.asks.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
@@ -420,8 +494,25 @@ impl AssetWriters {
         }
         let up_mid = (best_bid + best_ask) / 2.0;
 
-        self.poly
-            .write(poly_row(&self.poly_schema, ts, up_mid, slug)?)?;
+        let server_ts = if server_ts_ms > 0 {
+            Some(server_ts_ms as f64)
+        } else {
+            None
+        };
+        let latency_ms = if received_at_ms > 0 && server_ts_ms > 0 {
+            Some((received_at_ms - server_ts_ms) as f64)
+        } else {
+            None
+        };
+
+        self.poly.write(poly_row(
+            &self.poly_schema,
+            ts,
+            up_mid,
+            slug,
+            server_ts,
+            latency_ms,
+        )?)?;
 
         // Build depth ladders reversed: worst→best (matches Python's REST order)
         let mut bid_p: Vec<f32> = book.bids.iter().map(|l| d2f(&l.price) as f32).collect();
@@ -447,6 +538,8 @@ impl AssetWriters {
             &bid_s,
             &ask_p,
             &ask_s,
+            server_ts,
+            latency_ms,
         )?)?;
 
         // DN row (1-complement of UP)
@@ -465,6 +558,8 @@ impl AssetWriters {
             &ask_s,
             &dn_ask_p,
             &bid_s,
+            server_ts,
+            latency_ms,
         )?)?;
 
         Ok(())
@@ -625,8 +720,12 @@ fn spawn_book_task(
                                     map.iter().find(|(id, _, _)| *id == update.asset_id)
                                 {
                                     if is_up {
+                                        let received_at_ms = now_ms();
+                                        let server_ts_ms = update.timestamp;
                                         let mut st = state.lock().unwrap();
                                         if idx < st.len() {
+                                            st[idx].book_server_ts_ms = server_ts_ms;
+                                            st[idx].book_received_at_ms = received_at_ms;
                                             st[idx].latest_book = Some(update);
                                         }
                                     }
@@ -852,41 +951,46 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
             _ = ticker.tick() => {
                 let ts = (now_secs_f64() * 5.0).round() / 5.0;
 
-                // Snapshot shared state under brief lock holds
-                let snaps_5m: Vec<Option<(BookUpdate, f64, String)>> = {
+                // Snapshot shared state under brief lock holds.
+                // Tuple: (book, server_ts_ms, received_at_ms, last_trade, slug)
+                let snaps_5m: Vec<Option<(BookUpdate, i64, i64, f64, String)>> = {
                     let st = state_5m.lock().unwrap();
                     st.iter()
-                        .map(|s| s.latest_book.clone().map(|b| (b, s.latest_trade, s.slug.clone())))
+                        .map(|s| s.latest_book.clone().map(|b| {
+                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone())
+                        }))
                         .collect()
                 };
-                let snaps_15m: Vec<Option<(BookUpdate, f64, String)>> = {
+                let snaps_15m: Vec<Option<(BookUpdate, i64, i64, f64, String)>> = {
                     let st = state_15m.lock().unwrap();
                     st.iter()
-                        .map(|s| s.latest_book.clone().map(|b| (b, s.latest_trade, s.slug.clone())))
+                        .map(|s| s.latest_book.clone().map(|b| {
+                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone())
+                        }))
                         .collect()
                 };
                 let hl_snap: HashMap<String, f64> = hl_mids.lock().unwrap().clone();
 
                 // Write 5m
                 for (i, snap) in snaps_5m.into_iter().enumerate() {
-                    let Some((book, last_trade, slug)) = snap else { continue };
+                    let Some((book, srv_ts, rcv_ts, last_trade, slug)) = snap else { continue };
                     if slug.is_empty() { continue; }
                     if let Err(e) = writers_5m[i].rotate_if_needed() {
                         eprintln!("[{}] 5m rotate: {e:#}", assets[i]);
                     }
-                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug) {
+                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts) {
                         eprintln!("[{}] 5m write: {e:#}", assets[i]);
                     }
                 }
 
                 // Write 15m
                 for (i, snap) in snaps_15m.into_iter().enumerate() {
-                    let Some((book, last_trade, slug)) = snap else { continue };
+                    let Some((book, srv_ts, rcv_ts, last_trade, slug)) = snap else { continue };
                     if slug.is_empty() { continue; }
                     if let Err(e) = writers_15m[i].rotate_if_needed() {
                         eprintln!("[{}] 15m rotate: {e:#}", assets[i]);
                     }
-                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug) {
+                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts) {
                         eprintln!("[{}] 15m write: {e:#}", assets[i]);
                     }
                 }
