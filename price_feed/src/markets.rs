@@ -131,12 +131,141 @@ async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<Sl
     Ok(SlotMeta { slot, up_token_id, volume, fetched_at: Instant::now() })
 }
 
-pub async fn run(assets: Vec<String>) -> Result<()> {
+/// Watchdog for the first best_bid_ask message. If the custom-feature feed does not
+/// deliver anything within this window (server ignores the flag, or silent freeze),
+/// we tear it down and fall back to the price_change feed.
+const FEED_WATCHDOG: Duration = Duration::from_secs(15);
+
+/// Midpoint of two decimal-like values as f64; `None` if either fails to parse or
+/// the result is non-finite.
+fn decimal_mid(bid: &impl ToString, ask: &impl ToString) -> Option<f64> {
+    let b: f64 = bid.to_string().parse().ok()?;
+    let a: f64 = ask.to_string().parse().ok()?;
+    let m = (b + a) / 2.0;
+    m.is_finite().then_some(m)
+}
+
+/// Drives a midpoint price feed for one token, sending `(idx, midpoint, server_ts_ms)`
+/// on `tx`. Strategy:
+///   1. If `custom_features`, subscribe to `best_bid_ask` and compute the midpoint from
+///      `(best_bid + best_ask) / 2`. A watchdog on the *first* message detects the case
+///      where the server silently ignores the custom-feature flag (or freezes).
+///   2. Otherwise — or after the watchdog fires — fall back to `price_change`, which emits
+///      on every order placement/cancellation and carries best_bid/best_ask per entry.
+///
+/// Note: `subscribe_midpoints` was the previous source but it only yields on `book` events,
+/// which fire solely on the initial snapshot and after trades — so a fresh 5-min market with
+/// no trades stays pinned at its 0.5 snapshot. `price_change` does not have that problem.
+async fn drive_feed(
+    clob: ClobWsClient,
+    asset_id: U256,
+    idx: usize,
+    custom_features: bool,
+    tx: mpsc::Sender<(usize, f64, i64)>,
+) {
+    if custom_features {
+        if let Ok(stream) = clob.subscribe_best_bid_ask(vec![asset_id]) {
+            let mut s = Box::pin(stream);
+            let mut got = false;
+            loop {
+                // Watchdog applies only until the first message arrives. Once the feed is
+                // confirmed live we consume without a timeout (a quiet stretch just means
+                // no quote change); slot rotation re-subscribes a fresh token every 5 min.
+                let item = if got {
+                    s.next().await
+                } else {
+                    match tokio::time::timeout(FEED_WATCHDOG, s.next()).await {
+                        Ok(item) => item,
+                        Err(_) => break, // no first message in time → fall back
+                    }
+                };
+                match item {
+                    Some(Ok(bba)) => {
+                        got = true;
+                        if let Some(m) = decimal_mid(&bba.best_bid, &bba.best_ask) {
+                            if tx.send((idx, m, bba.timestamp)).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Some(Err(_)) => continue,
+                    None => break, // stream ended → fall back
+                }
+            }
+        }
+        // Release the best_bid_ask subscription before switching feeds so the asset's
+        // server-side refcount returns to zero (the parent re-subscribes on rotation).
+        let _ = clob.unsubscribe_orderbook(&[asset_id]);
+    }
+
+    // Fallback feed (also the default when custom features are disabled).
+    if let Ok(stream) = clob.subscribe_prices(vec![asset_id]) {
+        let mut s = Box::pin(stream);
+        while let Some(item) = s.next().await {
+            let Ok(pc) = item else { continue };
+            for e in &pc.price_changes {
+                if e.asset_id != asset_id {
+                    continue;
+                }
+                if let (Some(b), Some(a)) = (e.best_bid.as_ref(), e.best_ask.as_ref()) {
+                    if let Some(m) = decimal_mid(b, a) {
+                        if tx.send((idx, m, pc.timestamp)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Headless probe: subscribe to each asset's current-slot Up token and print midpoints
+/// to stdout for 30s. Used to verify the feed is live (prices move off 0.5) without the TUI.
+pub async fn probe(assets: Vec<String>, custom_features: bool) -> Result<()> {
+    let http = reqwest::Client::builder().user_agent("Mozilla/5.0").build()?;
+    let clob = ClobWsClient::default();
+    let (tx, mut rx) = mpsc::channel::<(usize, f64, i64)>(128);
+    let slot = current_slot();
+
+    for (idx, asset) in assets.iter().enumerate() {
+        let meta = fetch_meta(&http, asset, slot).await?;
+        let id = U256::from_str(&meta.up_token_id)?;
+        println!(
+            "[{}] slot {} ({}) up_token={} — subscribing (custom_features={custom_features})",
+            asset.to_uppercase(),
+            slot,
+            slot_label(slot),
+            meta.up_token_id,
+        );
+        tokio::spawn(drive_feed(clob.clone(), id, idx, custom_features, tx.clone()));
+    }
+    drop(tx);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            Some((idx, mid, ts)) = rx.recv() => {
+                let asset = assets[idx].to_uppercase();
+                let lat = (now_ms() - ts).max(0);
+                println!(
+                    "[{asset}] UP={:.1}% DN={:.1}% mid={mid:.4} ts={ts} lat={lat}ms",
+                    mid * 100.0,
+                    (1.0 - mid) * 100.0,
+                );
+            }
+        }
+    }
+    println!("probe: 30s elapsed, exiting");
+    Ok(())
+}
+
+pub async fn run(assets: Vec<String>, custom_features: bool) -> Result<()> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    let result = run_app(&mut terminal, assets).await;
+    let result = run_app(&mut terminal, assets, custom_features).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -148,6 +277,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     assets: Vec<String>,
+    custom_features: bool,
 ) -> Result<()> {
     // (idx, up_midpoint, server_timestamp_ms) — from CLOB WS
     let (price_tx, mut price_rx) = mpsc::channel::<(usize, f64, i64)>(128);
@@ -204,20 +334,14 @@ async fn run_app(
                                 if let Some(old_id) = current_token_id {
                                     let _ = clob.unsubscribe_midpoints(&[old_id]);
                                 }
-                                if let Ok(stream) = clob.subscribe_midpoints(vec![new_id]) {
-                                    let tx = price_tx.clone();
-                                    stream_task = Some(tokio::spawn(async move {
-                                        let mut s = Box::pin(stream);
-                                        while let Some(Ok(update)) = s.next().await {
-                                            let mid: f64 = update.midpoint
-                                                .to_string()
-                                                .parse()
-                                                .unwrap_or(f64::NAN);
-                                            if !mid.is_finite() { continue; }
-                                            let _ = tx.send((idx, mid, update.timestamp)).await;
-                                        }
-                                    }));
-                                }
+                                let tx = price_tx.clone();
+                                stream_task = Some(tokio::spawn(drive_feed(
+                                    clob.clone(),
+                                    new_id,
+                                    idx,
+                                    custom_features,
+                                    tx,
+                                )));
                                 current_token_id = Some(new_id);
                             }
                         }
