@@ -1,1 +1,10 @@
 /target
+
+# collector outputs and ad-hoc analysis scratch (data, venvs) — never commit
+*.parquet
+.venv/
+/raw
+/raw_15_mins
+/log
+/analysis/**/data
+/analysis/**/livetest

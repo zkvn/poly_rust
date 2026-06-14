@@ -61,6 +61,21 @@ struct AssetState {
     book_received_at_ms: i64, // client-side ms when the WS message was received
     latest_trade: f64,
     slug: String,
+    // Real top-of-book for the UP token from the best_bid_ask / price_change feed.
+    // The `book` (orderbook snapshot) channel for these updown markets only ever reports
+    // the outermost ticks (~0.01/0.99), pinning its midpoint at 0.5 — so the live price
+    // must come from here instead. None until the first such message arrives.
+    latest_bba: Option<BbaSample>,
+}
+
+/// Real best bid/ask for one token, sourced from `best_bid_ask` (custom-feature, low
+/// latency) or `price_change` (always-on) — whichever delivers first.
+#[derive(Clone, Copy)]
+struct BbaSample {
+    best_bid: f64,
+    best_ask: f64,
+    server_ts_ms: i64,
+    received_at_ms: i64,
 }
 
 // ── Gamma asset discovery ─────────────────────────────────────────────────────
@@ -486,21 +501,32 @@ impl AssetWriters {
         slug: &str,
         server_ts_ms: i64,
         received_at_ms: i64,
+        bba: Option<BbaSample>,
     ) -> Result<()> {
-        let best_bid = book.bids.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
-        let best_ask = book.asks.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
+        // Price + timing come from the real best_bid_ask/price_change feed when available;
+        // the orderbook channel only supplies the depth ladders below (its top-of-book is
+        // pinned at the outer ticks for these markets). Fall back to book-derived values
+        // until the first bba quote arrives, so we never gap.
+        let (best_bid, best_ask, src_server_ts_ms, src_received_at_ms) = match bba {
+            Some(b) => (b.best_bid, b.best_ask, b.server_ts_ms, b.received_at_ms),
+            None => {
+                let bb = book.bids.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
+                let ba = book.asks.first().map(|l| d2f(&l.price)).unwrap_or(0.0);
+                (bb, ba, server_ts_ms, received_at_ms)
+            }
+        };
         if best_bid <= 0.0 || best_ask <= 0.0 {
             return Ok(());
         }
         let up_mid = (best_bid + best_ask) / 2.0;
 
-        let server_ts = if server_ts_ms > 0 {
-            Some(server_ts_ms as f64)
+        let server_ts = if src_server_ts_ms > 0 {
+            Some(src_server_ts_ms as f64)
         } else {
             None
         };
-        let latency_ms = if received_at_ms > 0 && server_ts_ms > 0 {
-            Some((received_at_ms - server_ts_ms) as f64)
+        let latency_ms = if src_received_at_ms > 0 && src_server_ts_ms > 0 {
+            Some((src_received_at_ms - src_server_ts_ms) as f64)
         } else {
             None
         };
@@ -742,6 +768,105 @@ fn spawn_book_task(
     });
 }
 
+// Real-price feed for the UP token: subscribes to best_bid_ask (custom feature, low
+// latency) AND price_change (always-on, no custom-feature dependency) and merges them.
+// Whichever delivers a quote updates `latest_bba`. This is the source the sampler uses
+// for the poly midpoint and the book best_bid/best_ask — replacing the orderbook channel,
+// whose top-of-book is stuck at the outer ticks for these markets (the 0.5 bug).
+fn spawn_bba_task(
+    clob: ClobWsClient,
+    state: Arc<Mutex<Vec<AssetState>>>,
+    mut slot_rx: watch::Receiver<Vec<Option<(U256, U256, String)>>>,
+) {
+    tokio::spawn(async move {
+        let mut task: Option<tokio::task::JoinHandle<()>> = None;
+
+        loop {
+            if slot_rx.changed().await.is_err() {
+                break;
+            }
+            let tokens = slot_rx.borrow_and_update().clone();
+
+            if let Some(h) = task.take() {
+                h.abort();
+            }
+
+            // UP tokens only — the DN price is recorded as the 1-complement downstream.
+            let mut up_ids: Vec<U256> = Vec::new();
+            let mut map: Vec<(U256, usize)> = Vec::new();
+            for (i, slot) in tokens.iter().enumerate() {
+                if let Some((up, _dn, _)) = slot {
+                    up_ids.push(*up);
+                    map.push((*up, i));
+                }
+            }
+            if up_ids.is_empty() {
+                continue;
+            }
+
+            let clob = clob.clone();
+            let state = Arc::clone(&state);
+            task = Some(tokio::spawn(async move {
+                loop {
+                    match (
+                        clob.subscribe_best_bid_ask(up_ids.clone()),
+                        clob.subscribe_prices(up_ids.clone()),
+                    ) {
+                        (Ok(bba), Ok(pc)) => {
+                            // Unify both feeds into (asset_id, best_bid, best_ask, server_ts_ms).
+                            let bba_u = bba.filter_map(|r| async move {
+                                r.ok()
+                                    .map(|m| (m.asset_id, d2f(&m.best_bid), d2f(&m.best_ask), m.timestamp))
+                            });
+                            let pc_u = pc.flat_map(|r| {
+                                let items: Vec<(U256, f64, f64, i64)> = match r {
+                                    Ok(p) => {
+                                        let ts = p.timestamp;
+                                        p.price_changes
+                                            .into_iter()
+                                            .filter_map(move |e| match (e.best_bid, e.best_ask) {
+                                                (Some(b), Some(a)) => {
+                                                    Some((e.asset_id, d2f(&b), d2f(&a), ts))
+                                                }
+                                                _ => None,
+                                            })
+                                            .collect()
+                                    }
+                                    Err(_) => Vec::new(),
+                                };
+                                futures::stream::iter(items)
+                            });
+
+                            let mut merged =
+                                futures::stream::select(Box::pin(bba_u), Box::pin(pc_u));
+                            while let Some((asset_id, bid, ask, server_ts_ms)) = merged.next().await {
+                                if !bid.is_finite() || !ask.is_finite() || bid <= 0.0 || ask <= 0.0 {
+                                    continue;
+                                }
+                                if let Some(&(_, idx)) = map.iter().find(|(id, _)| *id == asset_id) {
+                                    let received_at_ms = now_ms();
+                                    let mut st = state.lock().unwrap();
+                                    if idx < st.len() {
+                                        st[idx].latest_bba = Some(BbaSample {
+                                            best_bid: bid,
+                                            best_ask: ask,
+                                            server_ts_ms,
+                                            received_at_ms,
+                                        });
+                                    }
+                                }
+                            }
+                            eprintln!("bba/price stream closed, reconnecting…");
+                        }
+                        _ => eprintln!("subscribe best_bid_ask/prices failed, retrying…"),
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }));
+        }
+    });
+}
+
 fn spawn_trade_task(
     clob: ClobWsClient,
     state: Arc<Mutex<Vec<AssetState>>>,
@@ -908,6 +1033,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
         "5m",
     );
     spawn_book_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
+    spawn_bba_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
 
     // ── 15-min Polymarket feed ───────────────────────────────────────────────
@@ -922,6 +1048,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
         "15m",
     );
     spawn_book_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
+    spawn_bba_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m);
 
     // ── Hyperliquid feed ─────────────────────────────────────────────────────
@@ -952,20 +1079,20 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                 let ts = (now_secs_f64() * 5.0).round() / 5.0;
 
                 // Snapshot shared state under brief lock holds.
-                // Tuple: (book, server_ts_ms, received_at_ms, last_trade, slug)
-                let snaps_5m: Vec<Option<(BookUpdate, i64, i64, f64, String)>> = {
+                // Tuple: (book, server_ts_ms, received_at_ms, last_trade, slug, bba)
+                let snaps_5m: Vec<Option<(BookUpdate, i64, i64, f64, String, Option<BbaSample>)>> = {
                     let st = state_5m.lock().unwrap();
                     st.iter()
                         .map(|s| s.latest_book.clone().map(|b| {
-                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone())
+                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone(), s.latest_bba)
                         }))
                         .collect()
                 };
-                let snaps_15m: Vec<Option<(BookUpdate, i64, i64, f64, String)>> = {
+                let snaps_15m: Vec<Option<(BookUpdate, i64, i64, f64, String, Option<BbaSample>)>> = {
                     let st = state_15m.lock().unwrap();
                     st.iter()
                         .map(|s| s.latest_book.clone().map(|b| {
-                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone())
+                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone(), s.latest_bba)
                         }))
                         .collect()
                 };
@@ -973,24 +1100,24 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
 
                 // Write 5m
                 for (i, snap) in snaps_5m.into_iter().enumerate() {
-                    let Some((book, srv_ts, rcv_ts, last_trade, slug)) = snap else { continue };
+                    let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
                     if let Err(e) = writers_5m[i].rotate_if_needed() {
                         eprintln!("[{}] 5m rotate: {e:#}", assets[i]);
                     }
-                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts) {
+                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) {
                         eprintln!("[{}] 5m write: {e:#}", assets[i]);
                     }
                 }
 
                 // Write 15m
                 for (i, snap) in snaps_15m.into_iter().enumerate() {
-                    let Some((book, srv_ts, rcv_ts, last_trade, slug)) = snap else { continue };
+                    let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
                     if let Err(e) = writers_15m[i].rotate_if_needed() {
                         eprintln!("[{}] 15m rotate: {e:#}", assets[i]);
                     }
-                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts) {
+                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) {
                         eprintln!("[{}] 15m write: {e:#}", assets[i]);
                     }
                 }
