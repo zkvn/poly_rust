@@ -3590,7 +3590,6 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]

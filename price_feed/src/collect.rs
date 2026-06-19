@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr as _;
@@ -10,7 +9,7 @@ use arrow::array::{ArrayRef, Float32Builder, Float64Array, Float64Builder, ListB
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::{Duration as ChronoDuration, FixedOffset, TimeZone as _, Utc};
-use futures::{SinkExt as _, StreamExt as _};
+use futures::StreamExt as _;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
@@ -20,7 +19,6 @@ use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
 use polymarket_client_sdk_v2::types::U256;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
-use tokio_tungstenite::tungstenite::Message;
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
@@ -207,14 +205,6 @@ fn book_schema() -> Schema {
         ),
         Field::new("server_ts", DataType::Float64, true),
         Field::new("latency_ms", DataType::Float64, true),
-    ])
-}
-
-fn hl_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("ts", DataType::Float64, false),
-        Field::new("asset", DataType::Utf8, false),
-        Field::new("mid", DataType::Float64, false),
     ])
 }
 
@@ -424,18 +414,6 @@ fn book_row(
     .context("book row")
 }
 
-fn hl_row(schema: &Schema, ts: f64, asset: &str, mid: f64) -> Result<RecordBatch> {
-    RecordBatch::try_new(
-        Arc::new(schema.clone()),
-        vec![
-            Arc::new(Float64Array::from(vec![ts])) as ArrayRef,
-            Arc::new(StringArray::from(vec![asset])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![mid])) as ArrayRef,
-        ],
-    )
-    .context("hl row")
-}
-
 // ── Per-asset poly+book writer pair ──────────────────────────────────────────
 
 struct AssetWriters {
@@ -594,57 +572,6 @@ impl AssetWriters {
     fn finish(self) -> Result<()> {
         self.poly.finish()?;
         self.book.finish()
-    }
-}
-
-// ── Per-asset Hyperliquid writer ──────────────────────────────────────────────
-
-struct HlWriter {
-    asset: String,
-    buf: ParquetBuf,
-    schema: Schema,
-    date: String,
-    raw_dir: PathBuf,
-}
-
-impl HlWriter {
-    fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
-        let date = hkt_date_string();
-        let schema = hl_schema();
-        let path = raw_dir.join(format!("{asset}_hl_{date}.parquet"));
-        eprintln!("[{asset}] opening hl={path:?}");
-        Ok(Self {
-            asset: asset.to_string(),
-            buf: ParquetBuf::open_with_carry(path, schema.clone())?,
-            schema,
-            date,
-            raw_dir: raw_dir.clone(),
-        })
-    }
-
-    fn rotate_if_needed(&mut self) -> Result<()> {
-        let today = hkt_date_string();
-        if today == self.date {
-            return Ok(());
-        }
-        let path = self
-            .raw_dir
-            .join(format!("{}_hl_{today}.parquet", self.asset));
-        let old = std::mem::replace(
-            &mut self.buf,
-            ParquetBuf::open(path, self.schema.clone())?,
-        );
-        old.finish()?;
-        self.date = today;
-        Ok(())
-    }
-
-    fn write_sample(&mut self, ts: f64, mid: f64) -> Result<()> {
-        self.buf.write(hl_row(&self.schema, ts, &self.asset, mid)?)
-    }
-
-    fn finish(self) -> Result<()> {
-        self.buf.finish()
     }
 }
 
@@ -932,72 +859,32 @@ fn spawn_trade_task(
     });
 }
 
-// Hyperliquid allMids WS — returns shared mid-price map updated in background
-fn spawn_hl_task(assets: Vec<String>) -> Arc<Mutex<HashMap<String, f64>>> {
-    let mids: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(HashMap::new()));
-    let mids2 = Arc::clone(&mids);
+// ── Snapshot helper ───────────────────────────────────────────────────────────
 
-    tokio::spawn(async move {
-        loop {
-            match tokio_tungstenite::connect_async("wss://api.hyperliquid.xyz/ws").await {
-                Ok((ws, _)) => {
-                    let (mut write, mut read) = ws.split();
-                    let sub = serde_json::json!({
-                        "method": "subscribe",
-                        "subscription": {"type": "allMids"}
-                    });
-                    if write
-                        .send(Message::Text(sub.to_string().into()))
-                        .await
-                        .is_err()
-                    {
-                        eprintln!("HL subscribe send failed, reconnecting…");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    }
-                    eprintln!("[HL] connected");
-                    while let Some(Ok(msg)) = read.next().await {
-                        if let Message::Text(text) = msg {
-                            if let Ok(val) =
-                                serde_json::from_str::<serde_json::Value>(text.as_str())
-                            {
-                                if val["channel"] == "allMids" {
-                                    if let Some(obj) = val["data"]["mids"].as_object() {
-                                        let mut m = mids2.lock().unwrap();
-                                        for asset in &assets {
-                                            if let Some(v) = obj.get(asset.as_str()) {
-                                                let price = v
-                                                    .as_str()
-                                                    .and_then(|s| s.parse::<f64>().ok())
-                                                    .or_else(|| v.as_f64());
-                                                if let Some(p) = price {
-                                                    m.insert(asset.clone(), p);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    eprintln!("[HL] WS closed, reconnecting…");
-                }
-                Err(e) => eprintln!("[HL] connect error: {e:#}"),
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
+type Snap = Option<(BookUpdate, i64, i64, f64, String, Option<BbaSample>)>;
 
-    mids
+fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
+    let st = state.lock().unwrap();
+    st.iter()
+        .map(|s| {
+            s.latest_book.clone().map(|b| {
+                (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone(), s.latest_bba)
+            })
+        })
+        .collect()
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 pub async fn run(assets: Vec<String>) -> Result<()> {
-    let raw_5m = PathBuf::from("raw");
+    let raw_5m  = PathBuf::from("raw");
     let raw_15m = PathBuf::from("raw_15_mins");
+    let raw_1hr = PathBuf::from("raw_1hr");
+    let raw_4hr = PathBuf::from("raw_4hr");
     fs::create_dir_all(&raw_5m).context("create raw/")?;
     fs::create_dir_all(&raw_15m).context("create raw_15_mins/")?;
+    fs::create_dir_all(&raw_1hr).context("create raw_1hr/")?;
+    fs::create_dir_all(&raw_4hr).context("create raw_4hr/")?;
 
     let http = Arc::new(
         reqwest::Client::builder()
@@ -1015,7 +902,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     let n = assets.len();
 
     eprintln!(
-        "collector starting for: {}  (5m + 15m + HL)",
+        "collector starting for: {}  (5m + 15m + 1hr + 4hr)",
         assets.join(", ")
     );
 
@@ -1024,14 +911,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     // ── 5-min Polymarket feed ────────────────────────────────────────────────
     let state_5m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_5m, slot_rx_5m) = watch::channel(vec![None; n]);
-    spawn_meta_task(
-        assets.clone(),
-        Arc::clone(&state_5m),
-        slot_tx_5m,
-        Arc::clone(&http),
-        300,
-        "5m",
-    );
+    spawn_meta_task(assets.clone(), Arc::clone(&state_5m), slot_tx_5m, Arc::clone(&http), 300, "5m");
     spawn_book_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
     spawn_bba_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
@@ -1039,113 +919,85 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     // ── 15-min Polymarket feed ───────────────────────────────────────────────
     let state_15m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_15m, slot_rx_15m) = watch::channel(vec![None; n]);
-    spawn_meta_task(
-        assets.clone(),
-        Arc::clone(&state_15m),
-        slot_tx_15m,
-        Arc::clone(&http),
-        900,
-        "15m",
-    );
+    spawn_meta_task(assets.clone(), Arc::clone(&state_15m), slot_tx_15m, Arc::clone(&http), 900, "15m");
     spawn_book_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
     spawn_bba_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m);
 
-    // ── Hyperliquid feed ─────────────────────────────────────────────────────
-    let hl_mids = spawn_hl_task(assets.clone());
+    // ── 1-hr Polymarket feed ─────────────────────────────────────────────────
+    let state_1hr = Arc::new(Mutex::new(vec![AssetState::default(); n]));
+    let (slot_tx_1hr, slot_rx_1hr) = watch::channel(vec![None; n]);
+    spawn_meta_task(assets.clone(), Arc::clone(&state_1hr), slot_tx_1hr, Arc::clone(&http), 3600, "1h");
+    spawn_book_task(clob.clone(), Arc::clone(&state_1hr), slot_rx_1hr.clone());
+    spawn_bba_task(clob.clone(), Arc::clone(&state_1hr), slot_rx_1hr.clone());
+    spawn_trade_task(clob.clone(), Arc::clone(&state_1hr), slot_rx_1hr);
+
+    // ── 4-hr Polymarket feed ─────────────────────────────────────────────────
+    let state_4hr = Arc::new(Mutex::new(vec![AssetState::default(); n]));
+    let (slot_tx_4hr, slot_rx_4hr) = watch::channel(vec![None; n]);
+    spawn_meta_task(assets.clone(), Arc::clone(&state_4hr), slot_tx_4hr, Arc::clone(&http), 14400, "4h");
+    spawn_book_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone());
+    spawn_bba_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone());
+    spawn_trade_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr);
 
     // ── Writers ──────────────────────────────────────────────────────────────
-    let mut writers_5m: Vec<AssetWriters> = assets
-        .iter()
-        .map(|a| AssetWriters::new(a, &raw_5m))
-        .collect::<Result<_>>()?;
-    let mut writers_15m: Vec<AssetWriters> = assets
-        .iter()
-        .map(|a| AssetWriters::new(a, &raw_15m))
-        .collect::<Result<_>>()?;
-    let mut hl_writers: Vec<HlWriter> = assets
-        .iter()
-        .map(|a| HlWriter::new(a, &raw_5m))
-        .collect::<Result<_>>()?;
+    let mut writers_5m:  Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_5m)).collect::<Result<_>>()?;
+    let mut writers_15m: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_15m)).collect::<Result<_>>()?;
+    let mut writers_1hr: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_1hr)).collect::<Result<_>>()?;
+    let mut writers_4hr: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_4hr)).collect::<Result<_>>()?;
 
-    // ── Sampler ───────────────────────────────────────────────────────────────
-    let mut ticker = tokio::time::interval(Duration::from_millis(200));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // ── Samplers ──────────────────────────────────────────────────────────────
+    let mut ticker_200ms = tokio::time::interval(Duration::from_millis(200));
+    ticker_200ms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut ticker_1s = tokio::time::interval(Duration::from_secs(1));
+    ticker_1s.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = signal(SignalKind::terminate()).context("sigterm")?;
 
     loop {
         tokio::select! {
-            _ = ticker.tick() => {
+            _ = ticker_200ms.tick() => {
                 let ts = (now_secs_f64() * 5.0).round() / 5.0;
 
-                // Snapshot shared state under brief lock holds.
-                // Tuple: (book, server_ts_ms, received_at_ms, last_trade, slug, bba)
-                let snaps_5m: Vec<Option<(BookUpdate, i64, i64, f64, String, Option<BbaSample>)>> = {
-                    let st = state_5m.lock().unwrap();
-                    st.iter()
-                        .map(|s| s.latest_book.clone().map(|b| {
-                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone(), s.latest_bba)
-                        }))
-                        .collect()
-                };
-                let snaps_15m: Vec<Option<(BookUpdate, i64, i64, f64, String, Option<BbaSample>)>> = {
-                    let st = state_15m.lock().unwrap();
-                    st.iter()
-                        .map(|s| s.latest_book.clone().map(|b| {
-                            (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone(), s.latest_bba)
-                        }))
-                        .collect()
-                };
-                let hl_snap: HashMap<String, f64> = hl_mids.lock().unwrap().clone();
-
-                // Write 5m
-                for (i, snap) in snaps_5m.into_iter().enumerate() {
+                for (i, snap) in snapshot(&state_5m).into_iter().enumerate() {
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_5m[i].rotate_if_needed() {
-                        eprintln!("[{}] 5m rotate: {e:#}", assets[i]);
-                    }
-                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) {
-                        eprintln!("[{}] 5m write: {e:#}", assets[i]);
-                    }
+                    if let Err(e) = writers_5m[i].rotate_if_needed() { eprintln!("[{}] 5m rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 5m write: {e:#}", assets[i]); }
                 }
-
-                // Write 15m
-                for (i, snap) in snaps_15m.into_iter().enumerate() {
+                for (i, snap) in snapshot(&state_15m).into_iter().enumerate() {
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_15m[i].rotate_if_needed() {
-                        eprintln!("[{}] 15m rotate: {e:#}", assets[i]);
-                    }
-                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) {
-                        eprintln!("[{}] 15m write: {e:#}", assets[i]);
-                    }
+                    if let Err(e) = writers_15m[i].rotate_if_needed() { eprintln!("[{}] 15m rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 15m write: {e:#}", assets[i]); }
                 }
+            }
 
-                // Write HL
-                for (i, hw) in hl_writers.iter_mut().enumerate() {
-                    if let Some(&mid) = hl_snap.get(&assets[i]) {
-                        if mid > 0.0 {
-                            if let Err(e) = hw.rotate_if_needed() {
-                                eprintln!("[{}] hl rotate: {e:#}", assets[i]);
-                            }
-                            if let Err(e) = hw.write_sample(ts, mid) {
-                                eprintln!("[{}] hl write: {e:#}", assets[i]);
-                            }
-                        }
-                    }
+            _ = ticker_1s.tick() => {
+                let ts = now_secs() as f64;
+
+                for (i, snap) in snapshot(&state_1hr).into_iter().enumerate() {
+                    let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
+                    if slug.is_empty() { continue; }
+                    if let Err(e) = writers_1hr[i].rotate_if_needed() { eprintln!("[{}] 1hr rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_1hr[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 1hr write: {e:#}", assets[i]); }
+                }
+                for (i, snap) in snapshot(&state_4hr).into_iter().enumerate() {
+                    let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
+                    if slug.is_empty() { continue; }
+                    if let Err(e) = writers_4hr[i].rotate_if_needed() { eprintln!("[{}] 4hr rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_4hr[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 4hr write: {e:#}", assets[i]); }
                 }
             }
 
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nshutting down — flushing writers…");
-                flush_all(writers_5m, writers_15m, hl_writers);
+                flush_all(writers_5m, writers_15m, writers_1hr, writers_4hr);
                 return Ok(());
             }
 
             _ = sigterm.recv() => {
                 eprintln!("SIGTERM — flushing writers…");
-                flush_all(writers_5m, writers_15m, hl_writers);
+                flush_all(writers_5m, writers_15m, writers_1hr, writers_4hr);
                 return Ok(());
             }
         }
@@ -1155,14 +1007,15 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
 fn flush_all(
     writers_5m: Vec<AssetWriters>,
     writers_15m: Vec<AssetWriters>,
-    hl_writers: Vec<HlWriter>,
+    writers_1hr: Vec<AssetWriters>,
+    writers_4hr: Vec<AssetWriters>,
 ) {
-    for w in writers_5m.into_iter().chain(writers_15m) {
-        if let Err(e) = w.finish() {
-            eprintln!("close error: {e:#}");
-        }
-    }
-    for w in hl_writers {
+    for w in writers_5m
+        .into_iter()
+        .chain(writers_15m)
+        .chain(writers_1hr)
+        .chain(writers_4hr)
+    {
         if let Err(e) = w.finish() {
             eprintln!("close error: {e:#}");
         }
