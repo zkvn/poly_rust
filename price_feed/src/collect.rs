@@ -879,11 +879,9 @@ fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
 pub async fn run(assets: Vec<String>) -> Result<()> {
     let raw_5m  = PathBuf::from("raw");
     let raw_15m = PathBuf::from("raw_15_mins");
-    let raw_1hr = PathBuf::from("raw_1hr");
     let raw_4hr = PathBuf::from("raw_4hr");
     fs::create_dir_all(&raw_5m).context("create raw/")?;
     fs::create_dir_all(&raw_15m).context("create raw_15_mins/")?;
-    fs::create_dir_all(&raw_1hr).context("create raw_1hr/")?;
     fs::create_dir_all(&raw_4hr).context("create raw_4hr/")?;
 
     let http = Arc::new(
@@ -902,7 +900,7 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     let n = assets.len();
 
     eprintln!(
-        "collector starting for: {}  (5m + 15m + 1hr + 4hr)",
+        "collector starting for: {}  (5m + 15m + 4hr)",
         assets.join(", ")
     );
 
@@ -924,14 +922,6 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     spawn_bba_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m);
 
-    // ── 1-hr Polymarket feed ─────────────────────────────────────────────────
-    let state_1hr = Arc::new(Mutex::new(vec![AssetState::default(); n]));
-    let (slot_tx_1hr, slot_rx_1hr) = watch::channel(vec![None; n]);
-    spawn_meta_task(assets.clone(), Arc::clone(&state_1hr), slot_tx_1hr, Arc::clone(&http), 3600, "1h");
-    spawn_book_task(clob.clone(), Arc::clone(&state_1hr), slot_rx_1hr.clone());
-    spawn_bba_task(clob.clone(), Arc::clone(&state_1hr), slot_rx_1hr.clone());
-    spawn_trade_task(clob.clone(), Arc::clone(&state_1hr), slot_rx_1hr);
-
     // ── 4-hr Polymarket feed ─────────────────────────────────────────────────
     let state_4hr = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_4hr, slot_rx_4hr) = watch::channel(vec![None; n]);
@@ -943,7 +933,6 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     // ── Writers ──────────────────────────────────────────────────────────────
     let mut writers_5m:  Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_5m)).collect::<Result<_>>()?;
     let mut writers_15m: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_15m)).collect::<Result<_>>()?;
-    let mut writers_1hr: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_1hr)).collect::<Result<_>>()?;
     let mut writers_4hr: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_4hr)).collect::<Result<_>>()?;
 
     // ── Samplers ──────────────────────────────────────────────────────────────
@@ -975,12 +964,6 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
             _ = ticker_1s.tick() => {
                 let ts = now_secs() as f64;
 
-                for (i, snap) in snapshot(&state_1hr).into_iter().enumerate() {
-                    let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
-                    if slug.is_empty() { continue; }
-                    if let Err(e) = writers_1hr[i].rotate_if_needed() { eprintln!("[{}] 1hr rotate: {e:#}", assets[i]); }
-                    if let Err(e) = writers_1hr[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 1hr write: {e:#}", assets[i]); }
-                }
                 for (i, snap) in snapshot(&state_4hr).into_iter().enumerate() {
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
@@ -991,13 +974,13 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
 
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nshutting down — flushing writers…");
-                flush_all(writers_5m, writers_15m, writers_1hr, writers_4hr);
+                flush_all(writers_5m, writers_15m, writers_4hr);
                 return Ok(());
             }
 
             _ = sigterm.recv() => {
                 eprintln!("SIGTERM — flushing writers…");
-                flush_all(writers_5m, writers_15m, writers_1hr, writers_4hr);
+                flush_all(writers_5m, writers_15m, writers_4hr);
                 return Ok(());
             }
         }
@@ -1007,13 +990,11 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
 fn flush_all(
     writers_5m: Vec<AssetWriters>,
     writers_15m: Vec<AssetWriters>,
-    writers_1hr: Vec<AssetWriters>,
     writers_4hr: Vec<AssetWriters>,
 ) {
     for w in writers_5m
         .into_iter()
         .chain(writers_15m)
-        .chain(writers_1hr)
         .chain(writers_4hr)
     {
         if let Err(e) = w.finish() {

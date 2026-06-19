@@ -7,7 +7,7 @@ source "$HOME/.cargo/env" 2>/dev/null || true
 LOG_DIR="log"
 PID_FILE="collector.pid"
 
-mkdir -p "$LOG_DIR" raw raw_15_mins raw_1hr raw_4hr
+mkdir -p "$LOG_DIR" raw raw_15_mins raw_4hr
 
 if [[ -f "$PID_FILE" ]]; then
     OLD_PID=$(cat "$PID_FILE")
