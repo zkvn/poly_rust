@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Sync raw* folders from oracle box (ubuntu@10.8.0.1) to local price_feed/.
+# Skips files already present locally with the same or larger size.
 # Usage: ./sync_oracle.sh          # sync all raw* folders
 #        ./sync_oracle.sh --dry-run # preview only
 
@@ -31,34 +32,58 @@ fi
 
 echo "Connecting to $REMOTE_USER@$REMOTE_HOST ..."
 
-# Get list of remote raw* folder names
 REMOTE_DIRS=$(ssh "$REMOTE_USER@$REMOTE_HOST" \
     "ls -d $REMOTE_BASE/raw*/ 2>/dev/null | xargs -I{} basename {} || true")
 
 if [[ -z "$REMOTE_DIRS" ]]; then
-    echo "No raw* folders found on remote at $REMOTE_BASE."
+    echo "No raw* folders found on remote."
     exit 0
 fi
 
-echo "Remote raw* folders: $(echo "$REMOTE_DIRS" | tr '\n' ' ')"
-echo ""
+TOTAL_COPIED=0
+TOTAL_SKIPPED=0
 
-TOTAL=0
 for dir in $REMOTE_DIRS; do
     local_dst="$LOCAL_BASE/$dir"
+    mkdir -p "$local_dst"
 
-    if [[ $DRY_RUN -eq 1 ]]; then
-        echo "[dry-run] would sync $REMOTE_USER@$REMOTE_HOST:~/apps/poly_rust/price_feed/$dir -> $local_dst/"
+    echo ""
+    echo "==> $dir"
+
+    # Get remote file list: "size filename" per line (cd first so %n is bare filename)
+    remote_files=$(ssh "$REMOTE_USER@$REMOTE_HOST" \
+        "cd $REMOTE_BASE/$dir && stat -c '%s %n' * 2>/dev/null" || true)
+
+    if [[ -z "$remote_files" ]]; then
+        echo "  (empty)"
         continue
     fi
 
-    mkdir -p "$local_dst"
-    echo "Syncing $dir ..."
-    ssh "$REMOTE_USER@$REMOTE_HOST" "cd ~/apps/poly_rust/price_feed && tar czf - $dir" | tar xzf - -C "$LOCAL_BASE" || true
-    TOTAL=$((TOTAL + 1))
+    while IFS= read -r line; do
+        remote_size=$(echo "$line" | awk '{print $1}')
+        fname=$(echo "$line" | awk '{print $2}')
+        local_file="$local_dst/$fname"
+
+        if [[ -f "$local_file" ]]; then
+            local_size=$(stat -c '%s' "$local_file")
+            if [[ "$local_size" -ge "$remote_size" ]]; then
+                TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+                continue
+            fi
+            status="outdated"
+        else
+            status="missing"
+        fi
+
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "  [dry-run] $fname ($status, remote=${remote_size}b)"
+        else
+            echo "  copying $fname ($status) ..."
+            scp -q "$REMOTE_USER@$REMOTE_HOST:$REMOTE_BASE/$dir/$fname" "$local_file"
+            TOTAL_COPIED=$((TOTAL_COPIED + 1))
+        fi
+    done <<< "$remote_files"
 done
 
-if [[ $DRY_RUN -eq 0 ]]; then
-    echo ""
-    echo "Done. Synced $TOTAL folder(s)."
-fi
+echo ""
+echo "Done. Copied $TOTAL_COPIED file(s), skipped $TOTAL_SKIPPED already up-to-date."
