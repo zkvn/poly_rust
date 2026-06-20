@@ -45,17 +45,16 @@ echo ""
 
 TOTAL=0
 for dir in $REMOTE_DIRS; do
-    remote_src="$REMOTE_USER@$REMOTE_HOST:$REMOTE_BASE/$dir/"
     local_dst="$LOCAL_BASE/$dir"
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "[dry-run] would rsync $remote_src -> $local_dst/"
+        echo "[dry-run] would sync $REMOTE_USER@$REMOTE_HOST:~/apps/poly_rust/price_feed/$dir -> $local_dst/"
         continue
     fi
 
     mkdir -p "$local_dst"
     echo "Syncing $dir ..."
-    rsync -avz --progress "$remote_src" "$local_dst/"
+    ssh "$REMOTE_USER@$REMOTE_HOST" "cd ~/apps/poly_rust/price_feed && tar czf - $dir" | tar xzf - -C "$LOCAL_BASE" || true
     TOTAL=$((TOTAL + 1))
 done
 
