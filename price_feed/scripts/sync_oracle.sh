@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sync raw* folders from oracle box (ubuntu@10.8.0.1) to local price_feed/.
-# Skips files already present locally with the same or larger size.
+# Uses rsync: one SSH connection per directory instead of per-file scp.
 # Usage: ./sync_oracle.sh          # sync all raw* folders
 #        ./sync_oracle.sh --dry-run # preview only
 
@@ -11,9 +11,11 @@ REMOTE_HOST="10.8.0.1"
 REMOTE_BASE="~/apps/poly_rust/price_feed"
 LOCAL_BASE="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN=0
+RSYNC_OPTS="-avz"
 
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=1
+    RSYNC_OPTS="$RSYNC_OPTS --dry-run"
     echo "[dry-run] no files will be copied"
 fi
 
@@ -40,50 +42,17 @@ if [[ -z "$REMOTE_DIRS" ]]; then
     exit 0
 fi
 
-TOTAL_COPIED=0
-TOTAL_SKIPPED=0
-
 for dir in $REMOTE_DIRS; do
-    local_dst="$LOCAL_BASE/$dir"
-    mkdir -p "$local_dst"
-
     echo ""
     echo "==> $dir"
 
-    # Get remote file list: "size filename" per line (cd first so %n is bare filename)
-    remote_files=$(ssh "$REMOTE_USER@$REMOTE_HOST" \
-        "cd $REMOTE_BASE/$dir && stat -c '%s %n' * 2>/dev/null" || true)
+    local_dst="$LOCAL_BASE/$dir"
+    mkdir -p "$local_dst"
 
-    if [[ -z "$remote_files" ]]; then
-        echo "  (empty)"
-        continue
-    fi
-
-    while IFS= read -r line; do
-        remote_size=$(echo "$line" | awk '{print $1}')
-        fname=$(echo "$line" | awk '{print $2}')
-        local_file="$local_dst/$fname"
-
-        if [[ -f "$local_file" ]]; then
-            local_size=$(stat -c '%s' "$local_file")
-            if [[ "$local_size" -ge "$remote_size" ]]; then
-                TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
-                continue
-            fi
-            status="outdated"
-        else
-            status="missing"
-        fi
-
-        if [[ $DRY_RUN -eq 1 ]]; then
-            echo "  [dry-run] $fname ($status, remote=${remote_size}b)"
-        else
-            echo "  copying $fname ($status) ..."
-            scp -q "$REMOTE_USER@$REMOTE_HOST:$REMOTE_BASE/$dir/$fname" "$local_file"
-            TOTAL_COPIED=$((TOTAL_COPIED + 1))
-        fi
-    done <<< "$remote_files"
+    rsync $RSYNC_OPTS \
+        "$REMOTE_USER@$REMOTE_HOST:$REMOTE_BASE/$dir/" \
+        "$local_dst/"
 done
 
 echo ""
-echo "Done. Copied $TOTAL_COPIED file(s), skipped $TOTAL_SKIPPED already up-to-date."
+echo "Done."
