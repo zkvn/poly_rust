@@ -19,6 +19,7 @@ use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
 use polymarket_client_sdk_v2::types::U256;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+use tokio_tungstenite::tungstenite::Message;
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
@@ -171,6 +172,16 @@ fn poly_schema() -> Schema {
         Field::new("slug", DataType::Utf8, false),
         Field::new("server_ts", DataType::Float64, true),  // ms; null for carried rows pre-schema
         Field::new("latency_ms", DataType::Float64, true), // receive_ms - server_ts; null for old rows
+    ])
+}
+
+fn binance_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("ts", DataType::Float64, false),
+        Field::new("binance", DataType::Float64, false),
+        Field::new("slug", DataType::Utf8, false),
+        Field::new("server_ts", DataType::Float64, true),  // Binance `E` field (ms)
+        Field::new("latency_ms", DataType::Float64, true), // receive_ms - server_ts
     ])
 }
 
@@ -368,6 +379,27 @@ fn poly_row(
         ],
     )
     .context("poly row")
+}
+
+fn binance_row(
+    schema: &Schema,
+    ts: f64,
+    price: f64,
+    slug: &str,
+    server_ts: Option<f64>,
+    latency_ms: Option<f64>,
+) -> Result<RecordBatch> {
+    RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(Float64Array::from(vec![ts])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![price])) as ArrayRef,
+            Arc::new(StringArray::from(vec![slug])) as ArrayRef,
+            opt_f64_col(server_ts),
+            opt_f64_col(latency_ms),
+        ],
+    )
+    .context("binance row")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,6 +605,113 @@ impl AssetWriters {
         self.poly.finish()?;
         self.book.finish()
     }
+}
+
+// ── Binance state + writer (asset-level, period-independent — one per asset,
+// shared across the 5m/15m/4hr durations, matching Python's single
+// prices/{ASSET}_binance.parquet) ────────────────────────────────────────────
+
+#[derive(Clone, Copy, Default)]
+struct BinanceState {
+    price: f64,
+    server_ts_ms: i64,   // Binance `E` field (event time, ms)
+    received_at_ms: i64, // client-side ms when the WS message was received
+}
+
+struct BinanceWriters {
+    asset: String,
+    buf: ParquetBuf,
+    schema: Schema,
+    date: String,
+    raw_dir: PathBuf,
+}
+
+impl BinanceWriters {
+    fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
+        let date = hkt_date_string();
+        let schema = binance_schema();
+        let path = raw_dir.join(format!("{asset}_binance_{date}.parquet"));
+        eprintln!("[{asset}] opening binance={path:?}");
+        Ok(Self {
+            asset: asset.to_string(),
+            buf: ParquetBuf::open_with_carry(path, schema.clone())?,
+            schema,
+            date,
+            raw_dir: raw_dir.clone(),
+        })
+    }
+
+    fn rotate_if_needed(&mut self) -> Result<()> {
+        let today = hkt_date_string();
+        if today == self.date {
+            return Ok(());
+        }
+        eprintln!("[{}] rotating binance {} → {}", self.asset, self.date, today);
+        let path = self.raw_dir.join(format!("{}_binance_{today}.parquet", self.asset));
+        let old = std::mem::replace(&mut self.buf, ParquetBuf::open(path, self.schema.clone())?);
+        old.finish()?;
+        self.date = today;
+        Ok(())
+    }
+
+    fn write_sample(&mut self, ts: f64, price: f64, slug: &str, server_ts_ms: i64, received_at_ms: i64) -> Result<()> {
+        if price <= 0.0 {
+            return Ok(());
+        }
+        let server_ts = if server_ts_ms > 0 { Some(server_ts_ms as f64) } else { None };
+        let latency_ms = if received_at_ms > 0 && server_ts_ms > 0 {
+            Some((received_at_ms - server_ts_ms) as f64)
+        } else {
+            None
+        };
+        self.buf.write(binance_row(&self.schema, ts, price, slug, server_ts, latency_ms)?)
+    }
+
+    fn finish(self) -> Result<()> {
+        self.buf.finish()
+    }
+}
+
+/// One WS connection to `wss://stream.binance.com:9443/ws/{symbol}@trade` per
+/// asset. Public endpoint, no auth/subscribe handshake. Reconnects with a 2s
+/// backoff on drop. Writes the latest trade price + Binance's own `E` (event
+/// time) into the shared per-asset slot — the 250ms sampler (in `run()`) reads
+/// it, so this task never blocks on file I/O.
+fn spawn_binance_task(asset: String, idx: usize, state: Arc<Mutex<Vec<BinanceState>>>) {
+    let symbol = format!("{}usdt", asset.to_lowercase());
+    tokio::spawn(async move {
+        let url = format!("wss://stream.binance.com:9443/ws/{symbol}@trade");
+        loop {
+            match tokio_tungstenite::connect_async(&url).await {
+                Ok((ws, _)) => {
+                    eprintln!("[{asset}] binance ws connected: {url}");
+                    let (_write, mut read) = ws.split();
+                    while let Some(msg) = read.next().await {
+                        match msg {
+                            Ok(Message::Text(txt)) => {
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                    let price = v["p"].as_str().and_then(|s| s.parse::<f64>().ok());
+                                    if let Some(price) = price {
+                                        let server_ts_ms = v["E"].as_i64().unwrap_or(0);
+                                        let received_at_ms = now_ms();
+                                        let mut st = state.lock().unwrap();
+                                        if idx < st.len() {
+                                            st[idx] = BinanceState { price, server_ts_ms, received_at_ms };
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            _ => {}
+                        }
+                    }
+                    eprintln!("[{asset}] binance ws closed, reconnecting…");
+                }
+                Err(e) => eprintln!("[{asset}] binance connect failed: {e:#}, retrying…"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
 }
 
 // ── Task spawners ─────────────────────────────────────────────────────────────
@@ -876,13 +1015,18 @@ fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
-pub async fn run(assets: Vec<String>) -> Result<()> {
-    let raw_5m  = PathBuf::from("raw");
-    let raw_15m = PathBuf::from("raw_15_mins");
-    let raw_4hr = PathBuf::from("raw_4hr");
-    fs::create_dir_all(&raw_5m).context("create raw/")?;
-    fs::create_dir_all(&raw_15m).context("create raw_15_mins/")?;
-    fs::create_dir_all(&raw_4hr).context("create raw_4hr/")?;
+/// `raw_dir_base` names the 5-min (and binance) directory directly; `_15_mins`
+/// and `_4hr` suffixes are appended for those durations. Lets a second
+/// instance run against a scratch directory (e.g. `raw_new`) alongside the
+/// production collector for parallel-run validation (doc/BINANCE_RECORDER_PLAN.md §6)
+/// without colliding with its output.
+pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result<()> {
+    let raw_5m  = PathBuf::from(raw_dir_base);
+    let raw_15m = PathBuf::from(format!("{raw_dir_base}_15_mins"));
+    let raw_4hr = PathBuf::from(format!("{raw_dir_base}_4hr"));
+    fs::create_dir_all(&raw_5m).with_context(|| format!("create {raw_5m:?}"))?;
+    fs::create_dir_all(&raw_15m).with_context(|| format!("create {raw_15m:?}"))?;
+    fs::create_dir_all(&raw_4hr).with_context(|| format!("create {raw_4hr:?}"))?;
 
     let http = Arc::new(
         reqwest::Client::builder()
@@ -930,6 +1074,15 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     spawn_bba_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr);
 
+    // ── Binance feed (asset-level, period-independent — one WS + one writer
+    // per asset, shared across durations; see BinanceWriters doc comment) ────
+    let binance_state = Arc::new(Mutex::new(vec![BinanceState::default(); n]));
+    for (i, asset) in assets.iter().enumerate() {
+        spawn_binance_task(asset.clone(), i, Arc::clone(&binance_state));
+    }
+    let mut binance_writers: Vec<BinanceWriters> =
+        assets.iter().map(|a| BinanceWriters::new(a, &raw_5m)).collect::<Result<_>>()?;
+
     // ── Writers ──────────────────────────────────────────────────────────────
     let mut writers_5m:  Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_5m)).collect::<Result<_>>()?;
     let mut writers_15m: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_15m)).collect::<Result<_>>()?;
@@ -938,6 +1091,8 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     // ── Samplers ──────────────────────────────────────────────────────────────
     let mut ticker_200ms = tokio::time::interval(Duration::from_millis(200));
     ticker_200ms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut ticker_250ms = tokio::time::interval(Duration::from_millis(250));
+    ticker_250ms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ticker_1s = tokio::time::interval(Duration::from_secs(1));
     ticker_1s.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = signal(SignalKind::terminate()).context("sigterm")?;
@@ -961,6 +1116,22 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                 }
             }
 
+            _ = ticker_250ms.tick() => {
+                let ts = (now_secs_f64() * 4.0).round() / 4.0;
+
+                let samples: Vec<BinanceState> = binance_state.lock().unwrap().clone();
+                let slugs: Vec<String> = state_5m.lock().unwrap().iter().map(|s| s.slug.clone()).collect();
+                for (i, sample) in samples.into_iter().enumerate() {
+                    if sample.price <= 0.0 { continue; }
+                    let slug = slugs.get(i).cloned().unwrap_or_default();
+                    if slug.is_empty() { continue; }
+                    if let Err(e) = binance_writers[i].rotate_if_needed() { eprintln!("[{}] binance rotate: {e:#}", assets[i]); }
+                    if let Err(e) = binance_writers[i].write_sample(ts, sample.price, &slug, sample.server_ts_ms, sample.received_at_ms) {
+                        eprintln!("[{}] binance write: {e:#}", assets[i]);
+                    }
+                }
+            }
+
             _ = ticker_1s.tick() => {
                 let ts = now_secs() as f64;
 
@@ -974,13 +1145,13 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
 
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nshutting down — flushing writers…");
-                flush_all(writers_5m, writers_15m, writers_4hr);
+                flush_all(writers_5m, writers_15m, writers_4hr, binance_writers);
                 return Ok(());
             }
 
             _ = sigterm.recv() => {
                 eprintln!("SIGTERM — flushing writers…");
-                flush_all(writers_5m, writers_15m, writers_4hr);
+                flush_all(writers_5m, writers_15m, writers_4hr, binance_writers);
                 return Ok(());
             }
         }
@@ -991,12 +1162,18 @@ fn flush_all(
     writers_5m: Vec<AssetWriters>,
     writers_15m: Vec<AssetWriters>,
     writers_4hr: Vec<AssetWriters>,
+    binance_writers: Vec<BinanceWriters>,
 ) {
     for w in writers_5m
         .into_iter()
         .chain(writers_15m)
         .chain(writers_4hr)
     {
+        if let Err(e) = w.finish() {
+            eprintln!("close error: {e:#}");
+        }
+    }
+    for w in binance_writers {
         if let Err(e) = w.finish() {
             eprintln!("close error: {e:#}");
         }

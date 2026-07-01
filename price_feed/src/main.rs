@@ -30,6 +30,12 @@ enum Cmd {
         /// Assets to collect; omit to auto-discover from Polymarket (recommended)
         #[arg(num_args = 0..)]
         assets: Vec<String>,
+        /// Base name for the 5-min (and binance) output dir; _15_mins/_4hr
+        /// suffixes are appended for those durations. Use a scratch value
+        /// (e.g. raw_new) to run alongside a production collector without
+        /// colliding with its output.
+        #[arg(long, default_value = "raw")]
+        raw_dir: String,
     },
 }
 
@@ -45,6 +51,6 @@ async fn main() -> anyhow::Result<()> {
                 markets::run(assets, custom_features).await
             }
         }
-        Some(Cmd::Collect { assets }) => collect::run(assets).await,
+        Some(Cmd::Collect { assets, raw_dir }) => collect::run_with_raw_dir(assets, &raw_dir).await,
     }
 }
