@@ -223,6 +223,28 @@ data sanity check); new binance recording behaves exactly as designed (fixed
 deploying to the Oracle collector when ready — that deployment step itself is
 still a separate, deliberate action, not implied by this validation.
 
+### Deployed to production (2026-07-01, 22:12 HKT)
+
+Merged to `main` (cherry-picked the single price_feed commit, not the whole
+branch, to avoid pulling in unrelated in-flight work from `trader-a1`), then
+rolled out via the new `scripts/upgrade_collector.sh`: push → ssh Oracle →
+`git pull` → `cargo build --release` → restart `poly-collector.service`.
+Confirmed healthy post-restart: all assets reconnected (CLOB + Binance),
+poly/book carried forward correctly via the existing restart-safety mechanism,
+binance data flowing at the same measured 4Hz for every asset within ~1-2 min
+of restart (production's larger carry-replay — 21+ hours of accumulated
+book/poly data vs the 30-min local test — delayed the very first flush
+slightly longer than seen locally, but no errors, no crash).
+
+**One finding, not a bug:** production auto-discovers assets from Polymarket
+(the systemd unit runs `price_feed collect` with no asset list), which
+currently includes **HYPE** — Hyperliquid's token, not listed on Binance
+(`HYPEUSDT` → Binance API error `-1121 Invalid symbol`). The WS "connects"
+(the raw stream endpoint doesn't validate the symbol at handshake) but never
+receives messages, so `HYPE_binance_*.parquet` stays empty. Correct behavior
+per the project's Zero-Means-Zero rule — no code change needed, just a data
+availability gap for an asset Binance doesn't list.
+
 ---
 
 ## 7. Decisions (settled)
