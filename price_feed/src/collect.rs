@@ -212,6 +212,7 @@ fn book_schema() -> Schema {
 
 struct ParquetBuf {
     path: PathBuf,
+    schema: Schema,
     writer: ArrowWriter<fs::File>,
     rows_since_flush: usize,
     last_flush: std::time::Instant,
@@ -228,10 +229,11 @@ impl ParquetBuf {
             .truncate(true)
             .open(&path)
             .with_context(|| format!("open {path:?}"))?;
-        let writer = ArrowWriter::try_new(file, Arc::new(schema), Some(props))
+        let writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))
             .context("ArrowWriter")?;
         Ok(Self {
             path,
+            schema,
             writer,
             rows_since_flush: 0,
             last_flush: std::time::Instant::now(),
@@ -305,6 +307,15 @@ impl ParquetBuf {
             .close()
             .with_context(|| format!("close {:?}", self.path))?;
         Ok(())
+    }
+
+    // Write PAR1 footer to make the file valid parquet, then reopen with carry
+    // to continue appending. Called hourly so files are always readable on disk.
+    fn seal(self) -> Result<Self> {
+        let path = self.path.clone();
+        let schema = self.schema.clone();
+        self.writer.close().with_context(|| format!("seal {:?}", path))?;
+        Self::open_with_carry(path, schema)
     }
 }
 
@@ -468,6 +479,23 @@ impl AssetWriters {
         );
         old_book.finish()?;
         self.date = today;
+        Ok(())
+    }
+
+    // Write PAR1 footer to both files and reopen with carry so they are
+    // always readable on disk even if the process crashes or is upgraded.
+    fn seal(&mut self) -> Result<()> {
+        let devnull = PathBuf::from("/dev/null");
+        let old_poly = std::mem::replace(
+            &mut self.poly,
+            ParquetBuf::open(devnull.clone(), self.poly_schema.clone())?,
+        );
+        self.poly = old_poly.seal()?;
+        let old_book = std::mem::replace(
+            &mut self.book,
+            ParquetBuf::open(devnull, self.book_schema.clone())?,
+        );
+        self.book = old_book.seal()?;
         Ok(())
     }
 
@@ -940,6 +968,8 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
     ticker_200ms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ticker_1s = tokio::time::interval(Duration::from_secs(1));
     ticker_1s.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut ticker_1hr = tokio::time::interval(Duration::from_secs(3600));
+    ticker_1hr.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = signal(SignalKind::terminate()).context("sigterm")?;
 
     loop {
@@ -970,6 +1000,14 @@ pub async fn run(assets: Vec<String>) -> Result<()> {
                     if let Err(e) = writers_4hr[i].rotate_if_needed() { eprintln!("[{}] 4hr rotate: {e:#}", assets[i]); }
                     if let Err(e) = writers_4hr[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 4hr write: {e:#}", assets[i]); }
                 }
+            }
+
+            _ = ticker_1hr.tick() => {
+                eprintln!("hourly seal — writing footer to all parquet files …");
+                for w in &mut writers_5m  { if let Err(e) = w.seal() { eprintln!("[{}] 5m seal: {e:#}", w.asset); } }
+                for w in &mut writers_15m { if let Err(e) = w.seal() { eprintln!("[{}] 15m seal: {e:#}", w.asset); } }
+                for w in &mut writers_4hr { if let Err(e) = w.seal() { eprintln!("[{}] 4hr seal: {e:#}", w.asset); } }
+                eprintln!("hourly seal done");
             }
 
             _ = tokio::signal::ctrl_c() => {
