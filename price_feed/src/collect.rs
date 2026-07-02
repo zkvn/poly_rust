@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use arrow::array::{ArrayRef, Float32Builder, Float64Array, Float64Builder, ListBuilder, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use chrono::{Duration as ChronoDuration, FixedOffset, TimeZone as _, Utc};
+use chrono::{Duration as ChronoDuration, FixedOffset, Utc};
 use futures::StreamExt as _;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -47,8 +47,9 @@ fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
     format!("{}-updown-{}-{}", asset.to_lowercase(), suffix, slot)
 }
 
-fn hkt_date_string() -> String {
-    Utc::now().with_timezone(&hkt()).format("%Y-%m-%d").to_string()
+// One sealed file per (asset, type, hour) instead of per day — see `ParquetBuf::seal_and_rename`.
+fn hkt_hour_string() -> String {
+    Utc::now().with_timezone(&hkt()).format("%Y-%m-%d_%H").to_string()
 }
 
 // ── Shared per-asset state ────────────────────────────────────────────────────
@@ -317,6 +318,84 @@ impl ParquetBuf {
             .with_context(|| format!("close {:?}", self.path))?;
         Ok(())
     }
+
+    // Close the writer (writes the PAR1 footer to the .tmp path) then atomically
+    // rename it to `final_path`. O(1) — no re-read/re-encode of existing rows,
+    // unlike the old carry-based reseal. Called on every hour boundary and on
+    // graceful shutdown, so files on disk are always either a complete sealed
+    // `.parquet` or an in-progress `.parquet.tmp` (excluded from rsync).
+    fn seal_and_rename(self, final_path: &Path) -> Result<()> {
+        let tmp_path = self.path.clone();
+        self.writer
+            .close()
+            .with_context(|| format!("seal {tmp_path:?}"))?;
+        fs::rename(&tmp_path, final_path)
+            .with_context(|| format!("rename {tmp_path:?} -> {final_path:?}"))?;
+        Ok(())
+    }
+}
+
+// Scan `raw_dir` for `.parquet.tmp` files left behind by a crash in a now-stale hour
+// (i.e. not matching `current_hour_key`) and seal them: read whatever rows they hold
+// via the existing carry path, write a fresh properly-closed file at the final name,
+// then remove the orphaned .tmp. Bounded by at most one hour's worth of rows — unlike
+// the old full-day reseal, this only runs once at startup, not every hour.
+fn seal_orphaned_tmp(raw_dir: &Path, current_hour_key: &str) -> Result<()> {
+    let entries = match fs::read_dir(raw_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.ends_with(".parquet.tmp") || name.contains(current_hour_key) {
+            continue;
+        }
+        let schema = if name.contains("_poly_") {
+            poly_schema()
+        } else if name.contains("_book_") {
+            book_schema()
+        } else if name.contains("_binance_") {
+            binance_schema()
+        } else {
+            continue;
+        };
+        let final_name = &name[..name.len() - 4]; // strip ".tmp"
+        let final_path = raw_dir.join(final_name);
+        if final_path.exists() {
+            eprintln!("startup: {final_name} already sealed, leaving orphaned {name} for manual review");
+            continue;
+        }
+        eprintln!("startup: recovering orphaned {name} -> {final_name}");
+        let Some(batches) = ParquetBuf::try_carry(&path, &schema) else {
+            eprintln!("  [{name}] no recoverable rows, leaving orphaned tmp in place");
+            continue;
+        };
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        match ParquetBuf::open(final_path.clone(), schema) {
+            Ok(mut buf) => {
+                let mut ok = true;
+                for batch in batches {
+                    if let Err(e) = buf.writer.write(&batch) {
+                        eprintln!("  [{name}] write failed: {e:#}");
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    match buf.finish() {
+                        Ok(()) => {
+                            let _ = fs::remove_file(&path);
+                            eprintln!("  [{name}] recovered {rows} rows -> {final_name}");
+                        }
+                        Err(e) => eprintln!("  [{name}] close failed: {e:#}"),
+                    }
+                }
+            }
+            Err(e) => eprintln!("  [{name}] open failed: {e:#}"),
+        }
+    }
+    Ok(())
 }
 
 // Pad an old RecordBatch to a wider schema by filling missing Float64 columns with nulls.
@@ -454,52 +533,49 @@ struct AssetWriters {
     book: ParquetBuf,
     poly_schema: Schema,
     book_schema: Schema,
-    date: String,
+    hour_key: String, // "2026-07-02_14" — sealed file is {asset}_{type}_{hour_key}.parquet
     raw_dir: PathBuf,
 }
 
 impl AssetWriters {
     fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
-        let date = hkt_date_string();
+        let hour_key = hkt_hour_string();
         let ps = poly_schema();
         let bs = book_schema();
-        let poly_path = raw_dir.join(format!("{asset}_poly_{date}.parquet"));
-        let book_path = raw_dir.join(format!("{asset}_book_{date}.parquet"));
-        eprintln!("[{asset}] opening poly={poly_path:?} book={book_path:?}");
+        let poly_tmp = raw_dir.join(format!("{asset}_poly_{hour_key}.parquet.tmp"));
+        let book_tmp = raw_dir.join(format!("{asset}_book_{hour_key}.parquet.tmp"));
+        eprintln!("[{asset}] opening poly={poly_tmp:?} book={book_tmp:?}");
         Ok(Self {
             asset: asset.to_string(),
-            poly: ParquetBuf::open_with_carry(poly_path, ps.clone())?,
-            book: ParquetBuf::open_with_carry(book_path, bs.clone())?,
+            poly: ParquetBuf::open_with_carry(poly_tmp, ps.clone())?,
+            book: ParquetBuf::open_with_carry(book_tmp, bs.clone())?,
             poly_schema: ps,
             book_schema: bs,
-            date,
+            hour_key,
             raw_dir: raw_dir.clone(),
         })
     }
 
-    fn rotate_if_needed(&mut self) -> Result<()> {
-        let today = hkt_date_string();
-        if today == self.date {
+    // Seal both files when the wall-clock hour advances: close (writes the PAR1
+    // footer) + atomic rename to the final name, then open a fresh .tmp for the
+    // new hour. O(1) — no re-read of prior rows, unlike the old carry-based
+    // reseal that reprocessed the whole day every hour.
+    fn seal_if_hour_changed(&mut self) -> Result<()> {
+        let current_hour = hkt_hour_string();
+        if current_hour == self.hour_key {
             return Ok(());
         }
-        eprintln!("[{}] rotating {} → {}", self.asset, self.date, today);
-        let poly_path = self
-            .raw_dir
-            .join(format!("{}_poly_{today}.parquet", self.asset));
-        let book_path = self
-            .raw_dir
-            .join(format!("{}_book_{today}.parquet", self.asset));
-        let old_poly = std::mem::replace(
-            &mut self.poly,
-            ParquetBuf::open(poly_path, self.poly_schema.clone())?,
-        );
-        old_poly.finish()?;
-        let old_book = std::mem::replace(
-            &mut self.book,
-            ParquetBuf::open(book_path, self.book_schema.clone())?,
-        );
-        old_book.finish()?;
-        self.date = today;
+        eprintln!("[{}] sealing hour {} → {}", self.asset, self.hour_key, current_hour);
+        let poly_final = self.raw_dir.join(format!("{}_poly_{}.parquet", self.asset, self.hour_key));
+        let book_final = self.raw_dir.join(format!("{}_book_{}.parquet", self.asset, self.hour_key));
+        let poly_tmp = self.raw_dir.join(format!("{}_poly_{current_hour}.parquet.tmp", self.asset));
+        let book_tmp = self.raw_dir.join(format!("{}_book_{current_hour}.parquet.tmp", self.asset));
+
+        let old_poly = std::mem::replace(&mut self.poly, ParquetBuf::open(poly_tmp, self.poly_schema.clone())?);
+        old_poly.seal_and_rename(&poly_final)?;
+        let old_book = std::mem::replace(&mut self.book, ParquetBuf::open(book_tmp, self.book_schema.clone())?);
+        old_book.seal_and_rename(&book_final)?;
+        self.hour_key = current_hour;
         Ok(())
     }
 
@@ -601,9 +677,13 @@ impl AssetWriters {
         Ok(())
     }
 
+    // Seal the in-progress hour on shutdown too — otherwise the final partial
+    // hour stays as a footerless .tmp forever, never becoming a real .parquet.
     fn finish(self) -> Result<()> {
-        self.poly.finish()?;
-        self.book.finish()
+        let poly_final = self.raw_dir.join(format!("{}_poly_{}.parquet", self.asset, self.hour_key));
+        let book_final = self.raw_dir.join(format!("{}_book_{}.parquet", self.asset, self.hour_key));
+        self.poly.seal_and_rename(&poly_final)?;
+        self.book.seal_and_rename(&book_final)
     }
 }
 
@@ -622,35 +702,36 @@ struct BinanceWriters {
     asset: String,
     buf: ParquetBuf,
     schema: Schema,
-    date: String,
+    hour_key: String,
     raw_dir: PathBuf,
 }
 
 impl BinanceWriters {
     fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
-        let date = hkt_date_string();
+        let hour_key = hkt_hour_string();
         let schema = binance_schema();
-        let path = raw_dir.join(format!("{asset}_binance_{date}.parquet"));
-        eprintln!("[{asset}] opening binance={path:?}");
+        let tmp = raw_dir.join(format!("{asset}_binance_{hour_key}.parquet.tmp"));
+        eprintln!("[{asset}] opening binance={tmp:?}");
         Ok(Self {
             asset: asset.to_string(),
-            buf: ParquetBuf::open_with_carry(path, schema.clone())?,
+            buf: ParquetBuf::open_with_carry(tmp, schema.clone())?,
             schema,
-            date,
+            hour_key,
             raw_dir: raw_dir.clone(),
         })
     }
 
-    fn rotate_if_needed(&mut self) -> Result<()> {
-        let today = hkt_date_string();
-        if today == self.date {
+    fn seal_if_hour_changed(&mut self) -> Result<()> {
+        let current_hour = hkt_hour_string();
+        if current_hour == self.hour_key {
             return Ok(());
         }
-        eprintln!("[{}] rotating binance {} → {}", self.asset, self.date, today);
-        let path = self.raw_dir.join(format!("{}_binance_{today}.parquet", self.asset));
-        let old = std::mem::replace(&mut self.buf, ParquetBuf::open(path, self.schema.clone())?);
-        old.finish()?;
-        self.date = today;
+        eprintln!("[{}] sealing binance hour {} → {}", self.asset, self.hour_key, current_hour);
+        let final_path = self.raw_dir.join(format!("{}_binance_{}.parquet", self.asset, self.hour_key));
+        let tmp = self.raw_dir.join(format!("{}_binance_{current_hour}.parquet.tmp", self.asset));
+        let old = std::mem::replace(&mut self.buf, ParquetBuf::open(tmp, self.schema.clone())?);
+        old.seal_and_rename(&final_path)?;
+        self.hour_key = current_hour;
         Ok(())
     }
 
@@ -668,7 +749,8 @@ impl BinanceWriters {
     }
 
     fn finish(self) -> Result<()> {
-        self.buf.finish()
+        let final_path = self.raw_dir.join(format!("{}_binance_{}.parquet", self.asset, self.hour_key));
+        self.buf.seal_and_rename(&final_path)
     }
 }
 
@@ -1028,6 +1110,13 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
     fs::create_dir_all(&raw_15m).with_context(|| format!("create {raw_15m:?}"))?;
     fs::create_dir_all(&raw_4hr).with_context(|| format!("create {raw_4hr:?}"))?;
 
+    // Recover any .tmp files orphaned by a crash in a now-stale hour before opening
+    // this run's writers (which only carry-recover the *current* hour's .tmp, if any).
+    let startup_hour = hkt_hour_string();
+    seal_orphaned_tmp(&raw_5m, &startup_hour)?;
+    seal_orphaned_tmp(&raw_15m, &startup_hour)?;
+    seal_orphaned_tmp(&raw_4hr, &startup_hour)?;
+
     let http = Arc::new(
         reqwest::Client::builder()
             .user_agent("Mozilla/5.0")
@@ -1105,13 +1194,13 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
                 for (i, snap) in snapshot(&state_5m).into_iter().enumerate() {
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_5m[i].rotate_if_needed() { eprintln!("[{}] 5m rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_5m[i].seal_if_hour_changed() { eprintln!("[{}] 5m seal: {e:#}", assets[i]); }
                     if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 5m write: {e:#}", assets[i]); }
                 }
                 for (i, snap) in snapshot(&state_15m).into_iter().enumerate() {
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_15m[i].rotate_if_needed() { eprintln!("[{}] 15m rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_15m[i].seal_if_hour_changed() { eprintln!("[{}] 15m seal: {e:#}", assets[i]); }
                     if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 15m write: {e:#}", assets[i]); }
                 }
             }
@@ -1125,7 +1214,7 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
                     if sample.price <= 0.0 { continue; }
                     let slug = slugs.get(i).cloned().unwrap_or_default();
                     if slug.is_empty() { continue; }
-                    if let Err(e) = binance_writers[i].rotate_if_needed() { eprintln!("[{}] binance rotate: {e:#}", assets[i]); }
+                    if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if let Err(e) = binance_writers[i].write_sample(ts, sample.price, &slug, sample.server_ts_ms, sample.received_at_ms) {
                         eprintln!("[{}] binance write: {e:#}", assets[i]);
                     }
@@ -1138,7 +1227,7 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
                 for (i, snap) in snapshot(&state_4hr).into_iter().enumerate() {
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_4hr[i].rotate_if_needed() { eprintln!("[{}] 4hr rotate: {e:#}", assets[i]); }
+                    if let Err(e) = writers_4hr[i].seal_if_hour_changed() { eprintln!("[{}] 4hr seal: {e:#}", assets[i]); }
                     if let Err(e) = writers_4hr[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 4hr write: {e:#}", assets[i]); }
                 }
             }

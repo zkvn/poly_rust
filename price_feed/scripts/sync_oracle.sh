@@ -11,7 +11,9 @@ REMOTE_HOST="10.8.0.1"
 REMOTE_BASE="~/apps/poly_rust/price_feed"
 LOCAL_BASE="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN=0
-RSYNC_OPTS="-avz"
+# Exclude .tmp — the collector's in-progress hour, footerless until sealed. Sealed
+# hourly files (the final .parquet name) are always safe to sync.
+RSYNC_OPTS="-avz --exclude=*.tmp"
 
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=1
