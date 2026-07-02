@@ -96,6 +96,10 @@ install required. Build takes ~45 s when dependencies are cached (first run ~5 m
 **Do not build on Oracle with `cargo build`** — it saturates the box's CPU for several minutes and
 blocks the live collector.
 
+`trader/` follows the same cross-compile-locally-with-`cross`, never-build-on-Oracle pattern, plus
+a separate same-arch Docker image for local testing against production before deploying — see
+`trader/plan_rust_module.md` → "Build and deploy".
+
 ### Restart collector after deploy
 
 The collector handles `SIGTERM` cleanly (flushes + closes all parquet writers before exit):

@@ -9,18 +9,23 @@
 // here, not because it's unimplemented).
 
 use std::str::FromStr as _;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use polymarket_client_sdk_v2::types::{Address, U256};
 use tokio::sync::mpsc;
 
+use trader::balance::{seconds_until_next_check, BalanceGuard};
 use trader::execution::{
     local_signer_from_key, signature_type_from_env, ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus,
 };
-use trader::marketdata::{clob_client, current_slot, fetch_meta, http_client, make_slug, spawn_binance_task, PolySub};
+use trader::marketdata::{clob_client, current_slot, fetch_meta, http_client, make_slug, now_secs_f64, spawn_binance_task, PolySub};
+use trader::telegram::commands::{parse_command, Command};
+use trader::telegram::render::HELP_TEXT;
+use trader::telegram::{AuthConfig, TelegramBot};
 use trader::types::{CycleContext, Outcome, Side, TradeRecord};
-use trader::worker::{Action, CloseReason, ControlEvent, Event, Worker};
+use trader::worker::{Action, BalanceEvent, CloseReason, ControlEvent, Event, Worker};
 
 const DEFAULT_FUND_ADDRESS: &str = "0x9FC2A777C26CCA2C218D8E7BBC340D14058CC13A";
 // NOTE: clob-v2.polymarket.com 301-redirects POST /order to clob.polymarket.com,
@@ -98,9 +103,87 @@ struct Driver<'a> {
     log_path: String,
     state_file: String,
     trades_completed: u32,
+    telegram: Option<Arc<TelegramBot>>,
+    wins: u32,
+    losses: u32,
+    stoplosses: u32,
+    unwinds: u32,
+    total_pnl: f64,
+    last_trade: Option<String>,
 }
 
 impl Driver<'_> {
+    async fn notify(&self, text: &str) {
+        if let Some(bot) = &self.telegram {
+            if let Err(e) = bot.send(text).await {
+                eprintln!("[telegram] send error: {e:#}");
+            }
+        }
+    }
+
+    /// Full `/status` reply: balance+time header, trade-assets (strategy
+    /// settings), markets (live prices + delta), and session PnL. This driver
+    /// is single-(asset,strategy), so each section has exactly one row today —
+    /// shaped so a future multi-asset driver can append more rows per section.
+    async fn render_status(
+        &self,
+        worker: &Worker,
+        params: &trader::config::AssetParams,
+        last_binance: f64,
+        last_poly_up: f64,
+        last_poly_dn: f64,
+        current_slug: &Option<String>,
+        time_left: Option<f64>,
+    ) -> String {
+        let now = chrono::Local::now().format("%H:%M:%S");
+        let balance = match self.engine.fetch_balance().await {
+            Some(b) => format!("${b:.4}"),
+            None => "n/a (fetch failed)".to_string(),
+        };
+        let mut sections = vec![format!("📊 <b>STATUS</b>  ({now})\nBalance: {balance}")];
+
+        let halted = worker.is_halted();
+        let light = if halted { "🟡 halted" } else { "🟢 active" };
+        let (sl, delta_gate, halt_n) = if worker.strategy_name == "high_prob" {
+            (params.sl_high_prob, params.delta_pct_hp, params.halt_prob)
+        } else {
+            (params.sl_reversal, params.delta_pct_rev, params.halt_rev)
+        };
+        sections.push(format!(
+            "<b>TRADE ASSETS</b>\n  {light}  {}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  halt_after={halt_n}L  unwind_pnl={:.4}  sl_pnl={:.4}  size=${:.2}",
+            worker.asset, worker.strategy_name, params.unwind_pnl, params.sl_pnl, params.trade_size_usdc
+        ));
+
+        let mkt = match current_slug {
+            Some(slug) => {
+                let tl = time_left.map(|t| format!("  T-{t:.0}s")).unwrap_or_default();
+                format!(
+                    "<b>MARKETS</b>  ({now}){tl}\n  {}  binance=${last_binance:.5}  UP={last_poly_up:.4}  DN={last_poly_dn:.4}  Δ={:.5}\n  slug={slug}",
+                    worker.asset, worker.delta_pct()
+                )
+            }
+            None => "<b>MARKETS</b>\n  no active cycle yet".to_string(),
+        };
+        sections.push(mkt);
+
+        let sign = if self.total_pnl >= 0.0 { "+" } else { "" };
+        let mut pnl_lines = vec![format!(
+            "  Session: {}W/{}L/{}SL/{}UW  {sign}${:.4}",
+            self.wins, self.losses, self.stoplosses, self.unwinds, self.total_pnl
+        )];
+        pnl_lines.push(format!("  {}", worker.asset));
+        pnl_lines.push(format!(
+            "    {:<10} {sign}${:.4}  {}W/{}L/{}SL/{}UW",
+            worker.strategy_name, self.total_pnl, self.wins, self.losses, self.stoplosses, self.unwinds
+        ));
+        if let Some(last) = &self.last_trade {
+            pnl_lines.push(format!("  Last: {last}"));
+        }
+        sections.push(format!("<b>PNL</b>\n{}", pnl_lines.join("\n")));
+
+        sections.join("\n\n")
+    }
+
     /// Execute one `Action` against the live engine; returns the follow-up
     /// `Event` (if any) to feed back into `worker.step`.
     async fn execute(&mut self, action: &Action) -> Option<Event> {
@@ -174,6 +257,22 @@ impl Driver<'_> {
                         if matches!(rec.outcome, Outcome::Win | Outcome::Loss | Outcome::StopLoss | Outcome::Unwind) {
                             self.trades_completed += 1;
                         }
+                        match rec.outcome {
+                            Outcome::Win => self.wins += 1,
+                            Outcome::Loss => self.losses += 1,
+                            Outcome::StopLoss => self.stoplosses += 1,
+                            Outcome::Unwind => self.unwinds += 1,
+                        }
+                        self.total_pnl += rec.pnl;
+                        let summary = format!(
+                            "{} {} {} pnl={:.4}",
+                            trader::marketdata::now_secs_f64() as u64,
+                            rec.side.as_str(),
+                            rec.outcome.as_str(),
+                            rec.pnl
+                        );
+                        self.last_trade = Some(summary.clone());
+                        self.notify(&format!("💰 <b>{}</b> {summary}", worker.asset)).await;
                     }
                     _ => {
                         if let Some(followup) = self.execute(action).await {
@@ -230,8 +329,56 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Telegram control plane (optional — runs without it if unconfigured, same
+    // as the discovery-mode fallback in telegram/mod.rs::AuthConfig).
+    let telegram_auth = match (std::env::var("TELEGRAM_BOT_TOKEN"), std::env::var("TELEGRAM_CHAT_ID")) {
+        (Ok(token), Ok(raw_chat_id)) => {
+            let chat_id: i64 = raw_chat_id.parse().context("TELEGRAM_CHAT_ID must be an integer")?;
+            println!("[live] Telegram control enabled (chat_id={chat_id}).");
+            Some(AuthConfig { token, chat_id, user_id: 0 })
+        }
+        _ => {
+            println!("[live] TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set — Telegram control disabled.");
+            None
+        }
+    };
+    let telegram_send: Option<Arc<TelegramBot>> = match &telegram_auth {
+        Some(auth) => Some(Arc::new(TelegramBot::new(auth.clone())?)),
+        None => None,
+    };
+    let (telegram_tx, mut telegram_rx) = mpsc::unbounded_channel::<String>();
+    if let Some(auth) = &telegram_auth {
+        let mut poll_bot = TelegramBot::new(auth.clone())?;
+        let tx = telegram_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match poll_bot.poll_once().await {
+                    Ok(messages) => {
+                        for m in messages {
+                            if tx.send(m.text).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[telegram] poll error: {e:#}");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+    }
+
     let engine =
         LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, LiveConfig::default()).await?;
+    if let Some(bot) = &telegram_send {
+        let _ = bot
+            .send(&format!(
+                "🟢 <b>{}</b> live driver started (strategy={}, size=${:.2}, max_trades={})",
+                args.asset, args.strategy, args.size_usdc, args.max_trades
+            ))
+            .await;
+    }
     let mut driver = Driver {
         engine: &engine,
         up_id: U256::from(0u64),
@@ -241,7 +388,17 @@ async fn main() -> Result<()> {
         log_path: args.log.clone(),
         state_file: args.state_file.clone(),
         trades_completed: 0,
+        telegram: telegram_send.clone(),
+        wins: 0,
+        losses: 0,
+        stoplosses: 0,
+        unwinds: 0,
+        total_pnl: 0.0,
+        last_trade: None,
     };
+    let balance_guard = BalanceGuard::new();
+    let mut balance_deadline =
+        tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
 
     let (binance_tx, mut binance_rx) = mpsc::unbounded_channel();
     spawn_binance_task(&args.asset, binance_tx);
@@ -265,6 +422,7 @@ async fn main() -> Result<()> {
     loop {
         if driver.trades_completed >= args.max_trades {
             println!("[live] max_trades ({}) reached — shutting down cleanly.", args.max_trades);
+            driver.notify(&format!("🏁 <b>{}</b> max_trades ({}) reached — shut down.", args.asset, args.max_trades)).await;
             return Ok(());
         }
 
@@ -325,7 +483,53 @@ async fn main() -> Result<()> {
             _ = tokio::signal::ctrl_c() => {
                 println!("[live] shutting down (SIGINT).");
                 worker.step(Event::Control(ControlEvent::Halt));
+                driver.notify(&format!("🔴 <b>{}</b> live driver shutting down (SIGINT).", args.asset)).await;
                 return Ok(());
+            }
+
+            Some(text) = telegram_rx.recv() => {
+                let Some(cmd) = parse_command(&text) else { continue };
+                let asset_matches = |asset: &str| asset.is_empty() || asset.eq_ignore_ascii_case(&args.asset);
+                let reply = match cmd {
+                    Command::Status => {
+                        let time_left = current_slug.as_ref().map(|_| {
+                            current_slot_val as f64 + args.period_secs as f64 - now_secs_f64()
+                        });
+                        Some(driver.render_status(&worker, &params, last_binance, last_poly_up, last_poly_dn, &current_slug, time_left).await)
+                    }
+                    Command::Help => Some(HELP_TEXT.to_string()),
+                    Command::Halt { asset } if asset_matches(&asset) => {
+                        worker.step(Event::Control(ControlEvent::Halt));
+                        Some(format!("🛑 Halted {} — new entries suppressed, open positions still managed.", args.asset))
+                    }
+                    Command::Resume { asset } if asset_matches(&asset) => {
+                        worker.step(Event::Control(ControlEvent::Resume));
+                        balance_guard.reset_baseline();
+                        Some(format!("▶️ Resumed {}.", args.asset))
+                    }
+                    Command::Halt { asset } | Command::Resume { asset } => {
+                        Some(format!("this driver only trades {} — {asset} is not managed here.", args.asset))
+                    }
+                    Command::Invalid(msg) => Some(msg),
+                    _ => Some("not supported by this single-asset Rust live driver yet.".to_string()),
+                };
+                if let Some(text) = reply {
+                    driver.notify(&text).await;
+                }
+            }
+
+            _ = tokio::time::sleep_until(balance_deadline) => {
+                let bal = driver.engine.fetch_balance().await;
+                if balance_guard.check(bal) {
+                    println!("[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries.");
+                    worker.step(Event::Balance(BalanceEvent::DrawdownHalt));
+                    driver.notify(&format!(
+                        "🛑 <b>{}</b> balance drawdown >25% from session baseline — halted new entries. Send /resume to re-arm.",
+                        args.asset
+                    )).await;
+                }
+                balance_deadline = tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
             }
         }
     }

@@ -1094,6 +1094,72 @@ changes** if the abstraction is in from A1.
 
 ---
 
+## 17. Build and deploy
+
+Two separate Docker uses — don't conflate them:
+
+### Local test image (`trader/Dockerfile`) — same arch as the dev host
+
+Validates the live driver end-to-end (balance fetch, Telegram control/`/status`,
+market feeds) against **production** Polymarket before anything touches Oracle.
+Builds natively for the dev host's arch (x86-64), so it's fast, but it does
+**not** produce a binary that runs on Oracle (aarch64) — order placement from
+this container still hits the same geoblock as running natively on the dev
+host (expected; see below), which is fine since this image is for testing
+balance/Telegram/market-data paths, not for placing real orders.
+
+```bash
+cd trader
+docker build -t trader-live:local .
+docker run -d --name trader-live-test \
+  -v "$(pwd)/.env:/app/.env:ro" \
+  -v /home/kev/apps/btc_5mins/config:/app/config:ro \
+  -v "$(pwd)/live_logs:/app/logs" \
+  trader-live:local \
+  --asset DOGE --size-usdc 1.0 --max-trades 1 \
+  --env-file /app/.env --config-dir /app/config \
+  --log /app/logs/live_trades_doge_docker.csv --state-file /app/logs/live_state_doge_docker.json
+docker logs -f trader-live-test
+```
+
+### Oracle deploy — cross-compile locally with `cross`, never build on Oracle
+
+Oracle (`10.8.0.1`) is aarch64; the dev machine is x86-64. Same pattern
+`price_feed` already uses (see repo-root `README.md` → "Build and deploy"):
+
+```bash
+cd trader
+cargo install cross   # one-time
+cross build --release --bin live --target aarch64-unknown-linux-gnu
+rsync -avz target/aarch64-unknown-linux-gnu/release/live \
+  ubuntu@10.8.0.1:/home/ubuntu/apps/poly_rust/trader/target/release/
+```
+
+`cross` runs the build in a Docker container (`ghcr.io/cross-rs/aarch64-unknown-linux-gnu`)
+**on the dev machine** — no system linker install needed, and Oracle's own CPU
+is never used for compilation. **Do not run `cargo build` on Oracle directly**
+— same reasoning as `price_feed`: it saturates the box for minutes and risks
+interfering with whatever's already running there (e.g. the Python bot).
+
+### Geoblock — order placement needs the EC2 proxy, on *both* Oracle and the dev machine
+
+Found 2026-07-02: Polymarket's CLOB geoblocks `POST /order` (403 Forbidden,
+`"Trading restricted in your region"`) from **both** Oracle (HK) and this dev
+machine's normal internet egress — not just Oracle as originally assumed. GET
+requests (balance, market data) are unaffected everywhere. The existing fix
+(`CLOB_PROXY_URL` → EC2's `gost-proxy` at `10.8.0.7:8888`, read by
+`execution.rs`/`bin/live.rs`/`bin/api_probe.rs` and turned into `HTTPS_PROXY`)
+only works from hosts that can actually reach `10.8.0.7:8888` — currently just
+Oracle, which is a peer on EC2's `wg1` WireGuard subnet. **The dev machine is
+not a `wg1` peer**, so setting `CLOB_PROXY_URL` locally does nothing without
+first adding it as a peer (a WireGuard config change — do not make this change
+without the user's explicit go-ahead, see `feedback_vpn_network` memory).
+Until/unless that's set up, real order placement only works when the binary
+actually runs **on Oracle**, with `CLOB_PROXY_URL=http://10.8.0.7:8888` set in
+its env file.
+
+---
+
 ## Sources (paper-trading / API validation, §12 Track B)
 
 - Polymarket CLOB developer docs (no sandbox; mainnet-only CLOB):

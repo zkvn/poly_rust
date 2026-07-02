@@ -250,6 +250,12 @@ impl Worker {
         matches!(self.state, WorkerState::Entering | WorkerState::Holding(_) | WorkerState::Unwinding(_) | WorkerState::StopExiting(_))
     }
 
+    /// Current `(latest_binance - cycle_open) / cycle_open` — the live reading
+    /// of the same gate signal `check_gates` uses, for status display.
+    pub fn delta_pct(&self) -> f64 {
+        self.delta_pct.value()
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     pub fn to_persisted(&self) -> PersistedState {

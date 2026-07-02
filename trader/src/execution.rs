@@ -193,6 +193,21 @@ impl<S: Signer + Clone + Send + Sync + 'static> LiveExecutionEngine<S> {
             .await?;
         Ok(Self { client, signer, cfg })
     }
+
+    /// USDC (collateral) balance for the funder wallet, for `BalanceGuard`.
+    /// `None` on any error — the caller treats that as fail-open, matching
+    /// `bot/trading.py`'s `_fetch_balance`.
+    pub async fn fetch_balance(&self) -> Option<f64> {
+        use polymarket_client_sdk_v2::clob::types::AssetType;
+        use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
+        let resp = self
+            .client
+            .balance_allowance(BalanceAllowanceRequest::builder().asset_type(AssetType::Collateral).build())
+            .await
+            .ok()?;
+        let raw: f64 = resp.balance.to_string().parse().ok()?;
+        Some(raw / 1e6)
+    }
 }
 
 /// Build a `LocalSigner` from a hex private key, chained to Polygon — the
