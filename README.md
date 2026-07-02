@@ -79,16 +79,28 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **Backfill hour-14 gap on Oracle (2026-07-02, price_feed).** While iterating the hourly-seal fix
-  live, an intermediate (partially-fixed) binary was stopped mid-hour and overwrote the original
-  `{asset}_{type}_2026-07-02_14.parquet` files, losing the 14:00–14:09 HKT window (~9 min, all
-  assets, `raw/` + `raw_15_mins/` + `raw_4hr/`). The 14:00–14:09 rows were backed up to
-  `/home/ubuntu/apps/poly_rust/price_feed/_14_backup/` on Oracle **before** the overwrite happened.
-  Once the collector seals hour 14 naturally (at 15:00 HKT, after which no writer holds that file
-  open), merge `_14_backup/<dir>/<file>` back into the sealed `<dir>/<file>` (pandas `pd.concat`,
-  sort by `ts`, drop exact-duplicate rows, write back) for every file in `_14_backup/`, then delete
-  the backup dir. Not urgent — low-stakes recorder data, not trading capital — but should be
-  cleaned up so the historical record for that hour is complete.
+- **Backfill hour-14 gap on Oracle (2026-07-02, price_feed) — still open.** While iterating the
+  hourly-seal fix live, an intermediate (partially-fixed) binary was stopped mid-hour and
+  overwrote the original `{asset}_{type}_2026-07-02_14.parquet` files, losing the 14:00–14:09 HKT
+  window (~9 min, all assets, `raw/` + `raw_15_mins/` + `raw_4hr/`). The 14:00–14:09 rows were
+  backed up to `/home/ubuntu/apps/poly_rust/price_feed/_14_backup/` on Oracle **before** the
+  overwrite happened. The 15:00 HKT seal has since completed (confirmed — Oracle's `_14.parquet`
+  is now a stable, no-writer-holding-it-open file covering 14:10–15:00), so the merge can be done
+  any time: for every file in `_14_backup/<dir>/`, `pd.concat` it with the current
+  `<dir>/<file>`, sort by `ts`, drop exact-duplicate rows, write back — then delete `_14_backup/`.
+  Not urgent — low-stakes recorder data, not trading capital — but should be cleaned up so the
+  historical record for that hour is complete. **Not yet done as of 2026-07-02 15:xx HKT** — the
+  local dev-machine merge done the same day (combining old-daily + hourly + live `.tmp` into one
+  file per asset/type for testing) pulled from Oracle's `_14.parquet` as-is and therefore does
+  **not** include this backfilled window either; re-run the merge after backfilling on Oracle if
+  the 14:00–14:09 window matters for whatever you're testing.
+
+- **Binance data gap 2026-07-02 00:00–13:50 HKT — permanent, not fixable.** Binance recording was
+  down for this window (see the git-branch-convention incident above: a branch predating the
+  Binance feature was deployed over the box, and it took until ~13:50 to get Binance recording
+  running again under the new hourly-seal code). The old daily-rotation `{asset}_binance_2026-07-
+  02.parquet` files are 0 bytes for this reason — nothing to recover, no page bytes were ever
+  written. Binance data for today starts cleanly at 13:50 HKT onward.
 
 ## Build and deploy
 
