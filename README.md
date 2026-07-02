@@ -26,11 +26,36 @@ rsync or a crash will be missing the footer and will be unreadable by standard r
 disk. This means files are always at most ~1 hour stale and readable at any sync time. On restart
 the writer carries forward all rows from the last sealed file.
 
-**Recovery:** `btc_5mins/bot/parquet_utils.py` contains `recover_poly_parquet()` and
-`recover_book_parquet()` which recover footerless files by scanning raw page bytes. The Rust
-collector writes a 6-column poly schema (`ts, up, dn, slug, server_ts, latency_ms`) and a
-13-column book schema (the original 11 + `server_ts, latency_ms`). The Python recovery functions
-use strides of 6 (poly) and 13 (book) dict pages per row group.
+**Recovery:** `price_feed/scripts/recover_live_tmp.py` recovers footerless/unsealed `*.tmp` files by
+scanning raw parquet page bytes, and merges them with the day's other era files (old pre-seal daily
+file + hourly-sealed files) into one up-to-date, deduped `{asset}_{type}_{date}.parquet` per asset:
+
+```bash
+# after a fresh sync_oracle.sh, so the .tmp isn't a stale/mid-flush snapshot
+python3 price_feed/scripts/recover_live_tmp.py --type poly --date 2026-07-02
+python3 price_feed/scripts/recover_live_tmp.py --type book --date 2026-07-02
+```
+
+It builds on the low-level page/thrift decoding primitives in the sibling `btc_5mins` project
+(`btc_5mins/bot/parquet_utils.py`), but does **not** call that project's own
+`recover_poly_parquet()` / `recover_book_parquet()` — those don't work on this repo's Rust-written
+files:
+
+- The Rust collector writes poly (`ts, up, dn, slug, server_ts, latency_ms`, 6 cols) and book
+  (the original 11 + `server_ts, latency_ms`, 13 cols) columns as `NOT NULL` except `server_ts`/
+  `latency_ms`. Required columns have no definition-levels section in their data pages, but
+  `parquet_utils._data_indices()` always assumes a 4-byte definition-levels length prefix is
+  present — for a required column that reads into real data, decodes a garbage bit-width, and
+  raises (silently swallowed, so recovery returns 0 rows).
+- The Rust arrow writer never emits definition level 3 for the book schema's `not null`
+  `list<float32>` columns (only levels 0 = empty list, 2 = element present); the shared
+  `recover_book_parquet()` hardcodes `max_def=3` as its "present" sentinel, so it always decodes
+  every list as empty.
+- The shared `recover_book_parquet()` also hardcodes an 11-column row-group stride; this repo's
+  book schema has 13 columns, which silently misaligns every row group after the first.
+
+`recover_live_tmp.py` re-implements the poly/book recovery with fixes for all three, documented in
+its module docstring.
 
 ### Sync to local
 
