@@ -1096,31 +1096,14 @@ changes** if the abstraction is in from A1.
 
 ## 17. Build and deploy
 
-Two separate Docker uses — don't conflate them:
-
-### Local test image (`trader/Dockerfile`) — same arch as the dev host
-
-Validates the live driver end-to-end (balance fetch, Telegram control/`/status`,
-market feeds) against **production** Polymarket before anything touches Oracle.
-Builds natively for the dev host's arch (x86-64), so it's fast, but it does
-**not** produce a binary that runs on Oracle (aarch64) — order placement from
-this container still hits the same geoblock as running natively on the dev
-host (expected; see below), which is fine since this image is for testing
-balance/Telegram/market-data paths, not for placing real orders.
-
-```bash
-cd trader
-docker build -t trader-live:local .
-docker run -d --name trader-live-test \
-  -v "$(pwd)/.env:/app/.env:ro" \
-  -v /home/kev/apps/btc_5mins/config:/app/config:ro \
-  -v "$(pwd)/live_logs:/app/logs" \
-  trader-live:local \
-  --asset DOGE --size-usdc 1.0 --max-trades 1 \
-  --env-file /app/.env --config-dir /app/config \
-  --log /app/logs/live_trades_doge_docker.csv --state-file /app/logs/live_state_doge_docker.json
-docker logs -f trader-live-test
-```
+**Docker's role here is cross-compilation** — `cross` (below) runs the actual
+build for Oracle inside a Docker container, on the dev machine, so Oracle's
+CPU is never used for compilation and no aarch64 toolchain has to be installed
+locally. That's the primary, load-bearing use. There is a *second*, separate
+Docker image (`trader/Dockerfile`) that is **not** for cross-compiling or
+deploying — it's an optional, same-arch (x86-64) local test image, useful only
+for pre-deploy verification (balance/Telegram/`/status`/market feeds against
+production) before touching Oracle at all. Don't conflate the two.
 
 ### Oracle deploy — cross-compile locally with `cross`, never build on Oracle
 
@@ -1140,6 +1123,50 @@ rsync -avz target/aarch64-unknown-linux-gnu/release/live \
 is never used for compilation. **Do not run `cargo build` on Oracle directly**
 — same reasoning as `price_feed`: it saturates the box for minutes and risks
 interfering with whatever's already running there (e.g. the Python bot).
+
+Oracle also needs its own `trader/.env` kept in sync (`rsync -avz trader/.env
+ubuntu@10.8.0.1:/home/ubuntu/apps/poly_rust/trader/.env`) *plus*
+`CLOB_PROXY_URL=http://10.8.0.7:8888` appended to it — that's what makes order
+placement actually work from Oracle (see geoblock note below). Then run it
+detached:
+
+```bash
+ssh ubuntu@10.8.0.1 "cd /home/ubuntu/apps/poly_rust/trader && nohup ./target/release/live \
+  --asset DOGE --strategy reversal --size-usdc 1.0 --max-trades 1 \
+  --config-dir /home/ubuntu/apps/btc_5mins/config \
+  --env-file /home/ubuntu/apps/poly_rust/trader/.env \
+  --log live_logs/live_trades_doge.csv --state-file live_logs/live_state_doge.json \
+  > live_logs/live_doge_oracle.log 2>&1 & disown"
+```
+
+✅ Done — deployed and running live on Oracle 2026-07-02 (DOGE/reversal/$1,
+max_trades=1, new account, `signature_type=Poly1271`), confirmed routing CLOB
+writes via the EC2 proxy (`[live] routing CLOB writes via proxy:
+http://10.8.0.7:8888` in the log) instead of hitting the geoblock.
+
+### Local test image (`trader/Dockerfile`) — same arch as the dev host, optional
+
+```bash
+cd trader
+docker build -t trader-live:local .
+docker run -d --name trader-live-test \
+  -v "$(pwd)/.env:/app/.env:ro" \
+  -v /home/kev/apps/btc_5mins/config:/app/config:ro \
+  -v "$(pwd)/live_logs:/app/logs" \
+  trader-live:local \
+  --asset DOGE --size-usdc 1.0 --max-trades 1 \
+  --env-file /app/.env --config-dir /app/config \
+  --log /app/logs/live_trades_doge_docker.csv --state-file /app/logs/live_state_doge_docker.json
+docker logs -f trader-live-test
+```
+
+Builds natively for the dev host's arch (x86-64), so it's fast, but it does
+**not** produce a binary that runs on Oracle (aarch64) — order placement from
+this container still hits the same geoblock as running natively on the dev
+host (expected; see below). Only use this for testing balance/Telegram/
+market-data paths, never as a deploy artifact, and **stop it before deploying
+to Oracle** — both would share the same account/balance with no coordination
+between them, risking a double order on the same signal.
 
 ### Geoblock — order placement needs the EC2 proxy, on *both* Oracle and the dev machine
 
