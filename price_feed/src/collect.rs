@@ -250,16 +250,27 @@ impl ParquetBuf {
         })
     }
 
-    fn open_with_carry(path: PathBuf, schema: Schema) -> Result<Self> {
-        let carry = if path.exists() {
-            Self::try_carry(&path, &schema)
+    // Opens a fresh writer at `tmp_path` for the current hour, carrying forward rows
+    // from whichever of `tmp_path` (a crash left it mid-write) or `final_path` (a
+    // previous process already gracefully sealed this hour, e.g. a mid-hour restart
+    // during a deploy) exists. Without this, a restart within the same hour would
+    // start an empty .tmp that, on the next seal, renames over and destroys the
+    // already-sealed final file from before the restart.
+    fn open_for_hour(tmp_path: PathBuf, final_path: &PathBuf, schema: Schema) -> Result<Self> {
+        let carry_source = if tmp_path.exists() {
+            Some(tmp_path.clone())
+        } else if final_path.exists() {
+            Some(final_path.clone())
         } else {
             None
         };
-        let mut buf = Self::open(path, schema)?;
+        let carry = carry_source
+            .as_ref()
+            .and_then(|p| Self::try_carry(p, &schema));
+        let mut buf = Self::open(tmp_path, schema)?;
         if let Some(batches) = carry {
             let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-            eprintln!("  carry: loaded {rows} rows from {:?}", buf.path);
+            eprintln!("  carry: loaded {rows} rows from {:?}", carry_source.unwrap());
             for batch in batches {
                 buf.writer.write(&batch).context("carry write")?;
             }
@@ -544,11 +555,13 @@ impl AssetWriters {
         let bs = book_schema();
         let poly_tmp = raw_dir.join(format!("{asset}_poly_{hour_key}.parquet.tmp"));
         let book_tmp = raw_dir.join(format!("{asset}_book_{hour_key}.parquet.tmp"));
+        let poly_final = raw_dir.join(format!("{asset}_poly_{hour_key}.parquet"));
+        let book_final = raw_dir.join(format!("{asset}_book_{hour_key}.parquet"));
         eprintln!("[{asset}] opening poly={poly_tmp:?} book={book_tmp:?}");
         Ok(Self {
             asset: asset.to_string(),
-            poly: ParquetBuf::open_with_carry(poly_tmp, ps.clone())?,
-            book: ParquetBuf::open_with_carry(book_tmp, bs.clone())?,
+            poly: ParquetBuf::open_for_hour(poly_tmp, &poly_final, ps.clone())?,
+            book: ParquetBuf::open_for_hour(book_tmp, &book_final, bs.clone())?,
             poly_schema: ps,
             book_schema: bs,
             hour_key,
@@ -711,10 +724,11 @@ impl BinanceWriters {
         let hour_key = hkt_hour_string();
         let schema = binance_schema();
         let tmp = raw_dir.join(format!("{asset}_binance_{hour_key}.parquet.tmp"));
+        let final_path = raw_dir.join(format!("{asset}_binance_{hour_key}.parquet"));
         eprintln!("[{asset}] opening binance={tmp:?}");
         Ok(Self {
             asset: asset.to_string(),
-            buf: ParquetBuf::open_with_carry(tmp, schema.clone())?,
+            buf: ParquetBuf::open_for_hour(tmp, &final_path, schema.clone())?,
             schema,
             hour_key,
             raw_dir: raw_dir.clone(),
