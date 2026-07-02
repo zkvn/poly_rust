@@ -82,3 +82,36 @@ sleep 2
 cd /home/ubuntu/apps/poly_rust/price_feed
 nohup ./target/release/price_feed collect >> collector.log 2>&1 &
 ```
+
+---
+
+## Trading engine — known incidents
+
+### Stop-loss close never filled (2026-07-02, fixed)
+
+A live BNB test (`trader/src/bin/live.rs`, size $1, max-trades 1) bought 1.0752 shares of "Up"
+for $0.9999, the stop-loss triggered, and **every single close retry failed** for the rest of the
+run (hundreds of retries, `status=Failed sold=0.0000`). The position was never exited and rode to
+market resolution; "Up" lost, so the position settled to $0. **Total loss: $0.9999** (confirmed via
+Polymarket's public `data-api.polymarket.com/positions` endpoint — `currentValue: 0` on
+`bnb-updown-5m-1782971400`).
+
+**Root cause:** `execution.rs::close_position()` built the market SELL order as
+`.amount(Amount::usdc(size_dec))`, where `size_dec` was the **held share count** (1.0753), not a
+USDC amount. The SDK has two distinct constructors, `Amount::usdc()` and `Amount::shares()`.
+Wrapping a share count in `Amount::usdc` tells the exchange "I want ~$1.0753 in proceeds", which at
+a <$1 price requires selling *more* shares than are actually held — so the order could never
+match. Every retry hit `"no orders found to match with FAK order"` / `"not enough balance"`, which
+the retry loop treated as transient and retried forever instead of surfacing as a real error. The
+retry logic explicitly listing `"not enough balance"` as retryable is a strong sign this exact
+failure had been seen before and papered over with retries rather than fixed.
+
+**Fix:** use `Amount::shares(size_dec)` instead, matching `place_limit_sell`'s existing correct
+pattern (`round2(shares)` → 2-decimal `Decimal`, since `Amount::shares` enforces `LOT_SIZE_SCALE=2`
+— unlike `Amount::usdc` which allows more decimal places, so the old 4-decimal formatting would
+have failed validation immediately if this had been caught locally instead of live). Verified with
+`cargo test --lib execution` (all 7 tests pass) after the change.
+
+**Lesson:** any future live/shadow test should watch for repeated `[SL close] retry` log lines as a
+red flag — that pattern means the close is structurally broken, not just hitting temporary
+liquidity, and the position will ride uncontrolled to market resolution.
