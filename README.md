@@ -77,6 +77,19 @@ on the remote before the nightly sync runs.
 
 ---
 
+## TODO
+
+- **Backfill hour-14 gap on Oracle (2026-07-02, price_feed).** While iterating the hourly-seal fix
+  live, an intermediate (partially-fixed) binary was stopped mid-hour and overwrote the original
+  `{asset}_{type}_2026-07-02_14.parquet` files, losing the 14:00–14:09 HKT window (~9 min, all
+  assets, `raw/` + `raw_15_mins/` + `raw_4hr/`). The 14:00–14:09 rows were backed up to
+  `/home/ubuntu/apps/poly_rust/price_feed/_14_backup/` on Oracle **before** the overwrite happened.
+  Once the collector seals hour 14 naturally (at 15:00 HKT, after which no writer holds that file
+  open), merge `_14_backup/<dir>/<file>` back into the sealed `<dir>/<file>` (pandas `pd.concat`,
+  sort by `ts`, drop exact-duplicate rows, write back) for every file in `_14_backup/`, then delete
+  the backup dir. Not urgent — low-stakes recorder data, not trading capital — but should be
+  cleaned up so the historical record for that hour is complete.
+
 ## Build and deploy
 
 ### Oracle box is aarch64 — cross-compile locally
