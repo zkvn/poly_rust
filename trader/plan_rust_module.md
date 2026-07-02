@@ -1,6 +1,20 @@
 # Plan: Migrate live trading to Rust (modular)
 
-Status: **proposal for review** — no code yet.
+Status: **in progress**, branch `trader-a1`. See §12 for the up-to-date per-step
+status; short version:
+
+- **Track A:** A0-A3 done (scaffold, A1 state machine + bt1 golden, A2 shadow
+  live feeds — validated live, caught/fixed a real feed-filtering bug, A3
+  Telegram + config_log).
+- **Track B:** B1 done (execution.rs + balance.rs), B3 done (unwind.rs +
+  redemption.rs — redemption's on-chain execution step intentionally
+  unimplemented pending its own design/go-ahead). B2's balance/auth check ran
+  live against production ($7.84 USDC confirmed); the live order-placement
+  half is **deferred until `worker.rs` exists** — the first real order should
+  be a genuine strategy-driven trade, not a synthetic test (user preference).
+- **Not started:** `worker.rs` (the live typestate machine — now the critical
+  path item, since it unblocks both live trading and B2's real order),
+  `main.rs` supervisor, `tradelog.rs`, §13 market generalization.
 
 Goal: gradually move the **live-trading path** of `btc_5mins` from Python to
 Rust, organised into clean modules — a **trade-API** module (order submission,
@@ -62,52 +76,62 @@ market-discovery, and parquet code. The strategy TOML stays in
 `../poly_rust/.../price_feed` from `bot/config.py`, so cross-repo pathing is an
 established pattern here).
 
+Status legend below: ✅ built+tested, ◐ partial/stubbed, ✗ not started yet.
+
 ```
 poly_rust/
   price_feed/          # existing — feeds, parquet, chainlink (reused)
   trader/              # NEW crate — the live bot
     src/
-      main.rs          # CLI + Supervisor: per-asset tasks, event routing, shutdown
-      types.rs         # shared: TradeIntent, TradeResult, ticks, CycleContext, enums
+      main.rs          # ✗ CLI + Supervisor: per-asset tasks, event routing, shutdown
+      types.rs         # ✅ shared: TradeIntent, TradeResult, ticks, CycleContext, enums
 
       # ── MODULE 1: strategy (signals + config) — pure, no I/O ──
-      config.rs        # load strategy_*.toml (serde), per-asset getters, ASSET_CONFIG
-      signal/          # signal layer — trait + one file per signal (extensible)
-        mod.rs         #   Signal trait, SignalSet registry, TickBus fan-out
-        saw_low.rs
-        latest_poly.rs
-        latest_binance.rs
-        delta_pct.rs
-        enrich.rs      #   optional: p_up / snr / vol_har (HAR) — future-ready stubs
-      strategies.rs    # ReversalStrategy, HighProbStrategy → TradeIntent
-      gates.rs         # cross-strategy gates: spread, delta, staleness, max_price, halt
-      halt.rs          # SessionLossTracker + daily reset-hour logic
+      config.rs        # ✅ load strategy_*.toml (serde), per-asset getters, ASSET_CONFIG
+      signal/          # ✅ signal layer — trait + one file per signal (extensible)
+        mod.rs         #   ✅ Signal trait, SignalSet registry, TickBus fan-out
+        saw_low.rs     #   ✅
+        latest_poly.rs #   ✅
+        latest_binance.rs # ✅
+        delta_pct.rs   #   ✅
+        enrich.rs      #   ✗ optional: p_up / snr / vol_har (HAR) — deferred per §15.6
+      strategies.rs    # ✅ ReversalStrategy, HighProbStrategy → TradeIntent
+      gates.rs         # ✅ cross-strategy gates: spread, delta, staleness, max_price, halt
+      halt.rs          # ◐ HaltTracker exists inside backtest.rs; not yet extracted into
+                       #   a standalone module worker.rs can share for live sessions
 
       # ── MODULE 2: trade_api (orders + balance + account) — all CLOB writes ──
-      execution.rs     # ExecutionEngine trait + live CLOB impl + sim impl:
+      execution.rs     # ✅ ExecutionEngine trait + live CLOB impl + sim impl:
                        #   market BUY (FAK), limit SELL (GTC), market SELL close,
                        #   cancel; settle retries. sim impl drives backtest + tests
-      balance.rs       # BalanceGuard (per-cycle drawdown halt) + balance fetch
-      redemption.rs    # auto-redeem resolved winning positions
-      unwind.rs        # USER-channel WS watcher for GTC fill notifications
+      balance.rs       # ✅ BalanceGuard (per-cycle drawdown halt) + balance fetch
+      redemption.rs    # ◐ fetch/classify done+tested; on-chain redeem txn (RedeemExecutor)
+                       #   intentionally unimplemented pending its own go-ahead
+      unwind.rs        # ✅ USER-channel WS watcher for GTC fill notifications
 
       # ── MODULE 3: telegram (runtime control + status) ──
-      telegram/
-        mod.rs         #   bot task, long-poll loop, auth (allowed chat ids)
-        commands.rs    #   command parsing → Command enum (/set /halt /params …)
-        control.rs     #   Command → ControlMsg routed to workers over mpsc
-        render.rs      #   status/params/delta formatting (display)
+      telegram/        # ✅
+        mod.rs         #   ✅ bot task, long-poll loop, auth (allowed chat ids) — built,
+                       #      not wired into anything live (needs a bot token)
+        commands.rs    #   ✅ command parsing → Command enum (/set /halt /params …)
+        control.rs     #   ✅ Command → ControlMsg routed to workers over mpsc
+        render.rs      #   ✅ status/params/delta formatting (display)
 
       # ── glue: read-only data + orchestration ──
-      marketdata.rs    # slug/slot, Gamma meta → token IDs, Binance+Poly WS → ticks,
-                       #   klines REST for cycle open/close (outcome determination)
-      config_log.rs    # append-only JSONL snapshot (schema-identical to Python)
-      worker.rs        # per-(asset,strategy) typestate machine (§7/§8): events →
-                       #   step → transition; orchestrates signals/gates/exec;
-                       #   writes state/{asset}_{strategy}.json for crash recovery
-      backtest.rs      # replay driver: parquet → Event stream → same machine +
+      marketdata.rs    # ✅ slug/slot, Gamma meta → token IDs, Binance+Poly WS → ticks.
+                       #   klines REST for cycle open/close not yet added (shadow/backtest
+                       #   both use Binance-tick-based outcome, matching bt1)
+      config_log.rs    # ✅ append-only JSONL snapshot (schema-identical to Python;
+                       #   verified byte-for-byte against a real Oracle log line)
+      worker.rs        # ✗ NEXT UP — per-(asset,strategy) typestate machine (§7/§8):
+                       #   events → step → transition; orchestrates signals/gates/exec;
+                       #   writes state/{asset}_{strategy}.json for crash recovery.
+                       #   `machine.rs` (below) is its offline-only precursor.
+      machine.rs       # ✅ backtest-only decision core (Watching/Holding/Halted; instant
+                       #   fills). worker.rs wraps this with the full live state set.
+      backtest.rs      # ✅ replay driver: parquet → Event stream → same machine +
                        #   sim venue; golden-PnL parity vs Python run_backtest (§11)
-      tradelog.rs      # trades_*.log CSV (schema-identical to Python) + latency log
+      tradelog.rs      # ✗ trades_*.log CSV (schema-identical to Python) + latency log
 ```
 
 Requested split honoured: **`execution`/`balance`/`redemption`/`unwind` =
@@ -241,6 +265,33 @@ pub trait ExecutionEngine: Send + Sync {
 ### balance.rs — `BalanceGuard`
 Wake at +120 s into each window; first wake sets baseline; halt all workers if
 drawdown > 25%; `reset_baseline()` on `/resume`. Reuses the authenticated client.
+
+### Account setup gotcha — `POLY_SIGNATURE_TYPE` (found 2026-07-02)
+
+Polymarket accounts are not all the same on-chain wallet type, and getting this
+wrong is **silent** — `get_balance_allowance` doesn't error on the wrong
+`signature_type`, it just returns `balance: 0, allowances: 0`, which looks
+identical to "account not funded." There is no error to grep for.
+
+- `SignatureType`: `0=Eoa`, `1=Proxy` (Magic Link/email login), `2=GnosisSafe`
+  (browser-wallet-connected), `3=Poly1271` (EIP-1271 smart-contract-wallet
+  signatures — e.g. accounts funded via an EIP-7702 "smart EOA" transaction).
+- The `btc_5mins` Python bot's account (and every account before 2026-07-02)
+  is `signature_type=1`, hardcoded throughout that codebase — it has never
+  exercised any other type.
+- A new account added 2026-07-02 turned out to be `signature_type=3`. It took
+  going on-chain directly (raw ERC20 `balanceOf` against Polymarket's actual
+  collateral token, **`pUSD`** = `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb`,
+  6 decimals, on Polygon — *not* native USDC `0x3c499c54...` or bridged USDC.e
+  `0x2791Bca1...`, both of which read 0 even for the funded old account) to
+  prove the deposit had genuinely landed, then brute-forcing all 4
+  `signature_type` values against `get_balance_allowance` until the number
+  matched, to find this.
+- **Fix:** `execution.rs::signature_type_from_env()` reads `POLY_SIGNATURE_TYPE`
+  (0-3) from the env, defaulting to `Proxy` (1) for backward compat with every
+  existing account/config. **Every new Polymarket account added to a `.env`
+  must have its `signature_type` verified this way before trusting any
+  balance/order result** — don't assume `Proxy` just because it's the default.
 
 ### redemption.rs, unwind.rs
 - `redemption.rs` — periodic auto-redeem of resolved winning positions (port
@@ -799,14 +850,15 @@ different sessions/people at the same time and tested in total isolation.
 
 ```
 Track A (decision engine, offline)          Track B (trade API, live I/O)
-A0 Scaffold + config load            ║  (depends only on the ExecutionEngine trait + types)
-A1 ★ State machine + bt1 golden      ║  B1 ★ execution.rs live CLOB impl + balance
-A2 Shadow live feeds (sim venue)     ║  B2 API live test (tiny real orders — see below)
-A3 Telegram control + config_log     ║  B3 unwind/redemption (USER-WS, settle retries)
+A0 ✅ Scaffold + config load          ║  (depends only on the ExecutionEngine trait + types)
+A1 ✅ State machine + bt1 golden      ║  B1 ✅ execution.rs live CLOB impl + balance
+A2 ✅ Shadow live feeds (sim venue)   ║  B2 ◐  API live test (balance/auth done; order deferred)
+A3 ✅ Telegram control + config_log   ║  B3 ✅ unwind/redemption (redeem txn itself deferred)
         └──────────────┬─────────────╜──────────────┘
                        ▼
         I1 Integrate: A's machine drives B's live ExecutionEngine — one asset live (held only)
         I2 Early exits live (Unwinding/StopExiting) ·  I3 Full cutover
+        (I1-I3 blocked on worker.rs, not yet started)
 ```
 
 Each step is independently shippable and reversible; the Python bot keeps running
@@ -814,23 +866,23 @@ until cutover. **Every step lands with its module's tests.**
 
 ### Track A — decision engine (offline, no exchange)
 
-| Step | Scope | Risk gate |
-|---|---|---|
-| **A0 Scaffold** | `trader` crate; `config.rs` loads live TOML; `types.rs`; CI (`clippy -D warnings`, `test`, `fmt --check`). | Rust prints the same parsed params as Python for all assets. |
-| **A1 ★ State machine + bt1 golden** (§8, §11) | `signal/` + `strategies` + `gates` + the §7/§8 typestate machine + **sim `ExecutionEngine`** (with partial-fill support), driven by parquet→`Event` replay. **No live I/O, no tokio.** Must implement the DeepSeek-revised §8: no-entry-gate halt, explicit GTC/FAK arming, partial-fill residual, `Confirming`/`EnrichOnly` split, and `TradeState` crash-recovery persistence. | (1) Reproduces `scripts/bt1.py` per-trade rows + Total PnL for the chosen asset/window — lock as golden, after verifying tick ordering (§11). (2) Unit tests assert each revised edge case from a scripted `Vec<Event>`: `/halt` mid-`Holding` does **not** abort the exit; <5-share fill → `PriceMonitor`; partial exit → residual `Holding`; STOPLOSS/UNWIND → `EnrichOnly` (pnl untouched); restart reloads `Holding` and reconciles. **This is the genuine test that the engine + state machine work.** |
-| **A2 Shadow live feeds** | Point the validated machine at live WS feeds via the async shell (§9/§10); **sim venue, no real orders**. Log would-be `TradeIntent`s beside Python. | Over ≥3 days, live-fed intents match Python placements within tick jitter — live feeds emit the same events the A1 golden validated. |
-| **A3 Telegram + config_log** | `telegram/` + `config_log` + control channel driving a shadow machine (control + status only). | `/set`/`/halt`/`/status` mutate live state, emit correct `config.log` snapshots; Python Telegram retire-able. |
+| Step | Scope | Risk gate | Status |
+|---|---|---|---|
+| **A0 Scaffold** | `trader` crate; `config.rs` loads live TOML; `types.rs`; CI (`clippy -D warnings`, `test`, `fmt --check`). | Rust prints the same parsed params as Python for all assets. | ✅ Done |
+| **A1 ★ State machine + bt1 golden** (§8, §11) | `signal/` + `strategies` + `gates` + the §7/§8 typestate machine + **sim `ExecutionEngine`** (with partial-fill support), driven by parquet→`Event` replay. **No live I/O, no tokio.** Must implement the DeepSeek-revised §8: no-entry-gate halt, explicit GTC/FAK arming, partial-fill residual, `Confirming`/`EnrichOnly` split, and `TradeState` crash-recovery persistence. | (1) Reproduces `scripts/bt1.py` per-trade rows + Total PnL for the chosen asset/window — lock as golden, after verifying tick ordering (§11). (2) Unit tests assert each revised edge case from a scripted `Vec<Event>`: `/halt` mid-`Holding` does **not** abort the exit; <5-share fill → `PriceMonitor`; partial exit → residual `Holding`; STOPLOSS/UNWIND → `EnrichOnly` (pnl untouched); restart reloads `Holding` and reconciles. **This is the genuine test that the engine + state machine work.** | ✅ Done — bt1 golden locked (BTC 2026-06-20, 1 trade, UNWIND, pnl=0.0355), 92 tests pass. `machine.rs`'s state set is the *backtest* simplification (Watching/Holding/Halted only, matching bt1's instant-fill assumption) — the full Entering/Unwinding/StopExiting/Confirming/EnrichOnly set + crash persistence is `worker.rs`'s job for live trading, not yet built. |
+| **A2 Shadow live feeds** | Point the validated machine at live WS feeds via the async shell (§9/§10); **sim venue, no real orders**. Log would-be `TradeIntent`s beside Python. | Over ≥3 days, live-fed intents match Python placements within tick jitter — live feeds emit the same events the A1 golden validated. | ✅ Built + running (`marketdata.rs`, `bin/shadow.rs`). Found and fixed a real bug: unfiltered `price_change` batch entries from other tokens corrupted prices and caused instant false stop-losses. Fixed version ran 1h15m+ clean (zero false trades) on live BTC/ETH/DOGE feeds. Multi-day comparison run still ongoing/optional. |
+| **A3 Telegram + config_log** | `telegram/` + `config_log` + control channel driving a shadow machine (control + status only). | `/set`/`/halt`/`/status` mutate live state, emit correct `config.log` snapshots; Python Telegram retire-able. | ✅ Done — `config_log.rs` schema verified byte-for-byte against a real Oracle `log/config.log` line. `telegram/{commands,control,render,mod}.rs` built with full command parser + tests; `TelegramBot::run_loop` makes real API calls but is not wired into anything live yet. Live smoke-tested 2026-07-02 via new standalone `bin/telegram_probe.rs` against a fresh bot (`oracle_rust_bot`): `send` confirmed delivered (`ok:true`), `poll_once`/`getUpdates` confirmed working (no errors, no 409 conflict once switched off the old bot token that a still-running poller — likely the Oracle Python bot — held). `TELEGRAM_BOT_TOKEN` in `trader/.env` updated to the new bot; still needs wiring into `worker.rs`/`bin/live.rs` and a go-ahead before controlling a live run. |
 
 ### Track B — trade-API module (live, totally independent)
 
 Built against **only** the `ExecutionEngine` trait — no signals, no state machine,
 no strategy config. Its own test binary places/cancels real orders directly.
 
-| Step | Scope | Risk gate |
-|---|---|---|
-| **B1 ★ execution + balance** | `execution.rs` live CLOB impl (FAK BUY, GTC SELL, FAK close, cancel) + `balance.rs`, behind the trait. Dry-run + a standalone `bin/api_probe`. | Auth + balance fetch succeed; a signed FAK order is accepted by CLOB validation (post + immediate cancel). |
-| **B2 API live test** | Drive `api_probe` against the **real CLOB** with $1 orders on a live up/down market: place → confirm fill shape (`takingAmount`/`makingAmount`/`status:matched`) → cancel/close. Verify settle-lag retries (`balance: 0`). | Round-trips a real order and a real cancel; fill/parse/retry paths exercised end-to-end against production. |
-| **B3 unwind + redemption** | `unwind.rs` USER-WS fill watcher; `redemption.rs`. | A live $1 GTC unwind fills and the watcher fires; a resolved position auto-redeems. |
+| Step | Scope | Risk gate | Status |
+|---|---|---|---|
+| **B1 ★ execution + balance** | `execution.rs` live CLOB impl (FAK BUY, GTC SELL, FAK close, cancel) + `balance.rs`, behind the trait. Dry-run + a standalone `bin/api_probe`. | Auth + balance fetch succeed; a signed FAK order is accepted by CLOB validation (post + immediate cancel). | ✅ Done — `SimExecutionEngine` + `LiveExecutionEngine<S: Signer>` both implement the trait; `bin/api_probe.rs` built. |
+| **B2 API live test** | Drive `api_probe` against the **real CLOB** with $1 orders on a live up/down market: place → confirm fill shape (`takingAmount`/`makingAmount`/`status:matched`) → cancel/close. Verify settle-lag retries (`balance: 0`). | Round-trips a real order and a real cancel; fill/parse/retry paths exercised end-to-end against production. | ◐ Partial — `api_probe balance` ran live 2026-07-01 (auth OK, $7.84 USDC, 3 allowances; also fixed a `/1e6` base-units bug in the balance display). Re-run 2026-07-02 against a new account (fresh `POLY_PRIVATE_KEY`/`FUND_ADDRESS` in `trader/.env`): auth OK, but balance read **0.0000 USDC** despite the UI showing $9.50 and on-chain confirmation (direct `balanceOf` call against Polymarket's `pUSD` collateral token, `0xc011a7e1...`, and the deposit tx) that the funder address genuinely held 9.5 pUSD. Root cause: **wrong `signature_type`**. `execution.rs`/`api_probe.rs` hardcoded `SignatureType::Proxy` (1 = Magic Link accounts), which is what every prior account (incl. the `btc_5mins` Python bot's) used — but this new account is a `POLY_1271` (3 = EIP-1271 smart-contract-wallet signature) account, confirmed by brute-forcing all 4 signature types against `get_balance_allowance` (only `3` returned the correct $9.50 + max allowances) and by the funding tx being an EIP-7702 "smart EOA" transaction. Fixed: `signature_type` is now a parameter to `LiveExecutionEngine::connect` and `api_probe`'s balance/roundtrip paths, read from a new `POLY_SIGNATURE_TYPE` env var (defaults to `Proxy` for backward compat; set to `3` in `trader/.env` for this account). Re-verified after the fix: `api_probe balance` now correctly reads $9.50. The order-placement half is **intentionally deferred**: the user wants the first real order to be a genuine `reversal_unwind` strategy trade fired by the live worker, not a synthetic roundtrip — so this step unblocks once `worker.rs` exists, not on a standalone go-ahead. |
+| **B3 unwind + redemption** | `unwind.rs` USER-WS fill watcher; `redemption.rs`. | A live $1 GTC unwind fills and the watcher fires; a resolved position auto-redeems. | ✅ Watcher done + tested (dispatch logic). `redemption.rs`'s read/classify half is done + tested; the on-chain redeem transaction itself (`RedeemExecutor`) is an intentionally unimplemented trait boundary — bigger blast radius than a CLOB order, needs its own design pass. |
 
 > **No paper trading exists on Polymarket.** There is no sandbox; the Amoy
 > testnet (chain_id 80002) uses different contract + USDC addresses and does **not**

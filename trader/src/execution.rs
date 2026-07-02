@@ -178,11 +178,17 @@ pub struct LiveExecutionEngine<S: Signer + Clone + Send + Sync + 'static> {
 }
 
 impl<S: Signer + Clone + Send + Sync + 'static> LiveExecutionEngine<S> {
-    pub async fn connect(host: &str, signer: S, funder: Address, cfg: LiveConfig) -> anyhow::Result<Self> {
+    pub async fn connect(
+        host: &str,
+        signer: S,
+        funder: Address,
+        signature_type: SignatureType,
+        cfg: LiveConfig,
+    ) -> anyhow::Result<Self> {
         let client = Client::new(host, Config::default())?
             .authentication_builder(&signer)
             .funder(funder)
-            .signature_type(SignatureType::Proxy)
+            .signature_type(signature_type)
             .authenticate()
             .await?;
         Ok(Self { client, signer, cfg })
@@ -195,6 +201,25 @@ pub fn local_signer_from_key(private_key: &str) -> anyhow::Result<alloy::signers
     use alloy::signers::Signer as _;
     let signer = alloy::signers::local::LocalSigner::from_str(private_key)?.with_chain_id(Some(POLYGON));
     Ok(signer)
+}
+
+/// Reads `POLY_SIGNATURE_TYPE` (0=Eoa, 1=Proxy, 2=GnosisSafe, 3=Poly1271) from
+/// the environment; defaults to `Proxy` (Magic Link accounts) when unset, to
+/// match the account type every account before the 2026-07-02 one used.
+/// Different accounts are genuinely different wallet types on Polymarket —
+/// this is not a constant, it must match the account behind `POLY_PRIVATE_KEY`.
+pub fn signature_type_from_env() -> anyhow::Result<SignatureType> {
+    let raw = match std::env::var("POLY_SIGNATURE_TYPE") {
+        Ok(v) => v,
+        Err(_) => return Ok(SignatureType::Proxy),
+    };
+    match raw.trim() {
+        "0" => Ok(SignatureType::Eoa),
+        "1" => Ok(SignatureType::Proxy),
+        "2" => Ok(SignatureType::GnosisSafe),
+        "3" => Ok(SignatureType::Poly1271),
+        other => anyhow::bail!("POLY_SIGNATURE_TYPE must be 0-3, got {other:?}"),
+    }
 }
 
 #[async_trait]

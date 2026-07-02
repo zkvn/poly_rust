@@ -178,30 +178,6 @@ mod tests {
         CycleContext { start_ts: end_ts - 300.0, end_ts, open_binance: 50000.0 }
     }
 
-    fn setup_signals(open: f64, now_price: f64, poly_up: f64, poly_ts: f64, end_ts: f64) -> (
-        SawLowSignal, SawLowSignal, LatestPolySignal, DeltaPctSignal, LatestBinanceSignal
-    ) {
-        let ctx = make_ctx(end_ts);
-        let mut sl_up = SawLowSignal::new_up(0.30, 120.0, 10.0);
-        let mut sl_dn = SawLowSignal::new_dn(0.30, 120.0, 10.0);
-        let mut lp = LatestPolySignal::new();
-        let mut dp = DeltaPctSignal::new();
-        let mut lb = LatestBinanceSignal::new();
-
-        sl_up.reset(&ctx);
-        sl_dn.reset(&ctx);
-        dp.reset(&ctx);
-
-        // poly tick that latches saw_low_dn
-        sl_dn.on_poly(PolyTick { ts: poly_ts, up: poly_up, dn: 1.0 - poly_up });
-        lp.on_poly(PolyTick { ts: poly_ts, up: poly_up, dn: 1.0 - poly_up });
-
-        dp.on_binance(BinanceTick { ts: poly_ts, price: now_price });
-        lb.on_binance(BinanceTick { ts: poly_ts, price: now_price });
-
-        (sl_up, sl_dn, lp, dp, lb)
-    }
-
     #[test]
     fn reversal_fires_down() {
         // DOWN: dn dipped below 0.30 in window, now dn > 0.60, dp < 0

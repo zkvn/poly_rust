@@ -1,5 +1,7 @@
 /// Shared tick types, cycle context, trade intent, and trade result.
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Copy)]
 pub struct BinanceTick {
     pub ts: f64,
@@ -20,7 +22,7 @@ pub struct CycleContext {
     pub open_binance: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Up,
     Down,
@@ -35,7 +37,7 @@ impl Side {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryType {
     Reversal,
     HighProb,
@@ -68,7 +70,7 @@ impl TradeIntent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
     Win,
     Loss,
@@ -91,7 +93,7 @@ impl Outcome {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeRecord {
     pub slug: String,
     pub cycle_start: f64,
