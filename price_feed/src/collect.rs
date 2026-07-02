@@ -1191,16 +1191,19 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
             _ = ticker_200ms.tick() => {
                 let ts = (now_secs_f64() * 5.0).round() / 5.0;
 
+                // Seal check must run unconditionally per asset, before any early-continue on
+                // missing data — otherwise an asset with no sample this tick (e.g. before the
+                // first book snapshot arrives) silently skips its hourly seal too.
                 for (i, snap) in snapshot(&state_5m).into_iter().enumerate() {
+                    if let Err(e) = writers_5m[i].seal_if_hour_changed() { eprintln!("[{}] 5m seal: {e:#}", assets[i]); }
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_5m[i].seal_if_hour_changed() { eprintln!("[{}] 5m seal: {e:#}", assets[i]); }
                     if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 5m write: {e:#}", assets[i]); }
                 }
                 for (i, snap) in snapshot(&state_15m).into_iter().enumerate() {
+                    if let Err(e) = writers_15m[i].seal_if_hour_changed() { eprintln!("[{}] 15m seal: {e:#}", assets[i]); }
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_15m[i].seal_if_hour_changed() { eprintln!("[{}] 15m seal: {e:#}", assets[i]); }
                     if let Err(e) = writers_15m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 15m write: {e:#}", assets[i]); }
                 }
             }
@@ -1210,11 +1213,14 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
 
                 let samples: Vec<BinanceState> = binance_state.lock().unwrap().clone();
                 let slugs: Vec<String> = state_5m.lock().unwrap().iter().map(|s| s.slug.clone()).collect();
+                // Same ordering fix as above: HYPE has no Binance market, so sample.price is
+                // always 0 and would otherwise skip seal_if_hour_changed forever, leaving its
+                // binance .tmp file un-sealed by the normal hourly rotation.
                 for (i, sample) in samples.into_iter().enumerate() {
+                    if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
                     let slug = slugs.get(i).cloned().unwrap_or_default();
                     if slug.is_empty() { continue; }
-                    if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if let Err(e) = binance_writers[i].write_sample(ts, sample.price, &slug, sample.server_ts_ms, sample.received_at_ms) {
                         eprintln!("[{}] binance write: {e:#}", assets[i]);
                     }
@@ -1225,9 +1231,9 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
                 let ts = now_secs() as f64;
 
                 for (i, snap) in snapshot(&state_4hr).into_iter().enumerate() {
+                    if let Err(e) = writers_4hr[i].seal_if_hour_changed() { eprintln!("[{}] 4hr seal: {e:#}", assets[i]); }
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
-                    if let Err(e) = writers_4hr[i].seal_if_hour_changed() { eprintln!("[{}] 4hr seal: {e:#}", assets[i]); }
                     if let Err(e) = writers_4hr[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 4hr write: {e:#}", assets[i]); }
                 }
             }
