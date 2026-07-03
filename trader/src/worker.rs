@@ -116,6 +116,12 @@ pub enum Action {
     /// Write `PersistedState` to the crash-recovery file — call after every transition.
     Persist,
     LogTrade(TradeRecord),
+    /// `ApiResult` flipped a Confirming (Win/Loss) record — `previous_outcome`/
+    /// `previous_pnl` are the original estimate, `record` is the corrected one.
+    LogTradeCorrection { previous_outcome: Outcome, previous_pnl: f64, record: TradeRecord },
+    /// `ApiResult` resolved a StopLoss `EnrichOnly` record — counterfactual verdict
+    /// only, never touches pnl/result/halt (unlike `LogTradeCorrection`).
+    StopLossVerdict { record: TradeRecord, would_have_won: bool },
 }
 
 // ── Persisted state (crash recovery) ──────────────────────────────────────────
@@ -254,6 +260,16 @@ impl Worker {
     /// of the same gate signal `check_gates` uses, for status display.
     pub fn delta_pct(&self) -> f64 {
         self.delta_pct.value()
+    }
+
+    /// Current cycle's close deadline (unix seconds) — for "time left" display.
+    pub fn cycle_end_ts(&self) -> f64 {
+        self.cycle_end_ts
+    }
+
+    /// Current cycle's opening Binance price — for cycle price-move display.
+    pub fn cycle_open_binance(&self) -> f64 {
+        self.cycle_open_binance
     }
 
     // ── Persistence ───────────────────────────────────────────────────────────
@@ -588,23 +604,42 @@ impl Worker {
 
     fn on_api_result(&mut self, won: bool) -> Vec<Action> {
         match &self.state {
-            WorkerState::Confirming(record) => {
-                let flip_needed = won != (record.outcome == Outcome::Win);
-                let mut record = record.clone();
-                if flip_needed {
-                    let shares = self.trade_size / record.token_price;
-                    let exit_price = if won { 1.0 } else { 0.0 };
-                    record.outcome = if won { Outcome::Win } else { Outcome::Loss };
-                    record.exit_price = exit_price;
-                    record.pnl = round4(shares * exit_price - self.trade_size);
+            WorkerState::Confirming(original) => {
+                let flip_needed = won != (original.outcome == Outcome::Win);
+                if !flip_needed {
+                    self.state = WorkerState::Watching;
+                    return vec![Action::Persist];
                 }
+                let previous_outcome = original.outcome;
+                let previous_pnl = original.pnl;
+                let mut record = original.clone();
                 self.state = WorkerState::Watching;
-                if flip_needed { vec![Action::LogTrade(record), Action::Persist] } else { vec![Action::Persist] }
+                let shares = self.trade_size / record.token_price;
+                let exit_price = if won { 1.0 } else { 0.0 };
+                record.outcome = if won { Outcome::Win } else { Outcome::Loss };
+                record.exit_price = exit_price;
+                record.pnl = round4(shares * exit_price - self.trade_size);
+                vec![Action::LogTradeCorrection { previous_outcome, previous_pnl, record }, Action::Persist]
             }
-            WorkerState::EnrichOnly(_) => {
-                // Column-only enrichment: never rewrites pnl/result/halt.
+            WorkerState::EnrichOnly(record) => {
+                // Column-only enrichment: never rewrites pnl/result/halt. A
+                // counterfactual good/costly verdict only makes sense for an
+                // actual stop-loss exit — an unwind (take-profit) already
+                // exited on purpose at a profit, so it gets no verdict
+                // (mirrors Python's explicit `if is_unwind: continue` skip).
+                // `won` is already relative to this record's own side (same
+                // convention as the Confirming branch above), so no further
+                // relativizing against `record.side` here.
+                let verdict = if record.outcome == Outcome::StopLoss {
+                    Some(Action::StopLossVerdict { record: record.clone(), would_have_won: won })
+                } else {
+                    None
+                };
                 self.state = WorkerState::Watching;
-                vec![Action::Persist]
+                match verdict {
+                    Some(action) => vec![action, Action::Persist],
+                    None => vec![Action::Persist],
+                }
             }
             _ => vec![],
         }
@@ -870,7 +905,15 @@ mod tests {
         w.step(Event::CycleClose); // -> Confirming(WIN)
 
         let actions = w.step(Event::ApiResult { won: false }); // API says it actually lost
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let (previous_outcome, previous_pnl, record) = actions.iter().find_map(|a| {
+            if let Action::LogTradeCorrection { previous_outcome, previous_pnl, record } = a {
+                Some((*previous_outcome, *previous_pnl, record.clone()))
+            } else {
+                None
+            }
+        }).unwrap();
+        assert_eq!(previous_outcome, Outcome::Win);
+        assert!(previous_pnl > 0.0, "original estimate should have been a WIN pnl, got {previous_pnl}");
         assert_eq!(record.outcome, Outcome::Loss);
         assert!((record.pnl - (-1.0)).abs() < 1e-9, "LOSS pnl should be -trade_size, got {}", record.pnl);
         assert!(matches!(w.state, WorkerState::Watching));
@@ -882,10 +925,36 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 }));
-        w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73 }); // -> EnrichOnly
+        w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73 }); // -> EnrichOnly(Unwind)
 
         let actions = w.step(Event::ApiResult { won: true });
         assert!(!actions.iter().any(|a| matches!(a, Action::LogTrade(_))), "EnrichOnly must never re-log a trade");
+        assert!(!actions.iter().any(|a| matches!(a, Action::StopLossVerdict { .. })),
+            "an UNWIND exit gets no counterfactual verdict, matching Python's is_unwind skip");
+        assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    #[test]
+    fn api_result_on_stop_loss_enrich_only_emits_verdict() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        // DOWN position; poly tick crosses the stop-loss floor -> StopExiting.
+        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.55, dn: 0.45 }));
+        assert!(matches!(w.state, WorkerState::StopExiting(_)));
+        w.step(Event::StopSellFilled { sold_shares: 10.0, exit_price: 0.45 }); // -> EnrichOnly(StopLoss)
+
+        // `won` is already relative to the record's own side (matches the Confirming
+        // branch's convention) — `true` here means the position's side actually won,
+        // i.e. the stop-loss was costly (holding would have won instead).
+        let actions = w.step(Event::ApiResult { won: true });
+        let (record, would_have_won) = actions.iter().find_map(|a| {
+            if let Action::StopLossVerdict { record, would_have_won } = a { Some((record.clone(), *would_have_won)) } else { None }
+        }).unwrap();
+        assert_eq!(record.outcome, Outcome::StopLoss);
+        assert!(would_have_won, "API says the position's side actually won -> stop was costly");
+        assert!(!actions.iter().any(|a| matches!(a, Action::LogTrade(_) | Action::LogTradeCorrection { .. })),
+            "verdict never rewrites pnl/result");
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
