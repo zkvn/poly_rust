@@ -128,15 +128,21 @@ simply wasn't met by either implementation today, not a discrepancy.
 
 ## 3. Recommendations
 
-1. Persist the live Rust process's stdout to a real file (or run it under
-   systemd + journald like `nats-server`/`poly-collector` already are)
-   instead of a bare tmux pane — today's biggest blocker to a definitive
-   answer on both questions above was losing the pre-14:38 log to a session
-   restart.
-2. Log an explicit unwind-attempt outcome (`attempted`/`filled`/`failed`) in
-   `TradeRecord` per `plan_daily_recon.md`'s existing recommendation — now
-   backed by a second independent trade (this one) showing the same
-   backtest/live divergence pattern as the first.
+1. ~~Persist the live Rust process's stdout to a real file (or run it under
+   systemd like `nats-server`/`poly-collector` already are) instead of a bare
+   tmux pane~~ — **done same day.** `trader-live.service` (systemd) replaces
+   the tmux/nohup deploy, `StandardOutput=append:live_logs/live.log` gives a
+   restart-surviving flat log. See `trader/plan_rust_module.md` §17.
+2. ~~Log an explicit unwind-attempt outcome (`attempted`/`filled`/`failed`) in
+   `TradeRecord`~~ — **done same day.** `TradeRecord`/the live CSV now carry
+   `exit_attempts`/`exit_last_error`; every failed unwind or stop-loss retry
+   in `execution.rs` is logged per-attempt and threaded through `HoldingData`
+   into the final WIN/LOSS/STOPLOSS/UNWIND record, so this exact question is
+   answerable from the CSV alone going forward. `trade_reconcile.py`'s report
+   now has a "Failed Exit Attempts (held to resolution)" section for it.
+   Covered by a new worker.rs unit test reproducing this trade's exact
+   scenario (`failed_unwind_then_cycle_close_carries_exit_attempts_onto_trade_record`).
 3. Consider a lightweight uptime/heartbeat alert for the Rust live process
    (e.g. via the existing Telegram bot) so deploy-window downtime is visible
    in real time rather than reconstructed after the fact from file mtimes.
+   **Not done** — smaller, separate piece of work.

@@ -104,4 +104,10 @@ pub struct TradeRecord {
     pub exit_price: f64,
     pub outcome: Outcome,
     pub pnl: f64,
+    /// Count of failed exit-order attempts (unwind and/or stop-loss) seen
+    /// before this outcome was logged — distinguishes a clean hold-to-
+    /// resolution WIN/LOSS from one where an early exit was tried and failed.
+    pub exit_attempts: u32,
+    /// Most recent failed exit attempt's error message, if any.
+    pub exit_last_error: Option<String>,
 }

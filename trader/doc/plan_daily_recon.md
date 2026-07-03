@@ -32,7 +32,7 @@ check. Written before making any changes, per instruction.
 |---|---|---|
 | Trade log location | local `log/trades_*.log` (bot runs locally) | **on Oracle** (`ubuntu@10.8.0.1:/home/ubuntu/apps/poly_rust/trader/live_logs/`) — must be synced first |
 | File naming | one file per bot-session start | one file **per (asset, strategy)**: `live_trades_<asset>_<strategy>.csv` (e.g. `live_trades_eth_high_prob.csv`) |
-| CSV columns | `time,asset,side,entry_type,cost,pnl,result,api_result,exit_fill_price,sl_trigger_price,p_up,snr,edge_spread,delta_pct,vol_har5` | `logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl` (`trader/src/types.rs::TradeRecord`) |
+| CSV columns | `time,asset,side,entry_type,cost,pnl,result,api_result,exit_fill_price,sl_trigger_price,p_up,snr,edge_spread,delta_pct,vol_har5` | `logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error` (`trader/src/types.rs::TradeRecord`) — `exit_attempts`/`exit_last_error` added 2026-07-03 to answer "was this a clean hold or a failed early exit" without cross-referencing shadow logs (see `trader/doc/audit_trades_2026-07-03.md`) |
 | Timestamp | `time` = HKT string `YYYY-MM-DD HH:MM:SS` | `logged_at`/`entry_ts` = Unix epoch seconds (float, UTC) — window filtering is arithmetic, no tz parsing needed |
 | Market window | derived from `time` + asset → slug | **already in the row**: `slug` embeds the window ts directly (e.g. `btc-updown-5m-1782971400`) |
 | Cost/size | variable `cost` per row | fixed `trade_size_usdc` (currently `$1`, from `.env` `TRADE_SIZE_USDC`) for every trade — no `cost` column needed |

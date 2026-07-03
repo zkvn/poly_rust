@@ -1127,22 +1127,74 @@ interfering with whatever's already running there (e.g. the Python bot).
 Oracle also needs its own `trader/.env` kept in sync (`rsync -avz trader/.env
 ubuntu@10.8.0.1:/home/ubuntu/apps/poly_rust/trader/.env`) *plus*
 `CLOB_PROXY_URL=http://10.8.0.7:8888` appended to it — that's what makes order
-placement actually work from Oracle (see geoblock note below). Then run it
-detached:
-
-```bash
-ssh ubuntu@10.8.0.1 "cd /home/ubuntu/apps/poly_rust/trader && nohup ./target/release/live \
-  --asset DOGE --strategy reversal --size-usdc 1.0 --max-trades 1 \
-  --config-dir /home/ubuntu/apps/btc_5mins/config \
-  --env-file /home/ubuntu/apps/poly_rust/trader/.env \
-  --log live_logs/live_trades_doge.csv --state-file live_logs/live_state_doge.json \
-  > live_logs/live_doge_oracle.log 2>&1 & disown"
-```
+placement actually work from Oracle (see geoblock note below).
 
 ✅ Done — deployed and running live on Oracle 2026-07-02 (DOGE/reversal/$1,
 max_trades=1, new account, `signature_type=Poly1271`), confirmed routing CLOB
 writes via the EC2 proxy (`[live] routing CLOB writes via proxy:
 http://10.8.0.7:8888` in the log) instead of hitting the geoblock.
+
+### Running it — `trader-live.service` (systemd), not tmux/nohup
+
+**Superseded 2026-07-03**: the process used to be launched via bare
+`nohup ... > file 2>&1 & disown` or, worse, a raw `tmux new-session` with no
+output redirect at all (a regression that briefly lost all application-log
+history across a redeploy — see `trader/doc/audit_trades_2026-07-03.md`).
+It now runs as a systemd unit on Oracle, matching `poly-collector.service`/
+`nats-server.service`'s existing pattern:
+
+```ini
+# /etc/systemd/system/trader-live.service
+[Unit]
+Description=poly_rust live trader
+After=network-online.target nats-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/poly_rust/trader
+ExecStart=/home/ubuntu/apps/poly_rust/trader/target/release/live \
+  --asset BTC --asset ETH --asset DOGE \
+  --env-file /home/ubuntu/apps/poly_rust/trader/.env \
+  --config-dir /home/ubuntu/apps/btc_5mins/config \
+  --log-dir /home/ubuntu/apps/poly_rust/trader/live_logs \
+  --nats-url nats://127.0.0.1:4222
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=append:/home/ubuntu/apps/poly_rust/trader/live_logs/live.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`StandardOutput=append:PATH` gives a flat, grep-able, restart-surviving file
+— note this *replaces* journald routing for stdout (systemd semantics: it's
+either-or, not both), so `journalctl -u trader-live` only shows unit
+lifecycle events, not app output; `tail -f live_logs/live.log` is the way to
+watch it live. `KillSignal=SIGTERM` matches `bin/live.rs`'s graceful-shutdown
+handler (persists state before exiting), which `Worker::reconcile` then
+resumes cleanly on the next start — same as any other restart.
+
+**Redeploy** (after a code change):
+
+```bash
+cd trader
+cross build --release --bin live --target aarch64-unknown-linux-gnu
+rsync -avz target/aarch64-unknown-linux-gnu/release/live \
+  ubuntu@10.8.0.1:/home/ubuntu/apps/poly_rust/trader/target/release/
+ssh ubuntu@10.8.0.1 "sudo systemctl restart trader-live.service"
+```
+
+`systemctl restart` sends SIGTERM (graceful, state persisted) then starts the
+new binary — no tmux, no manual redirect to remember. **Check for open
+positions first** (`cat live_logs/live_state_*.json`, look for `"state"` !=
+`"Watching"`) before restarting if you want to avoid any risk around a
+mid-cycle exit, though `reconcile()` is designed to resume a `Holding`
+position correctly either way.
 
 ### Local test image (`trader/Dockerfile`) — same arch as the dev host, optional
 

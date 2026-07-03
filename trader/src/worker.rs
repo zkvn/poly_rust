@@ -38,6 +38,15 @@ pub struct HoldingData {
     pub entry_ts: f64,
     pub shares: f64,
     pub exit_arm: ExitArm,
+    /// Count of failed exit-order attempts (unwind and/or stop-loss) seen
+    /// while this position was held — lets a later WIN/LOSS-at-resolution
+    /// `TradeRecord` show it wasn't a clean hold, an early exit was tried
+    /// and failed first (see `on_unwind_failed`/`on_stop_sell_failed`).
+    #[serde(default)]
+    pub exit_attempts: u32,
+    /// Most recent failed exit attempt's error message, if any.
+    #[serde(default)]
+    pub exit_last_error: Option<String>,
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -73,11 +82,11 @@ pub enum Event {
     OrderFilled { filled_shares: f64, cost: f64 },
     OrderRejected,
     /// Response to the `Action::PlaceLimitSell` issued right after an entry fill.
-    LimitSellPlaced { order_id: Option<String>, status: SellStatus },
+    LimitSellPlaced { order_id: Option<String>, status: SellStatus, error: Option<String> },
     UnwindFilled { sold_shares: f64, exit_price: f64 },
-    UnwindFailed,
+    UnwindFailed { error: Option<String> },
     StopSellFilled { sold_shares: f64, exit_price: f64 },
-    StopSellFailed,
+    StopSellFailed { error: Option<String> },
     /// Async market-resolution confirmation (Gamma/CLOB), arriving after cycle end.
     ApiResult { won: bool },
     Control(ControlEvent),
@@ -344,11 +353,11 @@ impl Worker {
             Event::PolyTick(t) => self.on_poly(t),
             Event::OrderFilled { filled_shares, cost } => self.on_order_filled(filled_shares, cost),
             Event::OrderRejected => self.on_order_rejected(),
-            Event::LimitSellPlaced { order_id, status } => self.on_limit_sell_placed(order_id, status),
+            Event::LimitSellPlaced { order_id, status, error } => self.on_limit_sell_placed(order_id, status, error),
             Event::UnwindFilled { sold_shares, exit_price } => self.on_unwind_filled(sold_shares, exit_price),
-            Event::UnwindFailed => self.on_unwind_failed(),
+            Event::UnwindFailed { error } => self.on_unwind_failed(error),
             Event::StopSellFilled { sold_shares, exit_price } => self.on_stop_sell_filled(sold_shares, exit_price),
-            Event::StopSellFailed => self.on_stop_sell_failed(),
+            Event::StopSellFailed { error } => self.on_stop_sell_failed(error),
             Event::ApiResult { won } => self.on_api_result(won),
             Event::Control(c) => self.on_control(c),
             Event::Balance(b) => self.on_balance(b),
@@ -408,6 +417,8 @@ impl Worker {
             exit_price,
             outcome,
             pnl,
+            exit_attempts: h.exit_attempts,
+            exit_last_error: h.exit_last_error.clone(),
         };
         // Held WIN/LOSS spawns Confirming — an ApiResult mismatch can still flip it.
         self.state = WorkerState::Confirming(record.clone());
@@ -501,7 +512,10 @@ impl Worker {
             (ExitArm::PriceMonitor { tp_price }, vec![])
         };
 
-        let holding = HoldingData { side, entry_type, token_price: cost, entry_ts: self.last_binance_ts(), shares: filled_shares, exit_arm };
+        let holding = HoldingData {
+            side, entry_type, token_price: cost, entry_ts: self.last_binance_ts(), shares: filled_shares, exit_arm,
+            exit_attempts: 0, exit_last_error: None,
+        };
         self.state = WorkerState::Holding(holding);
         actions.push(Action::Persist);
         actions
@@ -515,7 +529,7 @@ impl Worker {
         vec![Action::Persist]
     }
 
-    fn on_limit_sell_placed(&mut self, order_id: Option<String>, status: SellStatus) -> Vec<Action> {
+    fn on_limit_sell_placed(&mut self, order_id: Option<String>, status: SellStatus, error: Option<String>) -> Vec<Action> {
         let WorkerState::Holding(h) = &mut self.state else { return vec![] };
         match status {
             SellStatus::Live => {
@@ -533,6 +547,7 @@ impl Worker {
                     slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
                     strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
                     token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
+                    exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
                 };
                 self.state = WorkerState::EnrichOnly(record.clone());
                 vec![Action::LogTrade(record), Action::Persist]
@@ -541,6 +556,8 @@ impl Worker {
                 // Fall back to price-monitor backstop; stop-loss stays armed regardless.
                 let tp_price = h.token_price + self.unwind_pnl;
                 h.exit_arm = ExitArm::PriceMonitor { tp_price };
+                h.exit_attempts += 1;
+                h.exit_last_error = error;
                 vec![Action::Persist]
             }
         }
@@ -560,15 +577,19 @@ impl Worker {
             slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
             strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
             token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
+            exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
         };
         self.state = WorkerState::EnrichOnly(record.clone());
         vec![Action::LogTrade(record), Action::Persist]
     }
 
-    fn on_unwind_failed(&mut self) -> Vec<Action> {
+    fn on_unwind_failed(&mut self, error: Option<String>) -> Vec<Action> {
         // A failed sell is not an exit — reclassify as held, resolved at cycle end.
         if let WorkerState::Unwinding(h) = &self.state {
-            self.state = WorkerState::Holding(h.clone());
+            let mut h = h.clone();
+            h.exit_attempts += 1;
+            h.exit_last_error = error;
+            self.state = WorkerState::Holding(h);
         }
         vec![Action::Persist]
     }
@@ -590,14 +611,18 @@ impl Worker {
             slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
             strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
             token_price: h.token_price, exit_price, outcome: Outcome::StopLoss, pnl,
+            exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
         };
         self.state = WorkerState::EnrichOnly(record.clone());
         vec![Action::LogTrade(record), Action::Persist]
     }
 
-    fn on_stop_sell_failed(&mut self) -> Vec<Action> {
+    fn on_stop_sell_failed(&mut self, error: Option<String>) -> Vec<Action> {
         if let WorkerState::StopExiting(h) = &self.state {
-            self.state = WorkerState::Holding(h.clone());
+            let mut h = h.clone();
+            h.exit_attempts += 1;
+            h.exit_last_error = error;
+            self.state = WorkerState::Holding(h);
         }
         vec![Action::Persist]
     }
@@ -771,7 +796,7 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: Some("order-123".to_string()), status: SellStatus::Live });
+        w.step(Event::LimitSellPlaced { order_id: Some("order-123".to_string()), status: SellStatus::Live, error: None });
         match &w.state {
             WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::GtcResting { order_id: "order-123".to_string() }),
             _ => panic!("expected Holding"),
@@ -783,7 +808,7 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: None, status: SellStatus::Failed });
+        w.step(Event::LimitSellPlaced { order_id: None, status: SellStatus::Failed, error: Some("test error".to_string()) });
         match &w.state {
             WorkerState::Holding(h) => assert!(matches!(h.exit_arm, ExitArm::PriceMonitor { .. })),
             _ => panic!("expected Holding"),
@@ -854,12 +879,42 @@ mod tests {
         assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
     }
 
+    /// Reproduces the 2026-07-03 ETH audit scenario (trader/doc/audit_trades_2026-07-03.md):
+    /// a take-profit unwind is triggered but the sell fails (e.g. "balance: 0"),
+    /// so the position falls back to Holding and is resolved at cycle close.
+    /// The logged WIN/LOSS record must carry the failed-attempt history instead
+    /// of looking like a clean hold-to-resolution trade.
+    #[test]
+    fn failed_unwind_then_cycle_close_carries_exit_attempts_onto_trade_record() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // crosses tp -> Unwinding
+        assert!(matches!(w.state, WorkerState::Unwinding(_)));
+
+        w.step(Event::UnwindFailed { error: Some("balance: 0".to_string()) });
+        match &w.state {
+            WorkerState::Holding(h) => {
+                assert_eq!(h.exit_attempts, 1);
+                assert_eq!(h.exit_last_error.as_deref(), Some("balance: 0"));
+            }
+            _ => panic!("expected Holding (failed exit is not an exit)"),
+        }
+
+        // Price stayed below open (59900 < 60000) -> DOWN wins at cycle close.
+        let actions = w.step(Event::CycleClose);
+        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        assert_eq!(record.outcome, Outcome::Win);
+        assert_eq!(record.exit_attempts, 1, "WIN record must show the failed unwind attempt, not look like a clean hold");
+        assert_eq!(record.exit_last_error.as_deref(), Some("balance: 0"));
+    }
+
     #[test]
     fn stop_loss_fires_and_cancels_resting_gtc_first() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: Some("order-1".to_string()), status: SellStatus::Live });
+        w.step(Event::LimitSellPlaced { order_id: Some("order-1".to_string()), status: SellStatus::Live, error: None });
 
         // dn drops below entry(0.70) - sl_pnl(0.20) = 0.50 (use 0.49 to clear the
         // f64 boundary cleanly: 0.70 - 0.20 == 0.4999999999999999 in f64).
@@ -880,7 +935,7 @@ mod tests {
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.45, dn: 0.49 })); // triggers StopExiting
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
 
-        w.step(Event::StopSellFailed);
+        w.step(Event::StopSellFailed { error: Some("test error".to_string()) });
         assert!(matches!(w.state, WorkerState::Holding(_)), "failed exit is not an exit — reclassified as held");
     }
 
@@ -964,6 +1019,7 @@ mod tests {
             side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "gone-order".to_string() },
+            exit_attempts: 0, exit_last_error: None,
         };
         let persisted = PersistedWorkerState::Holding(holding);
 
@@ -981,6 +1037,7 @@ mod tests {
             side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "still-live".to_string() },
+            exit_attempts: 0, exit_last_error: None,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &["still-live".to_string()], 10.0);
@@ -996,6 +1053,7 @@ mod tests {
             side: Side::Up, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::PriceMonitor { tp_price: 0.73 },
+            exit_attempts: 0, exit_last_error: None,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &[], 0.0);

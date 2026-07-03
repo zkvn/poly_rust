@@ -133,16 +133,24 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
     }
     use std::io::Write as _;
     let mut f = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
-    writeln!(f, "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl")?;
+    writeln!(f, "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error")?;
     Ok(())
+}
+
+/// Comma-joined CSV writer (no `csv` crate) — strip characters that would
+/// break the naive comma-split so a raw SDK error message can't corrupt the row.
+fn csv_sanitize(s: &str) -> String {
+    s.replace(',', ";").replace('\n', " ")
 }
 
 fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
     use std::io::Write as _;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(f, "{},{},{},{},{},{},{},{},{}",
+    let exit_last_error = rec.exit_last_error.as_deref().map(csv_sanitize).unwrap_or_default();
+    writeln!(f, "{},{},{},{},{},{},{},{},{},{},{}",
         trader::marketdata::now_secs_f64(), rec.slug, rec.strategy, rec.side.as_str(),
-        rec.entry_ts, rec.token_price, rec.exit_price, rec.outcome.as_str(), rec.pnl)?;
+        rec.entry_ts, rec.token_price, rec.exit_price, rec.outcome.as_str(), rec.pnl,
+        rec.exit_attempts, exit_last_error)?;
     Ok(())
 }
 
@@ -312,9 +320,10 @@ impl Driver<'_> {
             }
             Action::PlaceLimitSell { shares, price } => {
                 let Some(token_id) = slot.current_token_id else { return None };
-                let (order_id, status) = self.engine.place_limit_sell(token_id, *shares, *price).await;
-                println!("[ORDER] {} LIMIT SELL {shares:.4} @ {price:.4} -> status={status:?} order_id={order_id:?}", slot.worker.asset);
-                Some(Event::LimitSellPlaced { order_id, status })
+                let r = self.engine.place_limit_sell(token_id, *shares, *price).await;
+                println!("[ORDER] {} LIMIT SELL {shares:.4} @ {price:.4} -> status={:?} order_id={:?} err={:?}",
+                    slot.worker.asset, r.status, r.order_id, r.error);
+                Some(Event::LimitSellPlaced { order_id: r.order_id, status: r.status, error: r.error })
             }
             Action::ClosePosition { shares, reason } => {
                 let Some(token_id) = slot.current_token_id else { return None };
@@ -334,16 +343,16 @@ impl Driver<'_> {
                     )).await;
                 }
                 let result = self.engine.close_position(token_id, *shares).await;
-                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4}",
-                    slot.worker.asset, result.status, result.shares_sold, result.filled_usdc);
+                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?}",
+                    slot.worker.asset, result.status, result.shares_sold, result.filled_usdc, result.error);
                 let sold = result.shares_sold;
                 let exit_price = if sold > 0.0 { result.filled_usdc / sold } else { 0.0 };
                 let matched = matches!(result.status, SellStatus::Matched);
                 let event = match (matched, reason) {
                     (true, CloseReason::TakeProfit) => Event::UnwindFilled { sold_shares: sold, exit_price },
                     (true, CloseReason::StopLoss) => Event::StopSellFilled { sold_shares: sold, exit_price },
-                    (false, CloseReason::TakeProfit) => Event::UnwindFailed,
-                    (false, CloseReason::StopLoss) => Event::StopSellFailed,
+                    (false, CloseReason::TakeProfit) => Event::UnwindFailed { error: result.error },
+                    (false, CloseReason::StopLoss) => Event::StopSellFailed { error: result.error },
                 };
                 if matched && sold >= *shares {
                     slot.current_token_id = None;

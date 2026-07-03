@@ -317,6 +317,8 @@ impl Machine {
             exit_price,
             outcome,
             pnl,
+            exit_attempts: 0,
+            exit_last_error: None,
         };
         self.state = TradeState::Watching;
         Some(rec)

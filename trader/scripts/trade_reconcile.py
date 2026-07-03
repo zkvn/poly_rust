@@ -310,13 +310,21 @@ def compute_performance_stats(rows: list) -> dict:
 
     sl_unwind_rows = [r for r in rows if r.get("outcome", "").upper() in ("STOPLOSS", "UNWIND")]
 
+    # WIN/LOSS rows that had a failed early-exit attempt before falling back to
+    # hold-to-resolution — invisible in the trade history alone (looks like a
+    # clean hold). See trader/doc/audit_trades_2026-07-03.md for the original gap.
+    failed_exit_rows = [
+        r for r in rows
+        if r.get("outcome", "").upper() in ("WIN", "LOSS") and int(r.get("exit_attempts") or 0) > 0
+    ]
+
     return {
         "span_first": span_first, "span_last": span_last, "total_rows": n,
         "sides": sides, "outcomes": outcomes, "assets": assets, "strategies": strategies,
         "pnl_total": pnl_total, "asset_stats": asset_stats,
         "strategy_breakdown": strategy_breakdown,
         "sl_detail": sl_detail, "trade_history": trade_history,
-        "sl_unwind_rows": sl_unwind_rows,
+        "sl_unwind_rows": sl_unwind_rows, "failed_exit_rows": failed_exit_rows,
     }
 
 
@@ -361,6 +369,8 @@ def _build_sl_unwind_audit(rows: list) -> list:
             "asset": row.get("asset", ""), "side": side, "strategy": row.get("strategy", ""),
             "outcome": outcome, "quality": quality,
             "token_price": token_price, "exit_price": exit_price, "pnl": pnl,
+            "exit_attempts": int(row.get("exit_attempts") or 0),
+            "exit_last_error": row.get("exit_last_error", ""),
             "clob_history": [],
         }
 
@@ -393,7 +403,10 @@ def _render_sl_unwind_audit(lines: list, audit: list) -> None:
             f"| Entry token price | {entry['token_price']:.4f} |",
             f"| Exit price        | {entry['exit_price']:.4f} |",
             f"| PnL               | {entry['pnl']:+.4f} |",
+            f"| Failed attempts before this exit | {entry['exit_attempts']} |",
         ])
+        if entry["exit_attempts"]:
+            lines.append(f"| Last error before exit | {entry['exit_last_error']} |")
         lines.append("")
         if entry["clob_history"]:
             lines.append("**CLOB Price History (token held)**")
@@ -405,6 +418,23 @@ def _render_sl_unwind_audit(lines: list, audit: list) -> None:
         else:
             lines.append("*No CLOB tick data available — audit based on CSV fields only.*")
             lines.append("")
+
+
+def _render_failed_exit_audit(lines: list, rows: list) -> None:
+    """WIN/LOSS rows resolved by hold-to-resolution after a failed early-exit
+    attempt — without this, they're indistinguishable from a clean hold in the
+    trade history table. See trader/doc/audit_trades_2026-07-03.md."""
+    lines.extend([
+        "| Time | Asset | Strategy | Side | Outcome | Attempts | Last error |",
+        "|---|---|---|---|---|---|---|",
+    ])
+    for r in rows:
+        time_str = datetime.fromtimestamp(_safe_float(r["logged_at"]), tz=HKT).strftime("%Y-%m-%d %H:%M:%S")
+        lines.append(
+            f"| {time_str} | {r.get('asset', '')} | {r.get('strategy', '')} | {r.get('side', '')} | "
+            f"{r.get('outcome', '')} | {int(r.get('exit_attempts') or 0)} | {r.get('exit_last_error', '')} |"
+        )
+    lines.append("")
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +606,18 @@ def write_markdown_summary(
         except Exception as e:
             lines.append(f"*Audit failed: {e}*")
             lines.append("")
+
+    failed_exit_rows = ps.get("failed_exit_rows", [])
+    if failed_exit_rows:
+        lines.append("## Failed Exit Attempts (held to resolution)")
+        lines.append("")
+        lines.append(
+            "WIN/LOSS trades where an early exit (unwind take-profit or "
+            "stop-loss) was attempted and failed before the position was "
+            "held to market resolution — not a clean hold."
+        )
+        lines.append("")
+        _render_failed_exit_audit(lines, failed_exit_rows)
 
     lines.append("## Gamma Cross-Check")
     lines.append("")
