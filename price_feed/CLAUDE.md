@@ -3,18 +3,16 @@
 ## Working style (important)
 - **Think first, then code.** Analyze the problem and explain the root cause before making changes.
 - **Don't code too fast.** Avoid jumping straight to edits or patches.
-- **Ask for confirmation before ANY file change and before ANY git commit. After committing, push immediately without asking.**
+- **Ask for confirmation before ANY file change and before ANY git commit. Push by default: once a commit is made, push it immediately without asking.**
 - Prefer diagnosing over patching — verify the actual cause (logs, processes, config) before proposing a fix.
 
 ## Project notes
-- Rust project; `cargo build` builds the whole workspace cleanly. The main binary
-  is `order_trade_machine`; build/run a single one with `cargo build --bin <name>`.
-  Use `RUSTFLAGS=-Awarnings` to silence the remaining non-blocking warnings.
-- IB connectivity: `connect_ib(is_test, msg)` in `src/ib.rs`. `is_test=true` -> port 4002 (paper gateway), `false` -> 4001 (live).
-- Option-chain download entry point: `test_download_spy_opt_chain` in `src/bin/ib_download.rs`, run via `cargo run --bin ib_download -- opt-chain SPY`.
-- Planned: a feature-gated Ratatui terminal dashboard (`--tui`, `--features tui`) that replaces the old
-  egui `ib_gui` price window. Full implementation plan lives in `refactor_tui.md` — read it before starting
-  that work.
+- Rust project (Polymarket CLOB price recorder — streams live order-book/price data,
+  writes daily Parquet). `cargo build` builds it; main binary is `price_feed`
+  (`cargo run --bin price_feed -- collect --nats-url <url>`).
+  Use `RUSTFLAGS=-Awarnings` to silence non-blocking warnings.
+- See the top-level `README.md` for data-file layout, the hourly-seal parquet-integrity
+  design, and Oracle cross-compile/deploy notes — read it before touching collector internals.
 
 ## Studies
 Research findings live in `studies/<theme>/SUMMARY.md`. The index is `studies/README.md` — read it first before starting a new study to avoid duplication. Analysis scripts (Python, standalone) live in `analysis/`. When a study concludes, add a one-line row to `studies/README.md`.
@@ -22,13 +20,6 @@ Research findings live in `studies/<theme>/SUMMARY.md`. The index is `studies/RE
 **After each study run, copy Claude's terminal analysis summary verbatim into the top of
 `SUMMARY.md` or `analysis.md` (above the detailed sections).** The narrative Claude writes
 at the end of a run is high-quality and should be preserved as-is, not paraphrased.
-
-## Regression test
-- After changing the state machine / trade manager / signals, run the `random_walk`
-  backtest and confirm the total PnL is unchanged. With `backtest_config.toml` set to
-  `stra_config_tomls = ["random_walk.toml"]` and dates `2025-04-01 08:00` → `2025-06-01 08:00`:
-  `RUST_LOG=info RUSTFLAGS=-Awarnings cargo run --bin order_trade_machine` should end with
-  **`TOTAL PNL -343.20`** (i.e. `-343.1999999999948`). A different value means a regression.
 
 
 # Rust Project Context & Guidelines

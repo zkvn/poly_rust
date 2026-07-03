@@ -26,9 +26,18 @@ rsync or a crash will be missing the footer and will be unreadable by standard r
 disk. This means files are always at most ~1 hour stale and readable at any sync time. On restart
 the writer carries forward all rows from the last sealed file.
 
-**Recovery:** `price_feed/scripts/recover_live_tmp.py` recovers footerless/unsealed `*.tmp` files by
-scanning raw parquet page bytes, and merges them with the day's other era files (old pre-seal daily
-file + hourly-sealed files) into one up-to-date, deduped `{asset}_{type}_{date}.parquet` per asset:
+Note this means the plain `{asset}_{type}_{date}.parquet` — the collector's live write target for
+"today" — is itself footerless/unreadable by standard readers for most of each hour, not just the
+`*.tmp` files; only the moment right after a seal (`hourly seal done` in `journalctl -u
+poly-collector`) is it guaranteed valid. A restart doesn't change this — the collector seals
+immediately on startup and then resumes the same hourly cadence from there (confirmed via
+`journalctl`: seals land ~58 minutes past each hour the process has been up). This is normal,
+expected behavior, not a fault — plan reads of "today's" data around it (see Recovery below).
+
+**Recovery:** `price_feed/scripts/recover_live_tmp.py` recovers footerless/unsealed files — the plain
+daily file between reseals, and any live `*.tmp` — by scanning raw parquet page bytes, and merges them
+with the day's other era files (old pre-seal daily file + hourly-sealed files) into one up-to-date,
+deduped `{asset}_{type}_{date}.parquet` per asset:
 
 ```bash
 # after a fresh sync_oracle.sh, so the .tmp isn't a stale/mid-flush snapshot

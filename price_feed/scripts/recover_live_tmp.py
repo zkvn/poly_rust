@@ -211,28 +211,45 @@ def recover_book_rust_tmp(path: str) -> pd.DataFrame:
     return pd.DataFrame(cols)
 
 
+def _read_or_recover(path: str, recover_fn) -> tuple[pd.DataFrame, int]:
+    """Read a parquet file normally; if it's unsealed (no footer — the plain
+    daily file between hourly reseals, or a live *.tmp), fall back to the
+    raw-page recovery decoder. Returns (df, recovered_row_count)."""
+    try:
+        return pq.read_table(path).to_pandas(), 0
+    except Exception:
+        rec = recover_fn(path)
+        return rec, len(rec)
+
+
 def merge_asset(asset: str, kind: str, date: str) -> None:
     recover_fn = recover_poly_rust_tmp if kind == "poly" else recover_book_rust_tmp
     dedup_keys = ["ts", "slug"] if kind == "poly" else ["ts", "slug", "side"]
 
     frames = []
+    recovered_rows = 0
+
+    # The plain daily file is the collector's live target between hourly
+    # reseals (README's "Hourly seal" section) -- it can be footerless at
+    # read time even though it's not a *.tmp, so it needs the same recovery
+    # fallback as the tmp candidates below.
     daily = os.path.join(RAW, f"{asset}_{kind}_{date}.parquet")
     if os.path.exists(daily):
-        frames.append(pq.read_table(daily).to_pandas())
+        df, n = _read_or_recover(daily, recover_fn)
+        recovered_rows += n
+        frames.append(df)
 
     sealed = sorted(glob.glob(os.path.join(RAW, f"{asset}_{kind}_{date}_*.parquet")))
     for f in sealed:
-        frames.append(pq.read_table(f).to_pandas())
+        df, n = _read_or_recover(f, recover_fn)
+        recovered_rows += n
+        frames.append(df)
 
     tmp_candidates = sorted(glob.glob(os.path.join(RAW, f"{asset}_{kind}_{date}_*.parquet.tmp")))
-    tmp_rows = 0
     for tmp in tmp_candidates:
-        try:
-            frames.append(pq.read_table(tmp).to_pandas())
-        except Exception:
-            rec = recover_fn(tmp)
-            tmp_rows += len(rec)
-            frames.append(rec)
+        df, n = _read_or_recover(tmp, recover_fn)
+        recovered_rows += n
+        frames.append(df)
 
     if not frames:
         print(f"{asset}: no files found for {kind}/{date}, skipping")
@@ -245,7 +262,7 @@ def merge_asset(asset: str, kind: str, date: str) -> None:
 
     merged.to_parquet(daily, index=False)
     print(f"{asset}: {before} -> {after} rows (deduped {before - after}), "
-          f"tmp_recovered={tmp_rows}, max_ts={merged['ts'].max()}")
+          f"recovered_rows={recovered_rows}, max_ts={merged['ts'].max()}")
 
 
 def main() -> None:
