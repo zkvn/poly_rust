@@ -1,0 +1,7 @@
+target/
+live_logs/
+shadow_logs/
+shadow_logs_buggy_pre_fix/
+.env
+*.csv
+*.json

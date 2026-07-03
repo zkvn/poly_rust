@@ -104,6 +104,46 @@ on the remote before the nightly sync runs.
 
 ## Build and deploy
 
+### Deploy to Oracle (one command)
+
+Deploys both the price recorder and the live trader together — the recommended path for routine
+deploys (use the feature-branch workflow below only when iterating on `price_feed` alone):
+
+```bash
+# from repo root, using btc_5mins venv which has paramiko
+source ../btc_5mins/venv/bin/activate
+python scripts/deploy_oracle.py
+```
+
+Builds aarch64 binaries via `cross` (Docker-based), rsyncs them to Oracle, restarts
+`poly-collector` (systemd), stops the old trader cleanly (SIGTERM → 10 s → SIGKILL),
+starts the new trader in a tmux session named `trader`.
+
+```bash
+# useful flags
+python scripts/deploy_oracle.py --dry-run          # preview, no changes
+python scripts/deploy_oracle.py --skip-build       # rsync + restart only (binaries already built)
+python scripts/deploy_oracle.py --price-feed-only  # skip trader
+python scripts/deploy_oracle.py --trader-only      # skip price_feed
+```
+
+**Since this redeploys `price_feed` too, the git branch convention above applies here as well** —
+confirm which branch is checked out locally before running it, or you'll silently ship whatever
+that branch's `price_feed` looks like (this is exactly how the Binance-recording regression in the
+TODO above happened).
+
+### Trader env file
+
+The trader has its own env file at `/home/ubuntu/apps/poly_rust/trader/.env` — separate from
+the Python bot's `/home/ubuntu/apps/btc_5mins/.env`. They share the same `TELEGRAM_CHAT_ID`
+but use **different bot tokens**, so Telegram notifications stay in the same chat but come
+from distinct bots without `getUpdates` conflicts.
+
+`scripts/deploy_oracle.py` is configured to use the trader's own env file (`TRADER_ENV_FILE`
+constant). Do not change it to point at `btc_5mins/.env` — that causes both bots to poll
+the same token, producing 409 Conflict errors on `getUpdates` and cross-contaminated
+startup notifications.
+
 ### Oracle box is aarch64 — cross-compile locally
 
 Oracle (`10.8.0.1`) is ARM64. The dev machine is x86-64. Use `cross` (Docker-based) to build:
@@ -120,7 +160,27 @@ rsync -avz target/aarch64-unknown-linux-gnu/release/price_feed ubuntu@10.8.0.1:/
 install required. Build takes ~45 s when dependencies are cached (first run ~5 min).
 
 **Do not build on Oracle with `cargo build`** — it saturates the box's CPU for several minutes and
-blocks the live collector.
+blocks the live collector and trader.
+
+`price_feed/Cross.toml` configures the cross Docker image to pre-install `libssl-dev:arm64`
+(needed only for any future native-tls dependency; currently unused but kept as a safeguard):
+
+```toml
+[target.aarch64-unknown-linux-gnu]
+pre-build = ["dpkg --add-architecture arm64",
+             "apt-get update && apt-get install -y --no-install-recommends libssl-dev:arm64 pkg-config"]
+```
+
+**Rustls provider gotcha:** `price_feed` uses `tokio-tungstenite` with `rustls-tls-webpki-roots`,
+and (since the NATS bridge) `async-nats` with its own `rustls` usage. Rustls ≥0.22 requires an
+explicit crypto provider call at startup once multiple crates share rustls:
+
+```rust
+let _ = rustls::crypto::ring::default_provider().install_default();
+```
+
+This is already in `main()` for both `price_feed` and `trader`. Without it, `cross` builds
+succeed but the process panics at runtime when the first TLS connection opens.
 
 ### Restart collector after deploy
 
@@ -134,10 +194,36 @@ cd /home/ubuntu/apps/poly_rust/price_feed
 nohup ./target/release/price_feed collect >> collector.log 2>&1 &
 ```
 
+### Monitor after deploy
+
+```bash
+# price_feed (systemd)
+ssh ubuntu@10.8.0.1 "journalctl -u poly-collector -f -o cat"
+
+# live trader (tmux)
+ssh ubuntu@10.8.0.1 "tmux attach -t trader"
+# detach: Ctrl-B D
+
+# one-shot status
+ssh ubuntu@10.8.0.1 "
+  systemctl is-active poly-collector nats-server
+  pgrep -u ubuntu -a -f 'live '
+  top -bn1 | grep -E 'price_f|live'
+"
+```
+
+Oracle also runs a local `nats-server` (systemd unit `nats-server.service`, bound to
+`127.0.0.1:4222` only) that `poly-collector` publishes live ticks to and the trader subscribes to
+instead of opening its own duplicate Binance/Poly WebSockets. `price_feed::collect::run()` treats a
+failed NATS connect as fatal — under `Restart=always` that would crash-loop `poly-collector` if
+NATS ever goes down. If you ever touch either unit, bring `nats-server` up and confirm it's
+reachable (`ss -tln | grep 4222`) *before* restarting `poly-collector`.
+
 ### Feature-branch deploy workflow
 
-Standard sequence for landing a price-recorder change (see the git branch convention above —
-one feature per branch):
+Standard sequence for landing a price-recorder-only change (see the git branch convention above —
+one feature per branch). For a combined price_feed+trader deploy, use `deploy_oracle.py` above
+instead once both sides are ready.
 
 1. Develop and test on the feature branch, based off `main`.
 2. Commit, push the branch.
@@ -154,3 +240,53 @@ one feature per branch):
    not duplicated per-branch.
 7. If unhealthy: return to the feature branch, fix, and repeat from step 3 (use `cross`'s Docker
    build locally to iterate without needing Oracle access) until the Oracle run is clean.
+
+### Local Docker test — full NATS pipeline
+
+Runs price-feed + NATS + trader locally against live Polymarket/Binance APIs (x86_64 images):
+
+```bash
+docker compose up --build
+
+# check NATS throughput
+curl http://localhost:8222/varz | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['in_msgs'], 'published,', d['out_msgs'], 'delivered')"
+
+# trader logs (look for "[NATS] first binance/poly tick")
+docker compose logs -f trader
+```
+
+`price-feed` publishes to `price.binance.BTC` and `price.poly.BTC`; `trader` subscribes and
+trades. Requires `/home/kev/apps/btc_5mins/.env` mounted read-only into the trader container.
+
+---
+
+## Trading engine — known incidents
+
+### Stop-loss close never filled (2026-07-02, fixed)
+
+A live BNB test (`trader/src/bin/live.rs`, size $1, max-trades 1) bought 1.0752 shares of "Up"
+for $0.9999, the stop-loss triggered, and **every single close retry failed** for the rest of the
+run (hundreds of retries, `status=Failed sold=0.0000`). The position was never exited and rode to
+market resolution; "Up" lost, so the position settled to $0. **Total loss: $0.9999** (confirmed via
+Polymarket's public `data-api.polymarket.com/positions` endpoint — `currentValue: 0` on
+`bnb-updown-5m-1782971400`).
+
+**Root cause:** `execution.rs::close_position()` built the market SELL order as
+`.amount(Amount::usdc(size_dec))`, where `size_dec` was the **held share count** (1.0753), not a
+USDC amount. The SDK has two distinct constructors, `Amount::usdc()` and `Amount::shares()`.
+Wrapping a share count in `Amount::usdc` tells the exchange "I want ~$1.0753 in proceeds", which at
+a <$1 price requires selling *more* shares than are actually held — so the order could never
+match. Every retry hit `"no orders found to match with FAK order"` / `"not enough balance"`, which
+the retry loop treated as transient and retried forever instead of surfacing as a real error. The
+retry logic explicitly listing `"not enough balance"` as retryable is a strong sign this exact
+failure had been seen before and papered over with retries rather than fixed.
+
+**Fix:** use `Amount::shares(size_dec)` instead, matching `place_limit_sell`'s existing correct
+pattern (`round2(shares)` → 2-decimal `Decimal`, since `Amount::shares` enforces `LOT_SIZE_SCALE=2`
+— unlike `Amount::usdc` which allows more decimal places, so the old 4-decimal formatting would
+have failed validation immediately if this had been caught locally instead of live). Verified with
+`cargo test --lib execution` (all 7 tests pass) after the change.
+
+**Lesson:** any future live/shadow test should watch for repeated `[SL close] retry` log lines as a
+red flag — that pattern means the close is structurally broken, not just hitting temporary
+liquidity, and the position will ride uncontrolled to market resolution.

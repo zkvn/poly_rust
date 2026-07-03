@@ -10,6 +10,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::{Duration as ChronoDuration, FixedOffset, Utc};
 use futures::StreamExt as _;
+use tokio_tungstenite::tungstenite::Message;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
@@ -19,7 +20,6 @@ use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
 use polymarket_client_sdk_v2::types::U256;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
-use tokio_tungstenite::tungstenite::Message;
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
@@ -224,6 +224,7 @@ fn book_schema() -> Schema {
 
 struct ParquetBuf {
     path: PathBuf,
+    schema: Schema,
     writer: ArrowWriter<fs::File>,
     rows_since_flush: usize,
     last_flush: std::time::Instant,
@@ -240,10 +241,11 @@ impl ParquetBuf {
             .truncate(true)
             .open(&path)
             .with_context(|| format!("open {path:?}"))?;
-        let writer = ArrowWriter::try_new(file, Arc::new(schema), Some(props))
+        let writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))
             .context("ArrowWriter")?;
         Ok(Self {
             path,
+            schema,
             writer,
             rows_since_flush: 0,
             last_flush: std::time::Instant::now(),
@@ -939,6 +941,8 @@ fn spawn_bba_task(
     clob: ClobWsClient,
     state: Arc<Mutex<Vec<AssetState>>>,
     mut slot_rx: watch::Receiver<Vec<Option<(U256, U256, String)>>>,
+    nats: Option<async_nats::Client>,
+    assets: Vec<String>,
 ) {
     tokio::spawn(async move {
         let mut task: Option<tokio::task::JoinHandle<()>> = None;
@@ -968,6 +972,8 @@ fn spawn_bba_task(
 
             let clob = clob.clone();
             let state = Arc::clone(&state);
+            let nats = nats.clone();
+            let assets = assets.clone();
             task = Some(tokio::spawn(async move {
                 loop {
                     match (
@@ -1007,14 +1013,29 @@ fn spawn_bba_task(
                                 }
                                 if let Some(&(_, idx)) = map.iter().find(|(id, _)| *id == asset_id) {
                                     let received_at_ms = now_ms();
-                                    let mut st = state.lock().unwrap();
-                                    if idx < st.len() {
-                                        st[idx].latest_bba = Some(BbaSample {
-                                            best_bid: bid,
-                                            best_ask: ask,
-                                            server_ts_ms,
-                                            received_at_ms,
-                                        });
+                                    // Release lock before any await.
+                                    {
+                                        let mut st = state.lock().unwrap();
+                                        if idx < st.len() {
+                                            st[idx].latest_bba = Some(BbaSample {
+                                                best_bid: bid,
+                                                best_ask: ask,
+                                                server_ts_ms,
+                                                received_at_ms,
+                                            });
+                                        }
+                                    }
+                                    if let Some(ref nc) = nats {
+                                        if idx < assets.len() {
+                                            let up_mid = (bid + ask) / 2.0;
+                                            let ts = received_at_ms as f64 / 1000.0;
+                                            let payload = format!(
+                                                r#"{{"ts":{ts:.3},"up":{up_mid:.6},"dn":{:.6}}}"#,
+                                                1.0 - up_mid
+                                            );
+                                            let subject = format!("price.poly.{}", assets[idx]);
+                                            let _ = nc.publish(subject, payload.into_bytes().into()).await;
+                                        }
                                     }
                                 }
                             }
@@ -1115,8 +1136,10 @@ fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
 /// and `_4hr` suffixes are appended for those durations. Lets a second
 /// instance run against a scratch directory (e.g. `raw_new`) alongside the
 /// production collector for parallel-run validation (doc/BINANCE_RECORDER_PLAN.md §6)
-/// without colliding with its output.
-pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result<()> {
+/// without colliding with its output. `nats_url`, if set, publishes live
+/// Binance + 5m Poly ticks so the trader can subscribe instead of opening its
+/// own duplicate feeds (README.md "Oracle infra: NATS price bridge").
+pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<String>) -> Result<()> {
     let raw_5m  = PathBuf::from(raw_dir_base);
     let raw_15m = PathBuf::from(format!("{raw_dir_base}_15_mins"));
     let raw_4hr = PathBuf::from(format!("{raw_dir_base}_4hr"));
@@ -1151,6 +1174,20 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
         assets.join(", ")
     );
 
+    // Connect to NATS if requested. Binance + 5m Poly ticks are published there
+    // (from the samplers below, reusing their existing feed — see ticker_250ms
+    // and the state_5m branch of ticker_200ms) so the trader can subscribe
+    // instead of opening its own duplicate Binance/Poly WS connections.
+    let nats: Option<async_nats::Client> = match nats_url {
+        Some(ref url) => {
+            let nc = async_nats::connect(url).await
+                .with_context(|| format!("connect to NATS at {url}"))?;
+            eprintln!("NATS connected: {url}");
+            Some(nc)
+        }
+        None => None,
+    };
+
     let clob = ClobWsClient::default();
 
     // ── 5-min Polymarket feed ────────────────────────────────────────────────
@@ -1158,7 +1195,8 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
     let (slot_tx_5m, slot_rx_5m) = watch::channel(vec![None; n]);
     spawn_meta_task(assets.clone(), Arc::clone(&state_5m), slot_tx_5m, Arc::clone(&http), 300, "5m");
     spawn_book_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
-    spawn_bba_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
+    // 5m bba task also publishes to NATS when enabled (trader piggybacks on this feed).
+    spawn_bba_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone(), nats.clone(), assets.clone());
     spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
 
     // ── 15-min Polymarket feed ───────────────────────────────────────────────
@@ -1166,7 +1204,7 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
     let (slot_tx_15m, slot_rx_15m) = watch::channel(vec![None; n]);
     spawn_meta_task(assets.clone(), Arc::clone(&state_15m), slot_tx_15m, Arc::clone(&http), 900, "15m");
     spawn_book_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
-    spawn_bba_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
+    spawn_bba_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone(), None, vec![]);
     spawn_trade_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m);
 
     // ── 4-hr Polymarket feed ─────────────────────────────────────────────────
@@ -1174,7 +1212,7 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
     let (slot_tx_4hr, slot_rx_4hr) = watch::channel(vec![None; n]);
     spawn_meta_task(assets.clone(), Arc::clone(&state_4hr), slot_tx_4hr, Arc::clone(&http), 14400, "4h");
     spawn_book_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone());
-    spawn_bba_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone());
+    spawn_bba_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone(), None, vec![]);
     spawn_trade_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr);
 
     // ── Binance feed (asset-level, period-independent — one WS + one writer
@@ -1233,6 +1271,10 @@ pub async fn run_with_raw_dir(assets: Vec<String>, raw_dir_base: &str) -> Result
                 for (i, sample) in samples.into_iter().enumerate() {
                     if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
+                    if let Some(ref nc) = nats {
+                        let payload = format!(r#"{{"ts":{ts:.3},"price":{:.6}}}"#, sample.price);
+                        let _ = nc.publish(format!("price.binance.{}", assets[i]), payload.into_bytes().into()).await;
+                    }
                     let slug = slugs.get(i).cloned().unwrap_or_default();
                     if slug.is_empty() { continue; }
                     if let Err(e) = binance_writers[i].write_sample(ts, sample.price, &slug, sample.server_ts_ms, sample.received_at_ms) {

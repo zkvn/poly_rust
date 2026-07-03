@@ -1,0 +1,43 @@
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"   # monitoring: curl http://localhost:8222/varz
+    command: ["-m", "8222"]
+
+  price-feed:
+    build: ./price_feed
+    depends_on:
+      - nats
+    volumes:
+      - price_feed_raw:/app/raw
+      - price_feed_raw15m:/app/raw_15_mins
+      - price_feed_raw4hr:/app/raw_4hr
+    command: ["collect", "--nats-url", "nats://nats:4222", "BTC"]
+    restart: unless-stopped
+
+  trader:
+    build: ./trader
+    depends_on:
+      - nats
+      - price-feed
+    network_mode: host   # needs VPN routes (10.8.0.7 CLOB proxy) and localhost NATS
+    volumes:
+      - /home/kev/apps/btc_5mins/.env:/run/trader.env:ro
+      - /home/kev/apps/btc_5mins/config:/app/config:ro
+      - trader_logs:/app/live_logs
+    command: [
+      "--asset", "BTC",
+      "--nats-url", "nats://localhost:4222",
+      "--env-file", "/run/trader.env",
+      "--config-dir", "/app/config",
+      "--log-dir", "/app/live_logs"
+    ]
+    restart: unless-stopped
+
+volumes:
+  price_feed_raw:
+  price_feed_raw15m:
+  price_feed_raw4hr:
+  trader_logs:

@@ -36,11 +36,17 @@ enum Cmd {
         /// colliding with its output.
         #[arg(long, default_value = "raw")]
         raw_dir: String,
+        /// Publish live ticks to NATS (e.g. nats://localhost:4222); omit to disable
+        #[arg(long)]
+        nats_url: Option<String>,
     },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install ring as the default rustls crypto provider once for the whole process.
+    // Required for rustls ≥0.22 when multiple crates (reqwest, tokio-tungstenite) share rustls.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     match Cli::parse().command {
         None => chainlink::run().await,
         Some(Cmd::Markets { assets, no_custom_features, probe }) => {
@@ -51,6 +57,6 @@ async fn main() -> anyhow::Result<()> {
                 markets::run(assets, custom_features).await
             }
         }
-        Some(Cmd::Collect { assets, raw_dir }) => collect::run_with_raw_dir(assets, &raw_dir).await,
+        Some(Cmd::Collect { assets, raw_dir, nats_url }) => collect::run(assets, &raw_dir, nats_url).await,
     }
 }
