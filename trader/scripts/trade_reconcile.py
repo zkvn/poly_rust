@@ -2,9 +2,11 @@
 trade_reconcile.py — poly_rust daily trade reconciliation (Rust trader)
 
 Adapted from btc_5mins/scripts/trade_reconcile.py for this project's simpler
-TradeRecord schema (trader/src/types.rs):
+TradeRecord schema (trader/src/types.rs; header is self-healed on read by
+`live.rs::append_csv_header_if_new` if an older CSV predates exit_attempts/
+exit_last_error — see trader/doc/incident_doge_2026-07-03.md):
 
-    logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl
+    logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error
 
 logged_at/entry_ts are Unix epoch seconds (float, UTC) — window filtering is
 plain arithmetic, no HKT string parsing needed. asset is derived from the
@@ -28,6 +30,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -46,6 +49,11 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 
 HKT = timezone(timedelta(hours=8))
+
+CSV_COLUMNS = [
+    "logged_at", "slug", "strategy", "side", "entry_ts", "token_price",
+    "exit_price", "outcome", "pnl", "exit_attempts", "exit_last_error",
+]
 
 SLUG_ASSET_PREFIX = {
     "btc": "BTC", "eth": "ETH", "sol": "SOL",
@@ -149,8 +157,23 @@ def load_and_filter(paths: list, from_ts: float, to_ts: float) -> list:
     """Load all rows, filter to [from_ts, to_ts) on logged_at, dedupe on full row."""
     all_rows = []
     for p in paths:
+        warned = False
         with open(p, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
+                if None in row and not warned:
+                    # DictReader silently dumps columns beyond the header count into
+                    # row[None] instead of erroring — this is exactly how the "Failed
+                    # Exit Attempts" report went quiet for a while: a stale 9-column
+                    # header meant exit_attempts/exit_last_error always landed here
+                    # instead of under their real names, so row.get("exit_attempts")
+                    # always returned None (see trader/doc/incident_doge_2026-07-03.md).
+                    # live.rs::append_csv_header_if_new now self-heals this on the
+                    # trader's next restart, but warn loudly if it's still stale.
+                    print(f"WARNING: {p.name} has more columns than its header "
+                          f"(extra fields {row[None]!r}) — exit_attempts/exit_last_error "
+                          f"may be misreported until the trader restarts and heals it",
+                          file=sys.stderr)
+                    warned = True
                 all_rows.append(row)
 
     filtered = []
@@ -164,7 +187,11 @@ def load_and_filter(paths: list, from_ts: float, to_ts: float) -> list:
 
     seen, deduped = set(), []
     for row in filtered:
-        key = tuple(row.values())
+        # Use only the known schema columns for the dedup key — a malformed row
+        # (unescaped comma in exit_last_error) makes DictReader stuff overflow
+        # fields into row[None] as a list, which isn't hashable inside a tuple
+        # and previously crashed this loop mid-run (see 18:20 2026-07-03 cron log).
+        key = tuple(row.get(c) for c in CSV_COLUMNS)
         if key not in seen:
             seen.add(key)
             deduped.append(row)
