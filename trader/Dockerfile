@@ -1,8 +1,6 @@
-# Local build+test image — matches the dev host's architecture (x86_64), used
-# to validate the live driver (balance/Telegram/order paths) against
-# production before deploying. NOT the Oracle deploy artifact — Oracle is
-# aarch64, cross-compiled locally with `cross` (see plan_rust_module.md
-# "Build and deploy"), never built on Oracle itself.
+# Build image for local testing and cross-compilation reference.
+# For Oracle (aarch64) deploy: use `cross build --release --target aarch64-unknown-linux-gnu`
+# then rsync the binary — do not build on Oracle.
 FROM rust:1-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./

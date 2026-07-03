@@ -78,39 +78,82 @@ Script: `price_feed/scripts/sync_oracle.sh` — uses `rsync` over SSH from `ubun
 
 ## Build and deploy
 
-### Oracle box is aarch64 — cross-compile locally
-
-Oracle (`10.8.0.1`) is ARM64. The dev machine is x86-64. Use `cross` (Docker-based) to build:
+### Deploy to Oracle (one command)
 
 ```bash
-# one-time setup
-cargo install cross
-# then for any binary
-cross build --release --bin price_feed --target aarch64-unknown-linux-gnu
-rsync -avz target/aarch64-unknown-linux-gnu/release/price_feed ubuntu@10.8.0.1:/home/ubuntu/apps/poly_rust/price_feed/target/release/
+# from repo root, using btc_5mins venv which has paramiko
+source ../btc_5mins/venv/bin/activate
+python scripts/deploy_oracle.py
 ```
 
-`cross` uses the `ghcr.io/cross-rs/aarch64-unknown-linux-gnu` Docker image — no system linker
-install required. Build takes ~45 s when dependencies are cached (first run ~5 min).
-
-**Do not build on Oracle with `cargo build`** — it saturates the box's CPU for several minutes and
-blocks the live collector.
-
-`trader/` follows the same cross-compile-locally-with-`cross`, never-build-on-Oracle pattern, plus
-a separate same-arch Docker image for local testing against production before deploying — see
-`trader/plan_rust_module.md` → "Build and deploy".
-
-### Restart collector after deploy
-
-The collector handles `SIGTERM` cleanly (flushes + closes all parquet writers before exit):
+Builds aarch64 binaries via `cross` (Docker-based), rsyncs them to Oracle, restarts
+`poly-collector` (systemd), stops the old trader cleanly (SIGTERM → 10 s → SIGKILL),
+starts the new trader in a tmux session named `trader`.
 
 ```bash
-# on Oracle
-pkill -TERM -f 'price_feed collect'
-sleep 2
-cd /home/ubuntu/apps/poly_rust/price_feed
-nohup ./target/release/price_feed collect >> collector.log 2>&1 &
+# useful flags
+python scripts/deploy_oracle.py --dry-run          # preview, no changes
+python scripts/deploy_oracle.py --skip-build       # rsync + restart only (binaries already built)
+python scripts/deploy_oracle.py --price-feed-only  # skip trader
+python scripts/deploy_oracle.py --trader-only      # skip price_feed
 ```
+
+### Monitor after deploy
+
+```bash
+# price_feed (systemd)
+ssh ubuntu@10.8.0.1 "journalctl -u poly-collector -f -o cat"
+
+# live trader (tmux)
+ssh ubuntu@10.8.0.1 "tmux attach -t trader"
+# detach: Ctrl-B D
+
+# one-shot status
+ssh ubuntu@10.8.0.1 "
+  systemctl is-active poly-collector
+  pgrep -u ubuntu -a -f 'live '
+  top -bn1 | grep -E 'price_f|live'
+"
+```
+
+### Push local changes
+
+```bash
+cd /home/kev/apps/poly_rust
+git add -p            # review hunks
+git commit -m "..."
+git push
+```
+
+### Docker — two uses only
+
+Docker is used for exactly two things here:
+
+1. **Cross-compiling aarch64 binaries for Oracle deploy** — `cross` uses Docker internally;
+   one-time setup: `cargo install cross`
+2. **Local end-to-end testing** of the full NATS pipeline — `docker compose up --build`
+
+It is NOT used for running anything in production — Oracle runs the binaries directly.
+
+**Never `cargo build` on Oracle** — it saturates the box's CPU for several minutes and
+blocks the live collector and trader.
+
+### Local Docker test — full NATS pipeline
+
+Runs price-feed + NATS + trader locally against live Polymarket/Binance APIs (x86_64 images):
+
+```bash
+docker compose up --build
+
+# check NATS throughput
+curl http://localhost:8222/varz | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['in_msgs'], 'published,', d['out_msgs'], 'delivered')"
+
+# trader logs (look for "[NATS] first binance/poly tick")
+docker compose logs -f trader
+```
+
+`price-feed` publishes to `price.binance.BTC` and `price.poly.BTC`; `trader` subscribes and
+trades. Requires `/home/kev/apps/btc_5mins/.env` mounted read-only into the trader container.
 
 ---
 

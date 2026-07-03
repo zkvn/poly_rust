@@ -30,6 +30,9 @@ enum Cmd {
         /// Assets to collect; omit to auto-discover from Polymarket (recommended)
         #[arg(num_args = 0..)]
         assets: Vec<String>,
+        /// Publish live ticks to NATS (e.g. nats://localhost:4222); omit to disable
+        #[arg(long)]
+        nats_url: Option<String>,
     },
 }
 
@@ -45,6 +48,6 @@ async fn main() -> anyhow::Result<()> {
                 markets::run(assets, custom_features).await
             }
         }
-        Some(Cmd::Collect { assets }) => collect::run(assets).await,
+        Some(Cmd::Collect { assets, nats_url }) => collect::run(assets, nats_url).await,
     }
 }

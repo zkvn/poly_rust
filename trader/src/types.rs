@@ -2,13 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BinanceTick {
     pub ts: f64,
     pub price: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PolyTick {
     pub ts: f64,
     pub up: f64,

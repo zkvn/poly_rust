@@ -46,3 +46,4 @@ polymarket_client_sdk_v2 = { version = "0.6.0-canary.1", features = ["ws", "clob
 async-trait = "0.1"
 alloy = { version = "1", features = ["signer-local"] }
 dotenvy = "0.15"
+async-nats = "0.49"
