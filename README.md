@@ -119,6 +119,29 @@ constant). Do not change it to point at `btc_5mins/.env` — that causes both bo
 the same token, producing 409 Conflict errors on `getUpdates` and cross-contaminated
 startup notifications.
 
+### Oracle infra: NATS price bridge
+
+Oracle runs a local `nats-server` (systemd unit `nats-server.service`, bound to
+`127.0.0.1:4222` only — no external exposure needed). `poly-collector`'s `ExecStart`
+publishes live Binance/Poly ticks there (`--nats-url nats://127.0.0.1:4222`), and the
+trader subscribes instead of opening its own direct Binance/Poly WebSockets
+(`deploy_oracle.py`'s `TRADER_NATS_URL`). This is required, not just an optimization: an
+asset with more than one configured strategy (e.g. `ETH: [high_prob, reversal]`) spawns
+multiple `AssetSlot`s in one trader process, and they all subscribe to the *same*
+`price.binance.<ASSET>` / `price.poly.<ASSET>` subjects rather than each opening a
+redundant connection.
+
+`price_feed::collect::run()` treats a failed NATS connect as fatal — under
+`Restart=always` that would crash-loop `poly-collector` (taking the whole
+price-recording pipeline down with it) if NATS ever goes down. If you ever touch either
+unit, bring `nats-server` up and confirm it's reachable (`ss -tln | grep 4222`) *before*
+restarting `poly-collector`.
+
+```bash
+# NATS server status
+ssh ubuntu@10.8.0.1 "systemctl is-active nats-server; ss -tln | grep 4222"
+```
+
 ### Monitor after deploy
 
 ```bash
@@ -131,11 +154,18 @@ ssh ubuntu@10.8.0.1 "tmux attach -t trader"
 
 # one-shot status
 ssh ubuntu@10.8.0.1 "
-  systemctl is-active poly-collector
+  systemctl is-active poly-collector nats-server
   pgrep -u ubuntu -a -f 'live '
   top -bn1 | grep -E 'price_f|live'
 "
 ```
+
+Assets and strategies are never hand-listed in the deploy script — `deploy_oracle.py`'s
+`TRADER_ASSETS` reads `trade_assets` from the newest `btc_5mins/config/strategy_*.toml`
+at deploy time (mirroring `bot/config.py`'s own glob+sort-latest rule), and the trader
+binary resolves each asset's strategy list from `AssetParams.strategies` in that same
+TOML (`trader/src/config.rs`) — so an asset like ETH with `[high_prob, reversal]` gets
+two independent workers, and `/status` shows both.
 
 ### Push local changes
 

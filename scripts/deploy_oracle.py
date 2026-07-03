@@ -25,23 +25,10 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 import paramiko
-
-# ── Oracle connection ──────────────────────────────────────────────────────────
-ORACLE_HOST = "10.8.0.1"
-ORACLE_USER = "ubuntu"
-ORACLE_BASE = "/home/ubuntu/apps/poly_rust"
-
-# ── Oracle trader startup command ─────────────────────────────────────────────
-TRADER_ASSETS   = ["BTC"]
-TRADER_ENV_FILE = "/home/ubuntu/apps/poly_rust/trader/.env"
-TRADER_CFG_DIR  = "/home/ubuntu/apps/btc_5mins/config"
-TRADER_LOG_DIR  = f"{ORACLE_BASE}/trader/live_logs"
-TRADER_TMUX     = "trader"
-# Set to e.g. "nats://localhost:4222" if NATS is running on Oracle
-TRADER_NATS_URL = None
 
 # ── Local repo root (two levels up from this script) ──────────────────────────
 REPO_ROOT         = Path(__file__).resolve().parent.parent
@@ -49,6 +36,39 @@ TARGET            = "aarch64-unknown-linux-gnu"
 PRICE_FEED_BIN    = REPO_ROOT / "price_feed" / "target" / TARGET / "release" / "price_feed"
 TRADER_BIN        = REPO_ROOT / "trader"     / "target" / TARGET / "release" / "live"
 GRACEFUL_TIMEOUT = 10  # seconds to wait after SIGTERM before SIGKILL
+
+# ── Oracle connection ──────────────────────────────────────────────────────────
+ORACLE_HOST = "10.8.0.1"
+ORACLE_USER = "ubuntu"
+ORACLE_BASE = "/home/ubuntu/apps/poly_rust"
+
+
+def _latest_trade_assets(config_dir: Path) -> list[str]:
+    """Read `trade_assets` from the newest strategy_*.toml in config_dir.
+
+    Same glob+sort-latest rule as bot/config.py::_load_strategy_toml and
+    trader/src/config.rs::load_latest, so the deploy script always matches
+    whatever assets the Python bot is actually configured to trade — no more
+    hand-maintained asset list that can silently drift from the shared config.
+    """
+    candidates = sorted(config_dir.glob("strategy_*.toml"))
+    if not candidates:
+        raise FileNotFoundError(f"no strategy_*.toml found in {config_dir}")
+    with open(candidates[-1], "rb") as f:
+        data = tomllib.load(f)
+    return [a.strip().upper() for a in data["trade_assets"] if a.strip()]
+
+
+# ── Oracle trader startup command ─────────────────────────────────────────────
+TRADER_ASSETS   = _latest_trade_assets(REPO_ROOT.parent / "btc_5mins" / "config")
+TRADER_ENV_FILE = "/home/ubuntu/apps/poly_rust/trader/.env"
+TRADER_CFG_DIR  = "/home/ubuntu/apps/btc_5mins/config"
+TRADER_LOG_DIR  = f"{ORACLE_BASE}/trader/live_logs"
+TRADER_TMUX     = "trader"
+# price_feed publishes ticks here (poly-collector.service) and the trader
+# subscribes instead of opening its own duplicate Binance/Poly WebSockets —
+# required now that an asset can own more than one strategy worker.
+TRADER_NATS_URL = "nats://127.0.0.1:4222"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

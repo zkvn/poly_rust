@@ -69,6 +69,35 @@ pub async fn fetch_meta(http: &reqwest::Client, slug: &str) -> Result<(U256, U25
     Ok((find("up")?, find("down")?))
 }
 
+/// Poll the Gamma API for `slug`'s actual resolution — mirrors
+/// `bot/worker.py::_fetch_api_went_up`. Returns `Some(true)` once the "Up" outcome's
+/// price reaches >= 0.99, `Some(false)` once "Down" does, `None` if unresolved yet or
+/// on any fetch/parse error (broad on purpose, matching Python's `except Exception:
+/// return None` — a transient failure here should look like "still pending" to the
+/// caller, not abort the poll loop).
+pub async fn fetch_gamma_resolution(http: &reqwest::Client, slug: &str) -> Option<bool> {
+    let url = format!("https://gamma-api.polymarket.com/events?slug={slug}");
+    let resp: serde_json::Value = http.get(&url).send().await.ok()?.json().await.ok()?;
+
+    let event = resp.as_array().and_then(|a| a.first())?;
+    let market = event["markets"].as_array().and_then(|a| a.first())?;
+
+    let outcomes: Vec<String> = serde_json::from_str(market["outcomes"].as_str()?).ok()?;
+    let prices: Vec<String> = serde_json::from_str(market["outcomePrices"].as_str()?).ok()?;
+
+    for (outcome, price_str) in outcomes.iter().zip(prices.iter()) {
+        let price: f64 = price_str.parse().ok()?;
+        if price >= 0.99 {
+            match outcome.trim().to_uppercase().as_str() {
+                "UP" => return Some(true),
+                "DOWN" => return Some(false),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 // ── Binance spot ticks ────────────────────────────────────────────────────────
 
 /// Subscribe to the Binance `@trade` stream for `asset` (e.g. "BTC" -> "btcusdt")

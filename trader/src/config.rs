@@ -21,6 +21,12 @@ pub struct StrategyToml {
     pub spread_discount_limit: f64,
     pub max_price_age_secs: f64,
     pub har_pup_enabled: bool,
+    /// FAK BUY slippage/retry knobs — process-wide, not per-asset (execution.rs's
+    /// `LiveConfig`). Previously the live binary ignored these and used
+    /// `LiveConfig::default()`'s hardcoded 0.01/2, silently diverging from whatever
+    /// this file actually specified.
+    pub order_slippage: f64,
+    pub order_max_retries: u32,
 
     pub strategies: HashMap<String, Vec<String>>,
     pub halt_rev: HashMap<String, i64>,
