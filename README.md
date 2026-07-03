@@ -98,6 +98,18 @@ python scripts/deploy_oracle.py --price-feed-only  # skip trader
 python scripts/deploy_oracle.py --trader-only      # skip price_feed
 ```
 
+### Trader env file
+
+The trader has its own env file at `/home/ubuntu/apps/poly_rust/trader/.env` — separate from
+the Python bot's `/home/ubuntu/apps/btc_5mins/.env`. They share the same `TELEGRAM_CHAT_ID`
+but use **different bot tokens**, so Telegram notifications stay in the same chat but come
+from distinct bots without `getUpdates` conflicts.
+
+`scripts/deploy_oracle.py` is configured to use the trader's own env file (`TRADER_ENV_FILE`
+constant). Do not change it to point at `btc_5mins/.env` — that causes both bots to poll
+the same token, producing 409 Conflict errors on `getUpdates` and cross-contaminated
+startup notifications.
+
 ### Monitor after deploy
 
 ```bash

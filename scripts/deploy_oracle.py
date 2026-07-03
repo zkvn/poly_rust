@@ -36,7 +36,7 @@ ORACLE_BASE = "/home/ubuntu/apps/poly_rust"
 
 # ── Oracle trader startup command ─────────────────────────────────────────────
 TRADER_ASSETS   = ["BTC"]
-TRADER_ENV_FILE = "/home/ubuntu/apps/btc_5mins/.env"
+TRADER_ENV_FILE = "/home/ubuntu/apps/poly_rust/trader/.env"
 TRADER_CFG_DIR  = "/home/ubuntu/apps/btc_5mins/config"
 TRADER_LOG_DIR  = f"{ORACLE_BASE}/trader/live_logs"
 TRADER_TMUX     = "trader"
