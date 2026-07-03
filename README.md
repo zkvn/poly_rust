@@ -125,15 +125,32 @@ git commit -m "..."
 git push
 ```
 
-### Docker — two uses only
+### Cross-compilation details
 
-Docker is used for exactly two things here:
+Oracle is aarch64. `cross` (Docker-based) cross-compiles locally — never build on Oracle.
 
-1. **Cross-compiling aarch64 binaries for Oracle deploy** — `cross` uses Docker internally;
-   one-time setup: `cargo install cross`
-2. **Local end-to-end testing** of the full NATS pipeline — `docker compose up --build`
+```bash
+cargo install cross  # one-time
+```
 
-It is NOT used for running anything in production — Oracle runs the binaries directly.
+**OpenSSL gotcha:** `price_feed` uses `tokio-tungstenite` with `rustls-tls-webpki-roots`.
+Rustls ≥0.22 requires an explicit crypto provider call at startup:
+
+```rust
+let _ = rustls::crypto::ring::default_provider().install_default();
+```
+
+This is already in `main()` for both `price_feed` and `trader`. Without it, `cross` builds
+succeed but the process panics at runtime when the first TLS connection opens.
+
+`price_feed/Cross.toml` configures the cross Docker image to pre-install `libssl-dev:arm64`
+(needed only for any future native-tls dependency; currently unused but kept as a safeguard):
+
+```toml
+[target.aarch64-unknown-linux-gnu]
+pre-build = ["dpkg --add-architecture arm64",
+             "apt-get update && apt-get install -y --no-install-recommends libssl-dev:arm64 pkg-config"]
+```
 
 **Never `cargo build` on Oracle** — it saturates the box's CPU for several minutes and
 blocks the live collector and trader.

@@ -85,19 +85,20 @@ def rsync(local: Path, remote_path: str, dry_run: bool) -> bool:
 # ── steps ─────────────────────────────────────────────────────────────────────
 
 def build(bins: list[str], dry_run: bool) -> bool:
+    """Cross-compile aarch64 binaries via `cross` (Docker-based toolchain)."""
     for b in bins:
-        print(f"\n  Building {b} for {TARGET}...")
+        crate_dir = REPO_ROOT / ("price_feed" if b == "price_feed" else "trader")
+        print(f"\n  cross build --release --bin {b} --target {TARGET}")
         if dry_run:
-            print(f"  [dry-run] cross build --release --bin {b} --target {TARGET}")
             continue
-        # cross uses Docker internally; Cargo.toml for each workspace member
-        cwd = REPO_ROOT / ("price_feed" if b == "price_feed" else "trader")
         if not run_local(
             ["cross", "build", "--release", f"--bin={b}", f"--target={TARGET}"],
-            cwd=cwd,
+            cwd=crate_dir,
             timeout=900,
         ):
             return False
+        bin_path = PRICE_FEED_BIN if b == "price_feed" else TRADER_BIN
+        print(f"  Built: {bin_path} ({bin_path.stat().st_size // 1024 // 1024} MiB)")
     return True
 
 

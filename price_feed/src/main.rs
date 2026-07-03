@@ -38,6 +38,9 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install ring as the default rustls crypto provider once for the whole process.
+    // Required for rustls ≥0.22 when multiple crates (reqwest, tokio-tungstenite) share rustls.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     match Cli::parse().command {
         None => chainlink::run().await,
         Some(Cmd::Markets { assets, no_custom_features, probe }) => {

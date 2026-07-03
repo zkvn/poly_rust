@@ -332,6 +332,8 @@ impl Driver<'_> {
 #[tokio::main]
 #[allow(unused_assignments, unused_variables)]
 async fn main() -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args = Args::parse();
 
     dotenvy::from_path(&args.env_file).with_context(|| format!("load {}", args.env_file))?;
