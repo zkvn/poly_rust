@@ -4,3 +4,8 @@
 /shadow_logs
 /shadow_logs_buggy_pre_fix
 /backtest_prices
+/log
+
+# NEVER ignore doc/ or results/ here (or with a broader pattern above that could
+# swallow them) — dated incident/audit/latency writeups (doc/) and the daily
+# reconciliation reports (results/daily_recon/*.md) must always stay in git.

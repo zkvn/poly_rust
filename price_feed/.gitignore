@@ -5,6 +5,14 @@
 .venv/
 /raw
 /raw_15_mins
+/raw_1hr
+/raw_4hr
+/raw_new
+/raw_new_15_mins
+/raw_new_4hr
 /log
 /analysis/**/data
 /analysis/**/livetest
+
+# NEVER ignore doc/ or studies/ here (or with a broader pattern above that could
+# swallow them) — dated reports and study writeups must always stay in git.
