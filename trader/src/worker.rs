@@ -531,17 +531,28 @@ impl Worker {
         self.last_binance = tick.price;
         self.last_binance_ts_value = tick.ts;
 
+        self.try_enter(tick.ts)
+    }
+
+    /// Entry evaluation, shared by both `on_binance` and `on_poly` — poly price is
+    /// the primary/time-critical signal (the trigger band/threshold), delta_pct is
+    /// a directional filter. Gating this exclusively behind BinanceTick (as before)
+    /// meant a poly price that crossed its trigger band between Binance ticks sat
+    /// unnoticed for up to the Binance feed's own tick interval; calling this from
+    /// on_poly too lets a poly-side crossing fire immediately using the latest
+    /// cached delta_pct value (see trader/doc/latency_2026-07-04.md §8).
+    fn try_enter(&mut self, now: f64) -> Vec<Action> {
         if self.entry_suppressed || self.halt.is_halted() || !matches!(self.state, WorkerState::Watching) {
             return vec![];
         }
 
         let intent = match &self.kind {
-            StrategyKind::Reversal(r) => r.evaluate(tick.ts, &self.saw_low_up, &self.saw_low_dn, &self.latest_poly, &self.delta_pct, &self.latest_binance),
-            StrategyKind::HighProb(hp) => hp.evaluate(tick.ts, &self.latest_poly, &self.delta_pct, &self.latest_binance),
+            StrategyKind::Reversal(r) => r.evaluate(now, &self.saw_low_up, &self.saw_low_dn, &self.latest_poly, &self.delta_pct, &self.latest_binance),
+            StrategyKind::HighProb(hp) => hp.evaluate(now, &self.latest_poly, &self.delta_pct, &self.latest_binance),
         };
         let Some(intent) = intent else { return vec![] };
 
-        if check_gates(&intent, &self.spread, &self.latest_poly, &self.delta_pct, &self.gate_params, tick.ts).is_some() {
+        if check_gates(&intent, &self.spread, &self.latest_poly, &self.delta_pct, &self.gate_params, now).is_some() {
             return vec![];
         }
 
@@ -561,7 +572,7 @@ impl Worker {
         self.saw_low_up.on_poly(tick);
         self.saw_low_dn.on_poly(tick);
 
-        let WorkerState::Holding(h) = &self.state else { return vec![] };
+        let WorkerState::Holding(h) = &self.state else { return self.try_enter(tick.ts) };
         let h = h.clone();
         let exit_price = if h.side == Side::Up { tick.up } else { tick.dn };
 
@@ -866,12 +877,14 @@ mod tests {
 
     /// Drives a worker from cycle-open through a filled DOWN reversal entry,
     /// returning it positioned in `Holding` with the given `filled_shares`.
+    /// Delta_pct is deliberately the *last* piece to arrive (fires on the final
+    /// BinanceTick) — see `entry_fires_on_poly_tick_using_cached_delta` for the
+    /// complementary case where poly is last and delta_pct is already cached.
     fn enter_down_position(w: &mut Worker, filled_shares: f64) {
         w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
         w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
-        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 })); // dp < 0
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // recovery > reversal 0.60
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // fires entry
+        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // recovery > reversal 0.60; delta_pct not yet known, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // dp < 0 -> fires entry
         assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]), "expected entry to fire: {actions:?}");
         assert!(matches!(w.state, WorkerState::Entering));
         w.step(Event::OrderFilled { filled_shares, cost: 0.70 });
@@ -883,14 +896,54 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
         w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
+        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // delta_pct not yet known, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // dp < 0 -> fires
         assert_eq!(actions, vec![
             Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0 },
             Action::Persist,
         ]);
         assert!(matches!(w.state, WorkerState::Entering));
+    }
+
+    /// Complementary case to `entry_fires_and_transitions_to_entering`: delta_pct
+    /// is already known (set by an earlier BinanceTick this cycle) by the time poly
+    /// recovers, so the entry must fire immediately off the PolyTick itself — no
+    /// further BinanceTick required. This is the behavior change from
+    /// trader/doc/latency_2026-07-04.md §8 ("trigger entry on poly ticks too").
+    #[test]
+    fn entry_fires_on_poly_tick_using_cached_delta() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
+        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
+        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 })); // dp < 0, cached
+        // No further BinanceTick — the poly recovery tick alone must fire the entry.
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
+        assert_eq!(actions, vec![
+            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0 },
+            Action::Persist,
+        ]);
+        assert!(matches!(w.state, WorkerState::Entering));
+    }
+
+    /// A cached delta_pct must only be trusted within the *same* cycle it was set
+    /// in — DeltaPctSignal::reset() clears `price` on every CycleOpen, so a value
+    /// left over from a previous cycle can't masquerade as "ready" this cycle.
+    #[test]
+    fn poly_tick_does_not_fire_using_stale_cross_cycle_delta() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
+        w.step(Event::BinanceTick(BinanceTick { ts: 1100.0, price: 59_900.0 })); // dp < 0, this cycle
+
+        // New cycle: delta_pct is reset, even though the old Binance price is
+        // still the most recent one this worker has ever seen.
+        w.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
+        w.step(Event::PolyTick(PolyTick { ts: 1680.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
+        // Recovery with NO BinanceTick yet this cycle — must not fire off stale dp.
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1740.0, up: 0.30, dn: 0.70 }));
+        assert!(actions.is_empty(), "must not fire on a delta_pct left over from the previous cycle: {actions:?}");
+        assert!(matches!(w.state, WorkerState::Watching));
     }
 
     #[test]
@@ -995,9 +1048,8 @@ mod tests {
         w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
         assert!(!w.is_halted(), "halt must clear once a new HKT session opens");
         w.step(Event::PolyTick(PolyTick { ts: 101_180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 101_200.0, price: 59_900.0 }));
-        w.step(Event::PolyTick(PolyTick { ts: 101_240.0, up: 0.30, dn: 0.70 }));
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 101_250.0, price: 59_900.0 }));
+        w.step(Event::PolyTick(PolyTick { ts: 101_240.0, up: 0.30, dn: 0.70 })); // delta_pct not yet known this cycle, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 101_250.0, price: 59_900.0 })); // dp < 0 -> fires
         assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]),
             "entry must fire again once the halt has cleared for the new session: {actions:?}");
     }

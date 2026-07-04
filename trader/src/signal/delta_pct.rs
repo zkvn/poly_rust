@@ -28,6 +28,12 @@ impl Signal for DeltaPctSignal {
 
     fn reset(&mut self, ctx: &CycleContext) {
         self.open = ctx.open_binance;
+        // Unlike LatestPolySignal/LatestBinanceSignal (which deliberately keep the
+        // last-known price across cycles), `price` must NOT carry over: once entry
+        // evaluation can be triggered by a PolyTick alone (worker.rs/machine.rs
+        // `try_enter`), a stale price left over from the previous cycle would look
+        // like a same-cycle, ready-to-use delta instead of "not yet known".
+        self.price = 0.0;
     }
 
     fn on_binance(&mut self, t: BinanceTick) {
@@ -59,5 +65,17 @@ mod tests {
     fn zero_before_ready() {
         let s = DeltaPctSignal::new();
         assert_eq!(s.value(), 0.0);
+    }
+
+    #[test]
+    fn reset_clears_stale_price_from_previous_cycle() {
+        let mut s = DeltaPctSignal::new();
+        s.reset(&ctx(50_000.0));
+        s.on_binance(BinanceTick { ts: 1.0, price: 49_000.0 });
+        assert!(s.value() < 0.0, "sanity: price is set before reset");
+
+        // A new cycle must not evaluate against last cycle's leftover Binance price.
+        s.reset(&ctx(60_000.0));
+        assert_eq!(s.value(), 0.0, "price must be cleared on reset, not carried over");
     }
 }

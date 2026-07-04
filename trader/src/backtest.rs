@@ -419,8 +419,23 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// Golden parity test: Rust backtest on BTC 2026-06-20 must match Python bt1.
+    /// Golden parity test: Rust backtest on BTC 2026-06-20 must match Python bt1,
+    /// plus one additional trade from the poly-triggered-entry change
+    /// (trader/doc/latency_2026-07-04.md §8, `Machine::try_enter` called from
+    /// both `on_poly` and `on_binance`).
+    ///
     /// Python result (no-halt): 1 trade, reversal DOWN, entry=0.845, unwind exit=0.875, pnl=0.0355
+    ///
+    /// The 2nd trade (cycle btc-updown-5m-1781891400) is new: poly's `up` price
+    /// spiked 0.145 -> 0.605 in under half a second (ts 1781891587.0 -> .5) while
+    /// Binance ticks in that window land roughly once per second. The old
+    /// on-Binance-only-triggered entry check could only evaluate the entry
+    /// condition at those once-per-second Binance moments, using whatever poly
+    /// price happened to be cached then, and missed this transient crossing
+    /// entirely. The new design checks on the poly tick itself, using the
+    /// already-cached Binance delta — catching a real, briefly-true entry
+    /// condition the old cadence-gated design couldn't see. Verified against the
+    /// raw parquet ticks around this timestamp before accepting this as correct.
     #[test]
     fn btc_20260620_golden() {
         let prices_dir = "/home/kev/apps/btc_5mins/prices";
@@ -441,18 +456,31 @@ mod tests {
 
         let trades = run_backtest(&params, b_rows, p_rows);
 
-        assert_eq!(trades.len(), 1, "expected 1 trade, got {}: {:?}", trades.len(), trades);
-        let t = &trades[0];
-        assert_eq!(t.slug, "btc-updown-5m-1781886600", "slug mismatch");
-        assert_eq!(t.strategy, "reversal");
-        assert_eq!(t.side, crate::types::Side::Down);
-        assert!((t.token_price - 0.845).abs() < 1e-9,
-            "entry token_price: got {}, want 0.845", t.token_price);
-        assert!((t.exit_price - 0.875).abs() < 1e-9,
-            "exit_price: got {}, want 0.875", t.exit_price);
-        assert_eq!(t.outcome, crate::types::Outcome::Unwind);
-        assert!((t.pnl - 0.0355).abs() < 1e-4,
-            "pnl: got {}, want 0.0355", t.pnl);
+        assert_eq!(trades.len(), 2, "expected 2 trades, got {}: {:?}", trades.len(), trades);
+
+        let t0 = &trades[0];
+        assert_eq!(t0.slug, "btc-updown-5m-1781886600", "slug mismatch");
+        assert_eq!(t0.strategy, "reversal");
+        assert_eq!(t0.side, crate::types::Side::Down);
+        assert!((t0.token_price - 0.845).abs() < 1e-9,
+            "entry token_price: got {}, want 0.845", t0.token_price);
+        assert!((t0.exit_price - 0.875).abs() < 1e-9,
+            "exit_price: got {}, want 0.875", t0.exit_price);
+        assert_eq!(t0.outcome, crate::types::Outcome::Unwind);
+        assert!((t0.pnl - 0.0355).abs() < 1e-4,
+            "pnl: got {}, want 0.0355", t0.pnl);
+
+        let t1 = &trades[1];
+        assert_eq!(t1.slug, "btc-updown-5m-1781891400", "slug mismatch");
+        assert_eq!(t1.strategy, "reversal");
+        assert_eq!(t1.side, crate::types::Side::Up);
+        assert!((t1.token_price - 0.605).abs() < 1e-9,
+            "entry token_price: got {}, want 0.605", t1.token_price);
+        assert!((t1.exit_price - 0.635).abs() < 1e-9,
+            "exit_price: got {}, want 0.635", t1.exit_price);
+        assert_eq!(t1.outcome, crate::types::Outcome::Unwind);
+        assert!((t1.pnl - 0.0496).abs() < 1e-4,
+            "pnl: got {}, want 0.0496", t1.pnl);
     }
 
     #[test]
