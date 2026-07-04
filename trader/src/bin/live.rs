@@ -8,13 +8,21 @@
 // others get silent 409 Conflicts), breaking remote control for everyone but
 // the first-started process. One shared poller avoids that entirely.
 //
-// Each asset is hard-capped at `--max-trades` completed trades (default 1) so
-// a real-money run is bounded regardless of how long it takes for the
-// strategy to naturally fire; the process exits once *all* assets are capped
-// (or on SIGINT). Uses the PriceMonitor exit arm in practice for small sizes
-// (a $1 buy yields far fewer than 5 shares at any plausible entry price, so
-// the GTC-resting path is defensive/unexercised here, not because it's
-// unimplemented).
+// Each (asset, strategy) slot allows at most `--max-trades` trades (default 1)
+// *per open cycle* — the counter resets to zero every time a new cycle opens
+// for that slot, so this never stops a slot from trading again next cycle. A
+// process restart isn't required to keep any strategy trading (previously it
+// was: this counter used to be a lifetime total that only ever grew, so a
+// slot that hit its cap early — e.g. ETH `high_prob` — went permanently dark
+// until the next restart, missing whatever cycles happened in between; see
+// trader/doc/incident_missed_eth_2026-07-03.md). Actual risk control — when to
+// stop a strategy from entering at all — is the config-driven consecutive-loss
+// halt (`halt_rev`/`halt_prob`, auto-resetting at `halt_reset_hour_rev`/
+// `halt_reset_hour_hp` HKT daily, see `worker.rs`'s `HaltTracker` usage) plus
+// manual `/halt` and the balance drawdown guard — not a trade-count cap.
+// Uses the PriceMonitor exit arm in practice for small sizes (a $1 buy yields
+// far fewer than 5 shares at any plausible entry price, so the GTC-resting
+// path is defensive/unexercised here, not because it's unimplemented).
 
 use std::str::FromStr as _;
 use std::sync::Arc;
@@ -73,6 +81,10 @@ struct Args {
     #[arg(long, default_value = "live_logs")]
     log_dir: String,
 
+    /// Max trades per (asset, strategy) slot *per open cycle* — resets to 0
+    /// every time a new cycle opens, so this never stops a strategy from
+    /// trading again next cycle. Not a lifetime/session cap; see the file
+    /// header comment.
     #[arg(long, default_value_t = 1)]
     max_trades: u32,
 
@@ -127,13 +139,51 @@ fn spawn_resolution_watcher(
     });
 }
 
+const CSV_HEADER: &str =
+    "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error";
+
+/// Writes the CSV header for a new file, or heals a stale pre-`exit_attempts`/
+/// `exit_last_error` header (9 columns, from before those fields existed) on an
+/// existing file into the current 11-column schema — padding any legacy 9-field
+/// data rows with two empty trailing fields so every row's column count matches
+/// the header.
+///
+/// Without this, `csv.DictReader`-based tooling (`trade_reconcile.py`) doesn't
+/// error on the mismatch — it silently drops the extra fields into an unnamed
+/// "restkey" bucket, so `row.get("exit_attempts")` always came back `None` and
+/// the "Failed Exit Attempts" report section always showed zero, even for rows
+/// that do have retry evidence. See `trader/doc/incident_doge_2026-07-03.md`.
 fn append_csv_header_if_new(path: &str) -> Result<()> {
-    if std::path::Path::new(path).exists() {
+    use std::io::{BufRead as _, Write as _};
+
+    if !std::path::Path::new(path).exists() {
+        let mut f = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
+        writeln!(f, "{CSV_HEADER}")?;
         return Ok(());
     }
-    use std::io::Write as _;
-    let mut f = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
-    writeln!(f, "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error")?;
+
+    let file = std::fs::File::open(path)?;
+    let mut lines = std::io::BufReader::new(file).lines();
+    let Some(first) = lines.next().transpose()? else { return Ok(()) }; // empty file
+    if first == CSV_HEADER || !first.starts_with("logged_at,") {
+        return Ok(()); // already current, or not a header we recognize — leave untouched
+    }
+
+    let mut healed = String::new();
+    healed.push_str(CSV_HEADER);
+    healed.push('\n');
+    for line in lines {
+        let line = line?;
+        // Current schema has 10 commas (11 fields); pad legacy 8-comma (9-field) rows.
+        if line.matches(',').count() == 8 {
+            healed.push_str(&line);
+            healed.push_str(",,\n");
+        } else {
+            healed.push_str(&line);
+            healed.push('\n');
+        }
+    }
+    std::fs::write(path, healed)?;
     Ok(())
 }
 
@@ -175,7 +225,18 @@ struct AssetSlot {
     max_buy_price: f64,
     log_path: String,
     state_file: String,
-    trades_completed: u32,
+    /// Trades logged in the *currently open* cycle only — reset to 0 every
+    /// time a new cycle opens for this slot (see the ticker branch below).
+    /// Gates `--max-trades` (default 1: at most one trade per cycle), never
+    /// whether to open the next cycle at all.
+    cycle_trades: u32,
+    /// Set once the "STOP LOSS triggered" alert has been sent for the
+    /// current position, so retries against an unsellable dust remainder
+    /// (below CLOB min order size) don't re-spam the same alert on every
+    /// PolyTick — worker.rs intentionally keeps re-firing `ClosePosition`
+    /// until the position actually clears, unlike take-profit's one-shot
+    /// `TakeProfitAbandoned` latch (see `on_stop_sell_failed`'s doc comment).
+    sl_notified: bool,
     wins: u32,
     losses: u32,
     stoplosses: u32,
@@ -238,14 +299,14 @@ impl Driver<'_> {
             let name = &slot.worker.asset;
             let halted = slot.worker.is_halted();
             let light = if halted { "🟡 halted" } else { "🟢 active" };
-            let (sl, delta_gate, halt_n) = if slot.worker.strategy_name == "high_prob" {
-                (slot.params.sl_high_prob, slot.params.delta_pct_hp, slot.params.halt_prob)
+            let (sl, delta_gate, halt_n, unwind_pnl, sl_pnl) = if slot.worker.strategy_name == "high_prob" {
+                (slot.params.sl_high_prob, slot.params.delta_pct_hp, slot.params.halt_prob, slot.params.unwind_pnl_hp, slot.params.sl_pnl_hp)
             } else {
-                (slot.params.sl_reversal, slot.params.delta_pct_rev, slot.params.halt_rev)
+                (slot.params.sl_reversal, slot.params.delta_pct_rev, slot.params.halt_rev, slot.params.unwind_pnl_rev, slot.params.sl_pnl_rev)
             };
             ta_lines.push(format!(
-                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  halt_after={halt_n}L  unwind_pnl={:.4}  sl_pnl={:.4}  size=${:.2}",
-                slot.worker.strategy_name, slot.params.unwind_pnl, slot.params.sl_pnl, slot.params.trade_size_usdc
+                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  size=${:.2}",
+                slot.worker.strategy_name, slot.params.trade_size_usdc
             ));
 
             if seen_markets.insert(name.clone()) {
@@ -311,8 +372,9 @@ impl Driver<'_> {
                     Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost })
                 } else {
                     self.notify(&format!(
-                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | error={}",
+                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | attempts={} | error={}",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name,
+                        result.attempts,
                         result.error.as_deref().unwrap_or("unknown")
                     )).await;
                     Some(Event::OrderRejected)
@@ -329,18 +391,27 @@ impl Driver<'_> {
                 let Some(token_id) = slot.current_token_id else { return None };
                 if matches!(reason, CloseReason::StopLoss) {
                     println!("[SL] {} stop-loss triggered — closing {shares:.4} shares (sl_pnl floor crossed; up to 5 retries)", slot.worker.asset);
-                    // Fire immediately on trigger, independent of whether the close
-                    // itself ends up succeeding — side derived from which token is
-                    // currently held rather than a new Worker accessor.
-                    let side = if token_id == slot.up_id { Side::Up } else { Side::Down };
-                    let trigger_price = if side == Side::Up { slot.last_poly_up } else { slot.last_poly_dn };
-                    let dt = hkt_now().format("%H:%M:%S");
-                    let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
-                    let delta_pct = slot.worker.delta_pct() * 100.0;
-                    self.notify(&format!(
-                        "🛑 <b>{}</b> STOP LOSS triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | delta={delta_pct:+.3}%",
-                        slot.worker.asset, arrow_side(side), slot.worker.strategy_name
-                    )).await;
+                    // Only alert on the first trigger for this position — worker.rs
+                    // intentionally keeps re-firing ClosePosition{StopLoss} every
+                    // PolyTick until the position actually clears (needed: unlike
+                    // take-profit, we can't just give up on a stop-loss), so without
+                    // this guard an unsellable dust remainder (below CLOB min order
+                    // size) spams an identical alert on every retry.
+                    if !slot.sl_notified {
+                        slot.sl_notified = true;
+                        // Fire immediately on trigger, independent of whether the close
+                        // itself ends up succeeding — side derived from which token is
+                        // currently held rather than a new Worker accessor.
+                        let side = if token_id == slot.up_id { Side::Up } else { Side::Down };
+                        let trigger_price = if side == Side::Up { slot.last_poly_up } else { slot.last_poly_dn };
+                        let dt = hkt_now().format("%H:%M:%S");
+                        let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                        let delta_pct = slot.worker.delta_pct() * 100.0;
+                        self.notify(&format!(
+                            "🛑 <b>{}</b> STOP LOSS triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | delta={delta_pct:+.3}%",
+                            slot.worker.asset, arrow_side(side), slot.worker.strategy_name
+                        )).await;
+                    }
                 }
                 let result = self.engine.close_position(token_id, *shares).await;
                 println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?}",
@@ -348,6 +419,14 @@ impl Driver<'_> {
                 let sold = result.shares_sold;
                 let exit_price = if sold > 0.0 { result.filled_usdc / sold } else { 0.0 };
                 let matched = matches!(result.status, SellStatus::Matched);
+                if matched {
+                    let dt = hkt_now().format("%H:%M:%S");
+                    let label = if matches!(reason, CloseReason::StopLoss) { "STOP LOSS" } else { "TAKE PROFIT" };
+                    self.notify(&format!(
+                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4}",
+                        slot.worker.asset, slot.worker.strategy_name, result.filled_usdc
+                    )).await;
+                }
                 let event = match (matched, reason) {
                     (true, CloseReason::TakeProfit) => Event::UnwindFilled { sold_shares: sold, exit_price },
                     (true, CloseReason::StopLoss) => Event::StopSellFilled { sold_shares: sold, exit_price },
@@ -386,7 +465,7 @@ impl Driver<'_> {
                             eprintln!("log error: {e:#}");
                         }
                         if matches!(rec.outcome, Outcome::Win | Outcome::Loss | Outcome::StopLoss | Outcome::Unwind) {
-                            slot.trades_completed += 1;
+                            slot.cycle_trades += 1;
                         }
                         match rec.outcome {
                             Outcome::Win => slot.wins += 1,
@@ -609,7 +688,8 @@ async fn main() -> Result<()> {
                 max_buy_price,
                 log_path,
                 state_file,
-                trades_completed: 0,
+                cycle_trades: 0,
+                sl_notified: false,
                 wins: 0,
                 losses: 0,
                 stoplosses: 0,
@@ -708,17 +788,18 @@ async fn main() -> Result<()> {
     let mut current_slot_val: u64 = 0;
 
     loop {
-        if assets.iter().all(|s| s.trades_completed >= args.max_trades) {
-            println!("[live] all assets reached max_trades ({}) — shutting down cleanly.", args.max_trades);
-            driver.notify(&format!("🏁 all assets ({}) reached max_trades ({}) — shut down.", args.asset.join(", "), args.max_trades)).await;
-            return Ok(());
-        }
-
         tokio::select! {
             Some((asset, tick)) = binance_rx.recv() => {
                 for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
                     slot.last_binance = tick.price;
-                    if slot.current_slug.is_some() {
+                    // `Worker`'s own state machine already can't fire a second
+                    // entry within one cycle (on_binance only acts from
+                    // Watching, and entering leaves Watching until the next
+                    // CycleOpen) — this is a second, independent guard on top
+                    // of that, so a future state-machine change can't quietly
+                    // reopen the same "one trade per cycle" hole this was
+                    // written to close.
+                    if slot.current_slug.is_some() && slot.cycle_trades < args.max_trades {
                         let actions = slot.worker.step(Event::BinanceTick(tick));
                         driver.process_actions(slot, actions).await;
                     }
@@ -756,10 +837,14 @@ async fn main() -> Result<()> {
                             let actions = slot.worker.step(Event::CycleClose);
                             driver.process_actions(slot, actions).await;
                         }
-                        if slot.last_binance <= 0.0 || slot.trades_completed >= args.max_trades {
+                        if slot.last_binance <= 0.0 {
                             slot.current_slug = None;
                             continue;
                         }
+                        // Fresh cycle, fresh allowance — never carried over from
+                        // the cycle that just closed.
+                        slot.cycle_trades = 0;
+                        slot.sl_notified = false;
 
                         let slug = make_slug(&asset, slot_now, "5m");
                         match fetch_meta(&http, &slug).await {
@@ -788,7 +873,7 @@ async fn main() -> Result<()> {
                                     start_ts: slot_now as f64, end_ts: (slot_now + args.period_secs) as f64, open_binance: slot.last_binance,
                                 };
                                 println!("[live] new cycle {asset} ({}) slug={slug} open_binance={}", slot.worker.strategy_name, slot.last_binance);
-                                let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone(), entry_suppressed: false });
+                                let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone() });
                                 driver.process_actions(slot, actions).await;
                                 slot.current_slug = Some(slug);
                             }
@@ -902,5 +987,62 @@ async fn main() -> Result<()> {
                     + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod csv_header_tests {
+    use super::*;
+
+    fn scratch_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("poly_rust_test_{name}_{}.csv", std::process::id()))
+    }
+
+    #[test]
+    fn writes_header_for_new_file() {
+        let path = scratch_path("new");
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        append_csv_header_if_new(path_str).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, format!("{CSV_HEADER}\n"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn leaves_current_header_untouched() {
+        let path = scratch_path("current");
+        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, format!("{CSV_HEADER}\n1.0,slug,strategy,UP,1.0,0.5,1.0,WIN,0.1,0,\n")).unwrap();
+        append_csv_header_if_new(path_str).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, format!("{CSV_HEADER}\n1.0,slug,strategy,UP,1.0,0.5,1.0,WIN,0.1,0,\n"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Reproduces the stale-header files found across `live_logs/` on
+    /// 2026-07-03 (trader/doc/incident_doge_2026-07-03.md §3): a header written
+    /// before `exit_attempts`/`exit_last_error` existed, with a mix of legacy
+    /// 9-field rows and current 11-field rows already appended underneath it.
+    #[test]
+    fn heals_stale_header_and_pads_legacy_rows() {
+        let path = scratch_path("stale");
+        let path_str = path.to_str().unwrap();
+        let stale = "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl\n\
+                     1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753\n\
+                     2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price\n";
+        std::fs::write(&path, stale).unwrap();
+
+        append_csv_header_if_new(path_str).unwrap();
+
+        let healed = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = healed.lines().collect();
+        assert_eq!(lines[0], CSV_HEADER);
+        assert_eq!(lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,", "legacy row padded to 11 fields");
+        assert_eq!(lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price", "current-schema row untouched");
+        for line in &lines {
+            assert_eq!(line.matches(',').count(), 10, "every row must have 11 fields: {line}");
+        }
+        std::fs::remove_file(&path).unwrap();
     }
 }

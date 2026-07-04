@@ -115,9 +115,12 @@ source ../btc_5mins/venv/bin/activate
 python scripts/deploy_oracle.py
 ```
 
-Builds aarch64 binaries via `cross` (Docker-based), rsyncs them to Oracle, restarts
-`poly-collector` (systemd), stops the old trader cleanly (SIGTERM → 10 s → SIGKILL),
-starts the new trader in a tmux session named `trader`.
+Builds aarch64 binaries via `cross` (Docker-based), rsyncs them to Oracle, and restarts
+both systemd services — `poly-collector` and `trader-live.service` — via
+`systemctl restart`. Both run under `Restart=always`; the deploy script only ever
+restarts them through systemd, never by signaling the process directly (see "known
+incidents" below for what happened before this was fixed — a direct `kill` raced
+systemd's own auto-restart and produced two concurrent live traders).
 
 ```bash
 # useful flags
@@ -131,6 +134,25 @@ python scripts/deploy_oracle.py --trader-only      # skip price_feed
 confirm which branch is checked out locally before running it, or you'll silently ship whatever
 that branch's `price_feed` looks like (this is exactly how the Binance-recording regression in the
 TODO above happened).
+
+### Deploy the trader only (`scripts/deploy_trader.sh`)
+
+For trader-only changes (the common case — strategy/worker logic changes far more often than
+`price_feed`), use the wrapper instead of calling `deploy_oracle.py` directly:
+
+```bash
+./scripts/deploy_trader.sh              # build + deploy + restart trader
+./scripts/deploy_trader.sh --dry-run    # preview every step, change nothing
+./scripts/deploy_trader.sh --skip-build # reuse the last local build (rsync + restart only)
+```
+
+It's a thin wrapper that always calls `deploy_oracle.py --trader-only` (using
+`btc_5mins/venv`'s python, which has the `paramiko` dependency `deploy_oracle.py` needs) — it
+can **never** touch `poly-collector` or the price-recording pipeline, regardless of flags, since
+`--trader-only` skips that whole code path in `deploy_oracle.py`. Confirmed via a `--dry-run`
+against Oracle: only the trader tmux session is found/stopped/restarted, `poly-collector` is
+never mentioned. Prefer this over the combined command above unless you specifically need to
+ship a `price_feed` change too.
 
 ### Trader env file
 
@@ -230,14 +252,13 @@ nohup ./target/release/price_feed collect >> collector.log 2>&1 &
 # price_feed (systemd)
 ssh ubuntu@10.8.0.1 "journalctl -u poly-collector -f -o cat"
 
-# live trader (tmux)
-ssh ubuntu@10.8.0.1 "tmux attach -t trader"
-# detach: Ctrl-B D
+# live trader (systemd — tails the same live.log StandardOutput is appended to)
+ssh ubuntu@10.8.0.1 "tail -f /home/ubuntu/apps/poly_rust/trader/live_logs/live.log"
 
-# one-shot status
+# one-shot status — confirm exactly ONE `live` process (pgrep should show one PID)
 ssh ubuntu@10.8.0.1 "
-  systemctl is-active poly-collector nats-server
-  pgrep -u ubuntu -a -f 'live '
+  systemctl is-active poly-collector nats-server trader-live.service
+  pgrep -u ubuntu -a -f '/live '
   top -bn1 | grep -E 'price_f|live'
 "
 ```
@@ -310,6 +331,209 @@ pattern (`round2(shares)` → 2-decimal `Decimal`, since `Amount::shares` enforc
 have failed validation immediately if this had been caught locally instead of live). Verified with
 `cargo test --lib execution` (all 7 tests pass) after the change.
 
-**Lesson:** any future live/shadow test should watch for repeated `[SL close] retry` log lines as a
+**Lesson:** any future live/shadow test should watch for repeated `[close] retry` log lines as a
 red flag — that pattern means the close is structurally broken, not just hitting temporary
-liquidity, and the position will ride uncontrolled to market resolution.
+liquidity, and the position will ride uncontrolled to market resolution. (Log prefix renamed from
+`[SL close]` — this retry path is shared by stop-loss *and* take-profit closes, and the old label
+was misleading; see the DOGE take-profit incident below.)
+
+### BUY retry ladder stalled short of `max_buy_price` (2026-07-03, fixed)
+
+A DOGE BUY at 16:23 (cycle `doge-updown-5m-1783066800`) retried 4 times
+(`order_max_retries=3` from `strategy_*.toml`) and failed all 4, every attempt hitting
+`"no orders found to match with FAK order"`. Full writeup, including cross-referencing
+the recorded order book to confirm this was a real thin-liquidity moment and not a
+pricing bug: `trader/doc/audit_retry_doge_2026-07-03.md`.
+
+**Root cause:** the price offered on each retry was `price + order_slippage + attempt *
+retry_slippage_step`, where `retry_slippage_step` was a **hardcoded 0.02** in
+`execution.rs::LiveConfig::default()` — unlike `order_slippage`/`order_max_retries`, it
+was never actually sourced from `strategy_*.toml`. So the 4 attempts crept up only 2¢
+each (0.795 → 0.815 → 0.835 → 0.855) while `max_buy_price = 0.95` (also from config)
+had another 9.5¢ of headroom that was never used.
+
+**How the BUY retry ladder works now** (`execution.rs::retry_ladder_price`): each retry
+price is linearly interpolated from the first attempt (`price + order_slippage`) up to
+`max_buy_price`, so the **last** retry always lands exactly on the configured ceiling —
+no new config field, `max_buy_price` already is that per-run limit and is still
+enforced via `.min(max_buy_price)`. With the incident's numbers (price 0.745,
+order_slippage 0.05, max_buy_price 0.95, order_max_retries 3): 0.795 → 0.847 → 0.898 →
+0.95 — attempt 4 now reaches the ceiling instead of stopping short of it.
+
+This is safe to be aggressive about: the BUY order is a USDC-notional market order
+(`Amount::usdc(size_usdc)`), so `price` is only a worst-case ceiling — the actual fill
+price (`cost = size_usdc / filled_shares`) is always the real weighted price from
+whatever liquidity the book had. Raising the ceiling faster costs nothing when the book
+doesn't need it; it only stops retries from failing purely because the cap was still
+below available liquidity. `TradeResult` also now carries an `attempts` count, surfaced
+in the Telegram "Order REJECTED" message, so a repeat of this is visible without
+grepping `live.log`.
+
+### Take-profit never filled — oversell bug + no retry backoff (2026-07-03, fixed)
+
+A DOGE take-profit at 17:33 crossed its trigger almost immediately after entry and
+stayed crossed for the rest of the cycle, yet **284 close attempts all failed** and the
+position rode to resolution (won by luck). Full writeup:
+`trader/doc/incident_doge_2026-07-03.md`.
+
+**Root cause 1 — a real oversell, not a liquidity problem:** `close_position` built the
+SELL order size as `round2(shares)`. `round2(1.5151)` rounds **up** to `1.52`, but the
+position only held `1.515150` shares — the close order asked to sell more than it
+actually owned, which can never succeed no matter how many retries or how liquid the
+book is (`"not enough balance -> balance: 1515150, order amount: 1520000"` — an exact
+match for `round2(1.5151)` vs. the true balance). Fixed by adding `floor2` (truncate,
+never round up) and using it for both SELL-size call sites (`place_limit_sell`,
+`close_position`), matching the reference `py_clob_client_v2`'s own `round_down`
+size-quantization — the Rust SDK doesn't quantize internally the way the Python client
+does, so the caller has to.
+
+**Root cause 2 — no backoff on the take-profit retry loop:** independent of the
+oversell, `worker.rs::on_poly` re-fired a brand-new close attempt on *every* `PolyTick`
+while price stayed above the take-profit level, because a failed attempt reverted
+straight back to the same re-triggerable `PriceMonitor` arm — 284 attempts in ~9
+seconds, no cooldown. The Python bot this ports from (`bot/worker.py`) doesn't retry
+this way at all: it zeroes the trigger the moment it fires, calls the close exactly
+once (with its own bounded 5-retry/1s-backoff loop), and just accepts the loss of that
+exit opportunity if it fails — no per-tick hammering. Rust now matches: a new
+`ExitArm::TakeProfitAbandoned` latch is set on failure so the take-profit condition
+can't re-fire for that position again, while stop-loss (which doesn't gate on
+`exit_arm`) stays fully armed regardless.
+
+**Also fixed while investigating:** the live trade CSVs' header predated the
+`exit_attempts`/`exit_last_error` columns (9 columns vs. the 11 the binary actually
+writes). `csv.DictReader` (used by `trade_reconcile.py`) doesn't error on that mismatch
+— it silently dumps the extra fields into an unnamed bucket, so the "Failed Exit
+Attempts" report had been reporting zero retries for every trade, always, since that
+feature was added. `append_csv_header_if_new` now detects and heals a stale header
+in place (padding any legacy short rows) on the next restart, and
+`trade_reconcile.py` warns loudly instead of silently zeroing data if it ever sees the
+mismatch again.
+
+### `/halt` silently cleared within one cycle (2026-07-03, fixed, critical)
+
+`/halt` was sent via Telegram at 17:36 HKT to stop new entries on the live (real-money)
+bot. It placed a new ETH trade at 18:09 anyway, as if `/halt` had never been sent. Full
+writeup: `trader/doc/incident_halt_reset_2026-07-03.md`.
+
+**Root cause:** `bin/live.rs`'s one real call site for `Event::CycleOpen` (fired every
+~5 min, once per asset/strategy, on every new market cycle) hardcoded
+`entry_suppressed: false`. `worker.rs::on_cycle_open` then did an unconditional
+`self.entry_suppressed = entry_suppressed` — silently resetting *any* active halt back
+to `false` at the very next cycle boundary, with no log line or notification. `/halt`
+therefore only suppressed entries for up to ~5 minutes before trading silently resumed.
+This has been broken since the halt feature was built; the 5-minute cadence just made
+it look like it worked if checked immediately after sending the command. `/status`
+would also have shown "🟢 active" right after the silent reset, so even checking status
+soon after `/halt` wouldn't have caught it.
+
+**Fix:** removed `entry_suppressed` from `Event::CycleOpen` entirely rather than just
+correcting the call site's value — `entry_suppressed` was never part of
+`PersistedState`, so it only ever legitimately changes via `Event::Control(Halt/Resume)`
+or `Event::Balance(DrawdownHalt)`; a `CycleOpen` parameter had no valid use and closing
+it off structurally means no future call site can reintroduce this by passing the wrong
+value. (The backtest engine's `machine.rs::Machine::cycle_open` has its own similar
+parameter but computes it correctly each cycle from its loss-streak tracker — a
+different, correctly-implemented mechanism, unaffected by this bug.) Added
+`halt_survives_multiple_cycle_boundaries`: halts, drives 5 consecutive `CycleOpen`
+events, asserts the halt holds through all of them, then confirms `/resume` still
+clears it.
+
+### ETH `high_prob` went dark for 40+ minutes, missing a trade (2026-07-03, fixed)
+
+The Python bot took a WIN trade on ETH `high_prob` at 16:59:42; the Rust bot logged
+nothing for that cycle — no entry, no skip. Full writeup:
+`trader/doc/incident_missed_eth_2026-07-03.md`, fix plan:
+`trader/doc/plan_fix_max_trade_guard.md`.
+
+**Root cause:** `bin/live.rs`'s `AssetSlot.trades_completed` counted trades for the
+*entire process lifetime* and never reset, and the per-tick cycle-open gate refused to
+open a new cycle once a slot's lifetime total reached `--max-trades` (deployed as `1`).
+ETH `high_prob` won its one allotted trade at 16:30–16:35 and then permanently stopped
+opening new cycles for the rest of that process's life — 40+ minutes, spanning the
+16:55–17:00 cycle the Python bot traded — while its sibling ETH `reversal` slot (a
+separate `AssetSlot`, unaffected) kept ticking normally the whole time. The process only
+self-terminated once *every* slot independently reached its own cap, so nothing forced a
+restart to re-arm it; it happened to resume when an unrelated external SIGTERM (routine
+redeploy) restarted the process and zeroed every slot's counter.
+
+**Fix:** `trades_completed` → `cycle_trades`, reset to `0` every time a new cycle opens
+for that slot — `--max-trades` is now "trades allowed per open cycle" (still 1 by
+default), never a lifetime total, so no slot can go permanently dark. The "all slots
+reached max_trades → shut down" block was removed outright rather than reworked — a
+per-cycle-resetting counter has no meaningful "done forever" state, and a
+`Restart=always` production service shouldn't be exiting itself over trade counts
+regardless.
+
+### Consecutive-loss halt (`halt_rev`/`halt_prob`) was parsed but never wired up (2026-07-03, fixed)
+
+`strategy_*.toml`'s `halt_rev`/`halt_prob` (halt after N consecutive losses) and
+`halt_reset_hour_rev`/`halt_reset_hour_hp` (daily HKT reset hour) were read into
+`AssetParams` and shown in `/status`, but **nothing in the live trading path ever
+consumed them** — `entry_suppressed` was only ever set by `/halt` or the balance
+drawdown guard. `backtest.rs` already had a correct, tested implementation
+(`HaltTracker`) that the live binary simply never used, so this config had zero effect
+on real trading despite looking active in `/status`.
+
+**Fix:** made `HaltTracker`/`hkt_session` `pub(crate)` in `backtest.rs` and gave
+`Worker` its own instance (constructed per-strategy from `halt_rev`/`halt_reset_hour_rev`
+or `halt_prob`/`halt_reset_hour_hp`), reset at the configured HKT hour on every
+`CycleOpen`, updated on every logged trade, and OR'd into both the entry gate and
+`is_halted()` (so `/status`'s "🟡 halted" now reflects this too). New test:
+`halt_by_loss_streak_suppresses_entry_and_resets_next_session`. Not persisted across a
+process restart — `bin/live.rs` doesn't reload any persisted state on startup at all,
+a separate pre-existing gap this fix doesn't touch.
+
+### Telegram pnl showed -$0.9964 on a WIN (2026-07-03, fixed)
+
+`✅ ETH TRADE WIN | entry=0.8900 → exit=1.0000 | pnl=-$0.9964` — a win reporting pnl
+near *negative* the whole stake. **Root cause:** every terminal pnl calculation
+(`on_cycle_close`, and the full-close branches of `on_unwind_filled`/
+`on_stop_sell_filled`) computed `shares * exit_price - trade_size` — subtracting the
+*nominal* configured trade size rather than the actual cost basis of the shares being
+settled. That's only correct when `shares == trade_size / token_price` exactly; the
+moment an earlier *partial* take-profit/stop-loss fill reduced `h.shares` to a small
+residual (the partial-fill branches discarded that sale's proceeds entirely), the
+formula settled the tiny leftover residual against the *full* original stake. Verified
+against `../btc_5mins/bot/worker.py`'s reference formula (`shares * (1.0 - cost)` /
+`-shares * cost`), which correctly scales to whatever shares/cost are actually being
+settled.
+
+**Fix:** added `HoldingData.realized_pnl` (dollars already locked in from an earlier
+partial fill, accumulated on every partial-fill branch) and unified every terminal site
+onto `settle_pnl(h, exit_price) = h.realized_pnl + h.shares * (exit_price -
+h.token_price)`. New test: `partial_unwind_then_cycle_close_totals_both_legs_pnl` (6-of-10
+shares sold at a profit, 4-share residual resolves at cycle close, asserts the total
+equals the by-hand arithmetic). `on_api_result`'s API-flip branch is unaffected — it
+already recomputes `shares` fresh from `trade_size`/`token_price` each time, which is
+self-consistent for its own formula (though still can't reflect a genuine partial-fill
+residual, since `TradeRecord` doesn't carry a `shares` field — out of scope here, would
+ripple into the CSV schema).
+
+### Deploy script raced systemd's `Restart=always`, ran two live traders at once (2026-07-03, fixed, critical)
+
+`scripts/deploy_oracle.py` managed the trader process directly via `pgrep`/`kill`/
+`tmux new-session`, written before Oracle had a `trader-live.service` systemd unit
+(`Restart=always`, installed 2026-07-03 16:09) supervising it. A deploy's `kill -TERM`
+on the old PID looked like an unexpected crash to systemd, which immediately
+auto-respawned it per `Restart=always` — and the deploy script then *also* started its
+own copy via `tmux`. **Two independent `live` processes ended up running concurrently
+against the same real-money account for ~16 minutes**, both subscribed to the same NATS
+feed and capable of independently firing entries/exits on the same signals. Caught via
+the visible symptom: both processes long-polling Telegram `getUpdates` with the same bot
+token produced repeated `[telegram] poll error: ... missing field \`result\`` (a 409
+Conflict Telegram returns when two pollers share a token) in the log. No duplicate
+orders happened to fire in that window (neither process hit an entry signal), but
+nothing structurally prevented it.
+
+**Fix:** `deploy_oracle.py`'s trader path now only ever goes through
+`sudo systemctl restart trader-live.service` — no `kill`, no `tmux`, ever. It also
+regenerates `/etc/systemd/system/trader-live.service`'s `ExecStart` from the same
+`TRADER_ASSETS` (latest `strategy_*.toml`'s `trade_assets`) it always computed, so the
+installed unit can't silently drift from config either. `scripts/deploy_trader.sh` (the
+trader-only wrapper — see "Deploy the trader only" above) picked up the fix
+automatically since it just calls into `deploy_oracle.py --trader-only`.
+
+**Lesson:** once *anything* is under `Restart=always` supervision (systemd, or
+otherwise), all future tooling touching that process must go through the supervisor's
+own restart command — never signal the process directly, even for a "graceful" SIGTERM.
+The supervisor can't tell a deliberate redeploy apart from a crash.

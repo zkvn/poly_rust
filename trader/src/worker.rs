@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::backtest::HaltTracker;
 use crate::config::AssetParams;
 use crate::execution::SellStatus;
 use crate::gates::{check_gates, GateParams};
@@ -28,6 +29,16 @@ pub enum ExitArm {
     GtcResting { order_id: String },
     /// shares < 5: no GTC support at that size; watch PolyTick and FAK-sell on TP cross.
     PriceMonitor { tp_price: f64 },
+    /// A `PriceMonitor` FAK close was attempted (with its own internal bounded
+    /// retries/backoff, `execution.rs::close_position`) and failed. One-shot latch,
+    /// matching `bot/worker.py::_on_poly_snap`'s design (`_rev_unwind_tp_price` is
+    /// zeroed the moment a close is fired, never re-armed on failure) — without
+    /// this, every subsequent `PolyTick` while price stays above `tp_price`
+    /// re-fires a brand new close attempt with no backoff, hammering the CLOB
+    /// every tick until cycle end (284 attempts in ~9s in the incident that found
+    /// this: `trader/doc/incident_doge_2026-07-03.md`). Stop-loss checks are
+    /// unconditional on `exit_arm` and stay fully armed regardless.
+    TakeProfitAbandoned,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +58,14 @@ pub struct HoldingData {
     /// Most recent failed exit attempt's error message, if any.
     #[serde(default)]
     pub exit_last_error: Option<String>,
+    /// Dollar pnl already locked in from an earlier *partial* fill against this
+    /// same position (`on_unwind_filled`/`on_stop_sell_filled`'s `sold_shares <
+    /// h.shares` branch) — carried forward so the eventual terminal pnl
+    /// calculation (whichever event finally closes out `shares`) reflects the
+    /// whole position's result, not just the leftover residual's. Zero for a
+    /// position that's never had a partial exit.
+    #[serde(default)]
+    pub realized_pnl: f64,
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -75,7 +94,7 @@ pub enum WorkerState {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    CycleOpen { ctx: CycleContext, slug: String, entry_suppressed: bool },
+    CycleOpen { ctx: CycleContext, slug: String },
     CycleClose,
     BinanceTick(BinanceTick),
     PolyTick(PolyTick),
@@ -166,6 +185,24 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
+/// Total pnl for a position being settled at `exit_price` right now: whatever
+/// was already locked in from an earlier partial fill (`h.realized_pnl`) plus
+/// the currently-held `h.shares`' own result (proceeds `shares * exit_price`
+/// minus their cost basis `shares * token_price`, i.e. `shares * (exit_price -
+/// token_price)`). Deliberately *not* `shares * exit_price - trade_size`
+/// (the nominal $ intended for the whole position) — that undercounts a
+/// position that already had shares sold off earlier (or overcounts, on the
+/// downside, when the residual settles at zero), since `trade_size` no longer
+/// reflects what's actually being valued once `shares` has been reduced by a
+/// prior partial unwind/stop-loss fill. Matches `bot/worker.py`'s
+/// `shares * (1.0 - cost)` / `-shares * cost` win/loss formulas, generalized
+/// to one expression via `exit_price ∈ {0.0, 1.0}` for a natural resolution
+/// and the real fill price for an early exit.
+#[inline]
+fn settle_pnl(h: &HoldingData, exit_price: f64) -> f64 {
+    round4(h.realized_pnl + h.shares * (exit_price - h.token_price))
+}
+
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 pub struct Worker {
@@ -183,6 +220,12 @@ pub struct Worker {
     /// drawdown; cleared by `/resume` or the daily reset. Never touches an
     /// in-flight Entering/Holding/Unwinding/StopExiting position (§8).
     entry_suppressed: bool,
+    /// Per-strategy consecutive-loss halt, config-driven (`halt_rev`/`halt_prob`
+    /// count, `halt_reset_hour_rev`/`halt_reset_hour_hp` daily HKT reset) —
+    /// same `HaltTracker` backtest.rs already uses, ported here since the live
+    /// binary never wired up an equivalent (this config was parsed but had no
+    /// effect on live trading before this fix).
+    halt: HaltTracker,
     cycle_open_binance: f64,
     last_binance: f64,
     last_binance_ts_value: f64,
@@ -199,7 +242,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    fn common(asset: &str, strategy_name: &'static str, kind: StrategyKind, p: &AssetParams, sl: f64) -> Self {
+    fn common(asset: &str, strategy_name: &'static str, kind: StrategyKind, p: &AssetParams, sl: f64, sl_pnl: f64, unwind_pnl: f64, halt_max: i64, halt_reset_hour: i64) -> Self {
         Self {
             asset: asset.to_string(),
             strategy_name,
@@ -212,6 +255,7 @@ impl Worker {
             latest_binance: LatestBinanceSignal::new(),
             state: WorkerState::Watching,
             entry_suppressed: false,
+            halt: HaltTracker::new(halt_max, halt_reset_hour),
             cycle_open_binance: 0.0,
             last_binance: 0.0,
             last_binance_ts_value: 0.0,
@@ -219,8 +263,8 @@ impl Worker {
             cycle_end_ts: 0.0,
             cycle_slug: String::new(),
             sl,
-            sl_pnl: p.sl_pnl,
-            unwind_pnl: p.unwind_pnl,
+            sl_pnl,
+            unwind_pnl,
             trade_size: p.trade_size_usdc,
             pending_entry: None,
             gate_params: GateParams {
@@ -242,6 +286,10 @@ impl Worker {
             StrategyKind::Reversal(ReversalStrategy::new(p.reversal, p.no_enter_when_time_left)),
             p,
             p.sl_reversal,
+            p.sl_pnl_rev,
+            p.unwind_pnl_rev,
+            p.halt_rev,
+            p.halt_reset_hour_rev,
         )
     }
 
@@ -254,11 +302,19 @@ impl Worker {
             )),
             p,
             p.sl_high_prob,
+            p.sl_pnl_hp,
+            p.unwind_pnl_hp,
+            p.halt_prob,
+            p.halt_reset_hour_hp,
         )
     }
 
+    /// True if entries are suppressed for any reason — manual `/halt`,
+    /// balance drawdown, or the per-strategy consecutive-loss halt (config
+    /// `halt_rev`/`halt_prob`, auto-clears at `halt_reset_hour_rev`/
+    /// `halt_reset_hour_hp` HKT each day).
     pub fn is_halted(&self) -> bool {
-        self.entry_suppressed
+        self.entry_suppressed || self.halt.is_halted()
     }
 
     pub fn has_open_position(&self) -> bool {
@@ -347,7 +403,7 @@ impl Worker {
 
     pub fn step(&mut self, event: Event) -> Vec<Action> {
         match event {
-            Event::CycleOpen { ctx, slug, entry_suppressed } => self.on_cycle_open(ctx, slug, entry_suppressed),
+            Event::CycleOpen { ctx, slug } => self.on_cycle_open(ctx, slug),
             Event::CycleClose => self.on_cycle_close(),
             Event::BinanceTick(t) => self.on_binance(t),
             Event::PolyTick(t) => self.on_poly(t),
@@ -364,7 +420,13 @@ impl Worker {
         }
     }
 
-    fn on_cycle_open(&mut self, ctx: CycleContext, slug: String, entry_suppressed: bool) -> Vec<Action> {
+    fn on_cycle_open(&mut self, ctx: CycleContext, slug: String) -> Vec<Action> {
+        // entry_suppressed (halt) is intentionally NOT touched here — it must only
+        // change via Event::Control/Event::Balance. This used to take an
+        // `entry_suppressed` parameter that live.rs's one real call site hardcoded to
+        // `false` on every cycle open (every ~5 min), silently clearing any /halt set
+        // via Telegram within minutes with no log line — see
+        // trader/doc/incident_halt_reset_2026-07-03.md.
         self.saw_low_up.reset(&ctx);
         self.saw_low_dn.reset(&ctx);
         self.delta_pct.reset(&ctx);
@@ -377,10 +439,13 @@ impl Worker {
         self.cycle_start_ts = ctx.start_ts;
         self.cycle_end_ts = ctx.end_ts;
         self.cycle_slug = slug;
-        self.entry_suppressed = entry_suppressed;
         // A fresh cycle never inherits an in-flight position from the last one
         // (each cycle's trade is fully resolved before the next opens).
         self.state = WorkerState::Watching;
+        // Loss-streak halt's own daily reset — independent of, and never
+        // touched by, entry_suppressed (halt/resume, drawdown). Matches
+        // backtest.rs::run_backtest's per-cycle `reset_if_new_session` call.
+        self.halt.reset_if_new_session(ctx.start_ts);
         vec![Action::Persist]
     }
 
@@ -404,7 +469,7 @@ impl Worker {
             Side::Down => !price_moved_up,
         };
         let exit_price = if won { 1.0 } else { 0.0 };
-        let pnl = round4(h.shares * exit_price - self.trade_size);
+        let pnl = settle_pnl(&h, exit_price);
         let outcome = if won { Outcome::Win } else { Outcome::Loss };
 
         let record = TradeRecord {
@@ -420,6 +485,7 @@ impl Worker {
             exit_attempts: h.exit_attempts,
             exit_last_error: h.exit_last_error.clone(),
         };
+        self.halt.record_trade(&record, self.strategy_name);
         // Held WIN/LOSS spawns Confirming — an ApiResult mismatch can still flip it.
         self.state = WorkerState::Confirming(record.clone());
         vec![Action::LogTrade(record), Action::Persist]
@@ -431,7 +497,7 @@ impl Worker {
         self.last_binance = tick.price;
         self.last_binance_ts_value = tick.ts;
 
-        if self.entry_suppressed || !matches!(self.state, WorkerState::Watching) {
+        if self.entry_suppressed || self.halt.is_halted() || !matches!(self.state, WorkerState::Watching) {
             return vec![];
         }
 
@@ -514,7 +580,7 @@ impl Worker {
 
         let holding = HoldingData {
             side, entry_type, token_price: cost, entry_ts: self.last_binance_ts(), shares: filled_shares, exit_arm,
-            exit_attempts: 0, exit_last_error: None,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
         };
         self.state = WorkerState::Holding(holding);
         actions.push(Action::Persist);
@@ -542,13 +608,14 @@ impl Worker {
                 // Marketable limit — filled immediately; this *is* the unwind.
                 let h = h.clone();
                 let exit_price = h.token_price + self.unwind_pnl;
-                let pnl = round4(self.trade_size * self.unwind_pnl / h.token_price);
+                let pnl = settle_pnl(&h, exit_price);
                 let record = TradeRecord {
                     slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
                     strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
                     token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
                     exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
                 };
+                self.halt.record_trade(&record, self.strategy_name);
                 self.state = WorkerState::EnrichOnly(record.clone());
                 vec![Action::LogTrade(record), Action::Persist]
             }
@@ -567,28 +634,41 @@ impl Worker {
         let WorkerState::Unwinding(h) = &self.state else { return vec![] };
         let h = h.clone();
         if sold_shares < h.shares {
-            // Partial fill — residual continues to be managed.
-            let residual = HoldingData { shares: h.shares - sold_shares, ..h };
+            // Partial fill — residual continues to be managed. Bank this
+            // slice's proceeds now (`sold_shares * (exit_price - token_price)`)
+            // so the eventual terminal settlement of the leftover residual
+            // doesn't silently drop what this partial sale already realized
+            // (see `settle_pnl` doc comment).
+            let realized_pnl = h.realized_pnl + sold_shares * (exit_price - h.token_price);
+            let residual = HoldingData { shares: h.shares - sold_shares, realized_pnl, ..h };
             self.state = WorkerState::Holding(residual);
             return vec![Action::Persist];
         }
-        let pnl = round4(self.trade_size * self.unwind_pnl / h.token_price);
+        let pnl = settle_pnl(&h, exit_price);
         let record = TradeRecord {
             slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
             strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
             token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
             exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
         };
+        self.halt.record_trade(&record, self.strategy_name);
         self.state = WorkerState::EnrichOnly(record.clone());
         vec![Action::LogTrade(record), Action::Persist]
     }
 
     fn on_unwind_failed(&mut self, error: Option<String>) -> Vec<Action> {
         // A failed sell is not an exit — reclassify as held, resolved at cycle end.
+        // exit_arm becomes TakeProfitAbandoned (one-shot latch), NOT another
+        // PriceMonitor{tp_price} — leaving it re-armed would let the very next
+        // PolyTick (while price stays above tp_price) immediately re-fire another
+        // close attempt with no backoff, see the ExitArm::TakeProfitAbandoned doc
+        // comment. Stop-loss remains fully live regardless (on_poly's sl_hit check
+        // doesn't gate on exit_arm at all).
         if let WorkerState::Unwinding(h) = &self.state {
             let mut h = h.clone();
             h.exit_attempts += 1;
             h.exit_last_error = error;
+            h.exit_arm = ExitArm::TakeProfitAbandoned;
             self.state = WorkerState::Holding(h);
         }
         vec![Action::Persist]
@@ -598,21 +678,24 @@ impl Worker {
         let WorkerState::StopExiting(h) = &self.state else { return vec![] };
         let h = h.clone();
         if sold_shares < h.shares {
-            let residual = HoldingData { shares: h.shares - sold_shares, ..h };
+            let realized_pnl = h.realized_pnl + sold_shares * (exit_price - h.token_price);
+            let residual = HoldingData { shares: h.shares - sold_shares, realized_pnl, ..h };
             self.state = WorkerState::Holding(residual);
             return vec![Action::Persist];
         }
-        // Absolute-SL-style pnl (proceeds − stake); PnL-SL is computed at trigger
-        // time in on_poly in a live system, but here we use the realized exit
-        // price uniformly, matching the sim/backtest STOPLOSS formula.
-        let shares = self.trade_size / h.token_price;
-        let pnl = round4(shares * exit_price - self.trade_size);
+        // Absolute-SL-style pnl (proceeds − cost basis of whatever's still
+        // held, plus anything already realized from an earlier partial
+        // fill) — PnL-SL is computed at trigger time in on_poly in a live
+        // system, but here we use the realized exit price uniformly,
+        // matching the sim/backtest STOPLOSS formula.
+        let pnl = settle_pnl(&h, exit_price);
         let record = TradeRecord {
             slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
             strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
             token_price: h.token_price, exit_price, outcome: Outcome::StopLoss, pnl,
             exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
         };
+        self.halt.record_trade(&record, self.strategy_name);
         self.state = WorkerState::EnrichOnly(record.clone());
         vec![Action::LogTrade(record), Action::Persist]
     }
@@ -710,12 +793,14 @@ mod tests {
             price_high_rev: 0.90,
             delta_pct_rev: 0.0008,
             sl_reversal: 0.0,
-            unwind_pnl: 0.03,
-            sl_pnl: 0.20,
+            unwind_pnl_rev: 0.03,
+            sl_pnl_rev: 0.20,
             price_low: 0.80,
             price_high: 0.93,
             delta_pct_hp: 0.0004,
             sl_high_prob: 0.49,
+            unwind_pnl_hp: 0.05,
+            sl_pnl_hp: 0.25,
             halt_rev: 2,
             halt_prob: 2,
             halt_reset_hour_rev: 2,
@@ -735,7 +820,7 @@ mod tests {
     /// Drives a worker from cycle-open through a filled DOWN reversal entry,
     /// returning it positioned in `Holding` with the given `filled_shares`.
     fn enter_down_position(w: &mut Worker, filled_shares: f64) {
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string(), entry_suppressed: false });
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
         w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
         w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 })); // dp < 0
         w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // recovery > reversal 0.60
@@ -749,7 +834,7 @@ mod tests {
     fn entry_fires_and_transitions_to_entering() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string(), entry_suppressed: false });
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
         w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
         w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
         w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
@@ -780,7 +865,7 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         let actions = {
-            w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string(), entry_suppressed: false });
+            w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
             w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
             w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
             w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
@@ -815,6 +900,61 @@ mod tests {
         }
     }
 
+    /// The live binary parses `halt_rev`/`halt_prob` (consecutive-loss count)
+    /// and `halt_reset_hour_rev`/`halt_reset_hour_hp` (daily HKT reset hour)
+    /// out of the strategy TOML, but nothing ever consumed them before this
+    /// fix — `entry_suppressed` was only ever set by `/halt` or the balance
+    /// drawdown guard, so a losing streak never actually halted live trading.
+    /// This reproduces `btc_params()`'s `halt_rev = 2`: two losses in the same
+    /// HKT session must suppress further entries, and a cycle opening in the
+    /// next session (per `halt_reset_hour_rev`) must clear it again — mirrors
+    /// `backtest.rs::HaltTracker`, which already did this correctly in the
+    /// backtest path only.
+    #[test]
+    fn halt_by_loss_streak_suppresses_entry_and_resets_next_session() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+
+        // Loss 1 (same session as ctx(1_000.0) inside enter_down_position).
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 })); // now above open -> DOWN loses
+        let actions = w.step(Event::CycleClose);
+        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        assert_eq!(record.outcome, Outcome::Loss);
+        assert!(!w.is_halted(), "1 loss must not halt yet (halt_rev=2)");
+
+        // Loss 2, same session (enter_down_position reopens the same
+        // ctx(1_000.0) cycle) -> hits halt_rev's threshold of 2.
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 }));
+        let actions = w.step(Event::CycleClose);
+        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        assert_eq!(record.outcome, Outcome::Loss);
+        assert!(w.is_halted(), "2nd loss must trip halt_rev=2");
+
+        // A new cycle in the *same* session must not clear it, and entries
+        // must actually be suppressed now (not just is_halted() reporting true).
+        w.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
+        assert!(w.is_halted(), "halt must survive a same-session cycle boundary");
+        w.step(Event::PolyTick(PolyTick { ts: 1680.0, up: 0.85, dn: 0.15 }));
+        w.step(Event::BinanceTick(BinanceTick { ts: 1700.0, price: 59_900.0 }));
+        w.step(Event::PolyTick(PolyTick { ts: 1740.0, up: 0.30, dn: 0.70 }));
+        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1750.0, price: 59_900.0 }));
+        assert!(actions.is_empty(), "entry must be suppressed while halted, got {actions:?}");
+
+        // A cycle opening in the *next* HKT session (start_ts +100_000s, well
+        // over a day later, guaranteed to cross halt_reset_hour_rev's boundary
+        // regardless of time-of-day) must clear the halt.
+        w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
+        assert!(!w.is_halted(), "halt must clear once a new HKT session opens");
+        w.step(Event::PolyTick(PolyTick { ts: 101_180.0, up: 0.85, dn: 0.15 }));
+        w.step(Event::BinanceTick(BinanceTick { ts: 101_200.0, price: 59_900.0 }));
+        w.step(Event::PolyTick(PolyTick { ts: 101_240.0, up: 0.30, dn: 0.70 }));
+        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 101_250.0, price: 59_900.0 }));
+        assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]),
+            "entry must fire again once the halt has cleared for the new session: {actions:?}");
+    }
+
     #[test]
     fn halt_mid_holding_does_not_abort_the_position() {
         let p = btc_params();
@@ -837,13 +977,41 @@ mod tests {
     fn halt_suppresses_only_new_entries() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string(), entry_suppressed: true });
+        w.step(Event::Control(ControlEvent::Halt));
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
         w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
         w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
         w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
         let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
         assert!(actions.is_empty(), "halted worker must not enter: {actions:?}");
         assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    /// Reproduces the 2026-07-03 17:36 incident (trader/doc/incident_halt_reset_2026-07-03.md):
+    /// /halt was sent via Telegram but the bot entered a new trade at the next cycle
+    /// boundary anyway. Root cause was `Event::CycleOpen` carrying an
+    /// `entry_suppressed` parameter that live.rs's real call site hardcoded to
+    /// `false` every single cycle open, silently clearing any halt within one cycle
+    /// (~5 min). Fix: `CycleOpen` no longer carries that field at all — halt can only
+    /// change via `Event::Control`/`Event::Balance`, so it now survives across
+    /// however many cycle boundaries pass until an explicit `/resume`.
+    #[test]
+    fn halt_survives_multiple_cycle_boundaries() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::Control(ControlEvent::Halt));
+        assert!(w.is_halted());
+
+        for i in 0..5 {
+            w.step(Event::CycleOpen {
+                ctx: ctx(1_000.0 + i as f64 * 300.0),
+                slug: format!("btc-updown-5m-{}", 1_000 + i * 300),
+            });
+            assert!(w.is_halted(), "halt must survive cycle boundary {i}");
+        }
+
+        w.step(Event::Control(ControlEvent::Resume));
+        assert!(!w.is_halted(), "/resume must still clear the halt");
     }
 
     #[test]
@@ -879,6 +1047,42 @@ mod tests {
         assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
     }
 
+    /// Reproduces the pnl bug from the 2026-07-03 ETH `high_prob` Telegram
+    /// report (`entry=0.8900 -> exit=1.0000, pnl=-$0.9964` for a WIN): a
+    /// partial take-profit fill left a small residual, and the eventual
+    /// cycle-close resolution's pnl was computed as `residual_shares *
+    /// exit_price - trade_size` — discarding both the earlier partial sale's
+    /// proceeds *and* the fact that `trade_size` no longer matches what's
+    /// actually being settled. The total across both legs must equal what a
+    /// human doing the arithmetic by hand would get: 6 shares sold at 0.73
+    /// (cost 0.70) + 4 residual shares resolved at $1 (still cost 0.70) =
+    /// $8.38 proceeds on a $7.00 stake = +$1.38, not something close to -$1.
+    #[test]
+    fn partial_unwind_then_cycle_close_totals_both_legs_pnl() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0); // 10 shares @ cost 0.70
+        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // crosses tp -> Unwinding
+        assert!(matches!(w.state, WorkerState::Unwinding(_)));
+
+        // Partial fill: 6 of 10 shares sold at 0.73 (the tp price).
+        w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73 });
+        match &w.state {
+            WorkerState::Holding(h) => {
+                assert_eq!(h.shares, 4.0);
+                assert!((h.realized_pnl - 0.18).abs() < 1e-9, "6*(0.73-0.70) = 0.18, got {}", h.realized_pnl);
+            }
+            _ => panic!("expected residual Holding"),
+        }
+
+        // Binance stayed below open (59_900 < 60_000 from enter_down_position),
+        // so the DOWN side wins the residual at cycle close.
+        let actions = w.step(Event::CycleClose);
+        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        assert_eq!(record.outcome, Outcome::Win);
+        assert!((record.pnl - 1.38).abs() < 1e-9, "expected +1.38 total (0.18 realized + 4*0.30 residual), got {}", record.pnl);
+    }
+
     /// Reproduces the 2026-07-03 ETH audit scenario (trader/doc/audit_trades_2026-07-03.md):
     /// a take-profit unwind is triggered but the sell fails (e.g. "balance: 0"),
     /// so the position falls back to Holding and is resolved at cycle close.
@@ -907,6 +1111,46 @@ mod tests {
         assert_eq!(record.outcome, Outcome::Win);
         assert_eq!(record.exit_attempts, 1, "WIN record must show the failed unwind attempt, not look like a clean hold");
         assert_eq!(record.exit_last_error.as_deref(), Some("balance: 0"));
+    }
+
+    /// Reproduces the 2026-07-03 17:33 DOGE incident (trader/doc/incident_doge_2026-07-03.md):
+    /// a failed take-profit unwind used to leave `exit_arm` re-armed as
+    /// `PriceMonitor { tp_price }`, so the very next `PolyTick` (price still above
+    /// tp_price) immediately re-fired another `ClosePosition` — 284 attempts in ~9s
+    /// with no backoff in that incident. `on_unwind_failed` must latch to
+    /// `TakeProfitAbandoned` instead, so a subsequent PolyTick above tp_price does
+    /// NOT re-fire a close, while stop-loss stays fully armed.
+    #[test]
+    fn failed_unwind_does_not_retrigger_close_on_next_poly_tick() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // crosses tp -> Unwinding
+        assert!(matches!(w.state, WorkerState::Unwinding(_)));
+
+        w.step(Event::UnwindFailed { error: Some("no market price".to_string()) });
+        match &w.state {
+            WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::TakeProfitAbandoned),
+            _ => panic!("expected Holding with exit_arm abandoned"),
+        }
+
+        // Price stays above tp (0.73) on every subsequent tick — the old bug would
+        // re-fire ClosePosition{TakeProfit} on each one.
+        for ts in [1261.0, 1262.0, 1263.0] {
+            let actions = w.step(Event::PolyTick(PolyTick { ts, up: 0.20, dn: 0.80 }));
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::TakeProfit, .. })),
+                "must not re-fire a take-profit close after the first attempt failed"
+            );
+            assert!(matches!(w.state, WorkerState::Holding(_)), "stays Holding, not re-entering Unwinding");
+        }
+
+        // Stop-loss must still be fully armed despite the abandoned take-profit.
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1264.0, up: 0.99, dn: 0.01 })); // dn crashes -> sl_pnl or sl_rev
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::StopLoss, .. })),
+            "stop-loss must still fire even though take-profit was abandoned"
+        );
     }
 
     #[test]
@@ -1019,7 +1263,7 @@ mod tests {
             side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "gone-order".to_string() },
-            exit_attempts: 0, exit_last_error: None,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
 
@@ -1037,7 +1281,7 @@ mod tests {
             side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "still-live".to_string() },
-            exit_attempts: 0, exit_last_error: None,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &["still-live".to_string()], 10.0);
@@ -1053,7 +1297,7 @@ mod tests {
             side: Side::Up, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::PriceMonitor { tp_price: 0.73 },
-            exit_attempts: 0, exit_last_error: None,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &[], 0.0);
@@ -1083,7 +1327,7 @@ mod tests {
     fn rejected_order_returns_to_watching() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string(), entry_suppressed: false });
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
         w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
         w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
         w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));

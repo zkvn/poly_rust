@@ -25,7 +25,7 @@ fn hkt() -> FixedOffset {
 }
 
 /// Python: `(dt - timedelta(hours=reset_hour)).date()` in HKT
-fn hkt_session(slug_ts: f64, reset_hour: i64) -> NaiveDate {
+pub(crate) fn hkt_session(slug_ts: f64, reset_hour: i64) -> NaiveDate {
     let dt: DateTime<FixedOffset> = hkt().timestamp_opt(slug_ts as i64, 0).unwrap();
     (dt - Duration::hours(reset_hour)).date_naive()
 }
@@ -286,7 +286,7 @@ fn replay_cycle(
 
 // ── HaltTracker ───────────────────────────────────────────────────────────────
 
-struct HaltTracker {
+pub(crate) struct HaltTracker {
     max: i64,        // 0 = disabled
     reset_hour: i64,
     losses: i64,
@@ -294,11 +294,11 @@ struct HaltTracker {
 }
 
 impl HaltTracker {
-    fn new(max: i64, reset_hour: i64) -> Self {
+    pub(crate) fn new(max: i64, reset_hour: i64) -> Self {
         Self { max, reset_hour, losses: 0, last_session: None }
     }
 
-    fn reset_if_new_session(&mut self, slug_ts: f64) {
+    pub(crate) fn reset_if_new_session(&mut self, slug_ts: f64) {
         let session = hkt_session(slug_ts, self.reset_hour);
         if Some(session) != self.last_session {
             self.losses = 0;
@@ -306,11 +306,11 @@ impl HaltTracker {
         }
     }
 
-    fn is_halted(&self) -> bool {
+    pub(crate) fn is_halted(&self) -> bool {
         self.max > 0 && self.losses >= self.max
     }
 
-    fn record_trade(&mut self, rec: &TradeRecord, strategy_name: &str) {
+    pub(crate) fn record_trade(&mut self, rec: &TradeRecord, strategy_name: &str) {
         if rec.strategy == strategy_name && rec.outcome.is_loss_for_halt() {
             self.losses += 1;
         }

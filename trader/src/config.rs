@@ -49,6 +49,8 @@ pub struct StrategyToml {
     pub price_low: HashMap<String, f64>,
     pub price_high: HashMap<String, f64>,
     pub sl_high_prob: HashMap<String, f64>,
+    pub unwind_pnl_hp: HashMap<String, f64>,
+    pub sl_pnl_hp: HashMap<String, f64>,
 
     pub trade_size_usdc: HashMap<String, f64>,
 
@@ -75,14 +77,16 @@ pub struct AssetParams {
     pub price_high_rev: f64,
     pub delta_pct_rev: f64,
     pub sl_reversal: f64,
-    pub unwind_pnl: f64,
-    pub sl_pnl: f64,
+    pub unwind_pnl_rev: f64,
+    pub sl_pnl_rev: f64,
 
     // High-prob
     pub price_low: f64,
     pub price_high: f64,
     pub delta_pct_hp: f64,
     pub sl_high_prob: f64,
+    pub unwind_pnl_hp: f64,
+    pub sl_pnl_hp: f64,
 
     // Risk
     pub halt_rev: i64,
@@ -127,12 +131,14 @@ impl StrategyToml {
             price_high_rev: req(&self.price_high_rev, asset, "price_high_rev")?,
             delta_pct_rev: req(&self.delta_pct_rev, asset, "delta_pct_rev")?,
             sl_reversal: req(&self.sl_reversal, asset, "sl_reversal")?,
-            unwind_pnl: req(&self.unwind_pnl_rev, asset, "unwind_pnl_rev")?,
-            sl_pnl: req(&self.sl_pnl_rev, asset, "sl_pnl_rev")?,
+            unwind_pnl_rev: req(&self.unwind_pnl_rev, asset, "unwind_pnl_rev")?,
+            sl_pnl_rev: req(&self.sl_pnl_rev, asset, "sl_pnl_rev")?,
             price_low: req(&self.price_low, asset, "price_low")?,
             price_high: req(&self.price_high, asset, "price_high")?,
             delta_pct_hp: req(&self.delta_pct_hp, asset, "delta_pct_hp")?,
             sl_high_prob: req(&self.sl_high_prob, asset, "sl_high_prob")?,
+            unwind_pnl_hp: req(&self.unwind_pnl_hp, asset, "unwind_pnl_hp")?,
+            sl_pnl_hp: req(&self.sl_pnl_hp, asset, "sl_pnl_hp")?,
             halt_rev: req(&self.halt_rev, asset, "halt_rev")?,
             halt_prob: req(&self.halt_prob, asset, "halt_prob")?,
             halt_reset_hour_rev: req(&self.halt_reset_hour_rev, asset, "halt_reset_hour_rev")?,
@@ -177,8 +183,10 @@ mod tests {
         assert!((p.delta_pct_rev - 0.0008).abs() < 1e-9);
         assert_eq!(p.halt_rev, 2);
         assert_eq!(p.halt_reset_hour_rev, 2);
-        assert!((p.unwind_pnl - 0.03).abs() < 1e-9);
-        assert!((p.sl_pnl - 0.20).abs() < 1e-9);
+        assert!((p.unwind_pnl_rev - 0.03).abs() < 1e-9);
+        assert!((p.sl_pnl_rev - 0.20).abs() < 1e-9);
+        assert!((p.unwind_pnl_hp - 0.05).abs() < 1e-9);
+        assert!((p.sl_pnl_hp - 0.25).abs() < 1e-9);
     }
 
     #[test]

@@ -7,8 +7,19 @@ Deploy:
   2. rsync price_feed  → Oracle price_feed/target/release/
   3. rsync live        → Oracle trader/target/release/
   4. Restart poly-collector systemd service (price_feed).
-  5. Gracefully stop old trader process: SIGTERM → wait 10 s → SIGKILL.
-  6. Start fresh trader in tmux session 'trader'.
+  5. Restart trader-live systemd service (trader) — `systemctl restart`,
+     which stops the old process and starts the new one atomically under
+     systemd's own supervision.
+
+Both the price recorder and the trader run as systemd services with
+`Restart=always` (units on Oracle: poly-collector.service,
+trader-live.service). This script MUST go through `systemctl` for both —
+never `kill`/`tmux` the process directly. Doing that races with systemd's own
+Restart=always: it sees the killed process as an unexpected exit and
+auto-respawns a *second* copy on its own, while this script starts a *third*.
+That's exactly what happened on 2026-07-03 (see README's "known incidents"):
+two independent trader processes ended up running concurrently against the
+same real-money account for ~16 minutes before it was caught by hand.
 
 Usage:
     python scripts/deploy_oracle.py
@@ -35,7 +46,6 @@ REPO_ROOT         = Path(__file__).resolve().parent.parent
 TARGET            = "aarch64-unknown-linux-gnu"
 PRICE_FEED_BIN    = REPO_ROOT / "price_feed" / "target" / TARGET / "release" / "price_feed"
 TRADER_BIN        = REPO_ROOT / "trader"     / "target" / TARGET / "release" / "live"
-GRACEFUL_TIMEOUT = 10  # seconds to wait after SIGTERM before SIGKILL
 
 # ── Oracle connection ──────────────────────────────────────────────────────────
 ORACLE_HOST = "10.8.0.1"
@@ -64,11 +74,47 @@ TRADER_ASSETS   = _latest_trade_assets(REPO_ROOT.parent / "btc_5mins" / "config"
 TRADER_ENV_FILE = "/home/ubuntu/apps/poly_rust/trader/.env"
 TRADER_CFG_DIR  = "/home/ubuntu/apps/btc_5mins/config"
 TRADER_LOG_DIR  = f"{ORACLE_BASE}/trader/live_logs"
-TRADER_TMUX     = "trader"
+TRADER_SERVICE  = "trader-live.service"
+TRADER_UNIT_PATH = "/etc/systemd/system/trader-live.service"
 # price_feed publishes ticks here (poly-collector.service) and the trader
 # subscribes instead of opening its own duplicate Binance/Poly WebSockets —
 # required now that an asset can own more than one strategy worker.
 TRADER_NATS_URL = "nats://127.0.0.1:4222"
+
+
+def _trader_unit_file(asset_flags: str, nats_flag: str) -> str:
+    """Renders trader-live.service's content from the same TRADER_ASSETS this
+    script always keeps in sync with the latest strategy_*.toml — so the
+    installed unit's ExecStart can never silently drift from config the way a
+    hand-edited unit file could."""
+    exec_start = (
+        f"{ORACLE_BASE}/trader/target/release/live \\\n"
+        f"  {asset_flags} \\\n"
+        f"  --env-file {TRADER_ENV_FILE} \\\n"
+        f"  --config-dir {TRADER_CFG_DIR} \\\n"
+        f"  --log-dir {TRADER_LOG_DIR} \\\n"
+        f"  {nats_flag}"
+    )
+    return f"""[Unit]
+Description=poly_rust live trader
+After=network-online.target nats-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={ORACLE_USER}
+WorkingDirectory={ORACLE_BASE}/trader
+ExecStart={exec_start}
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=append:{TRADER_LOG_DIR}/live.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
+"""
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -147,43 +193,12 @@ def deploy_price_feed(client: paramiko.SSHClient, dry_run: bool) -> bool:
     return status == "active"
 
 
-def find_trader_pid(client: paramiko.SSHClient) -> str | None:
-    rc, out, _ = ssh(client, "pgrep -u \"$(whoami)\" -f 'live ' 2>/dev/null", timeout=5)
-    pid = out.strip().splitlines()[0].strip() if out.strip() else None
-    return pid if pid else None
-
-
-def stop_trader(client: paramiko.SSHClient, dry_run: bool) -> bool:
-    pid = find_trader_pid(client)
-    if not pid:
-        print("  Trader not running — nothing to stop.")
-        return True
-
-    print(f"  Trader PID {pid} found.")
-    if dry_run:
-        print(f"  [dry-run] kill -TERM {pid}, wait {GRACEFUL_TIMEOUT}s, SIGKILL if still alive")
-        return True
-
-    # kill tmux session first so it doesn't restart the process
-    ssh(client, f"tmux kill-session -t {TRADER_TMUX} 2>/dev/null", timeout=5)
-
-    print(f"  Sending SIGTERM to {pid}...")
-    ssh(client, f"kill -TERM {pid} 2>/dev/null", timeout=5)
-
-    for i in range(GRACEFUL_TIMEOUT):
-        time.sleep(1)
-        rc, _, _ = ssh(client, f"kill -0 {pid} 2>/dev/null", timeout=5)
-        if rc != 0:
-            print(f"  Exited cleanly after {i + 1}s.")
-            return True
-
-    print(f"  Still alive after {GRACEFUL_TIMEOUT}s — sending SIGKILL.")
-    ssh(client, f"kill -KILL {pid} 2>/dev/null", timeout=5)
-    time.sleep(1)
-    return True
-
-
-def start_trader(client: paramiko.SSHClient, dry_run: bool) -> bool:
+def deploy_trader(client: paramiko.SSHClient, dry_run: bool) -> bool:
+    """rsync the binary, keep trader-live.service's unit file in sync with the
+    current TRADER_ASSETS, then `systemctl restart` it. Always goes through
+    systemd — never `kill`/`tmux` the process directly (see module docstring
+    for why: that raced with systemd's own Restart=always and produced two
+    concurrent live-trading processes on 2026-07-03)."""
     bin_path = TRADER_BIN
     if not bin_path.exists():
         print(f"  Binary not found: {bin_path}")
@@ -195,42 +210,46 @@ def start_trader(client: paramiko.SSHClient, dry_run: bool) -> bool:
         return False
 
     asset_flags = " ".join(f"--asset {a}" for a in TRADER_ASSETS)
-    nats_flag   = f"--nats-url {TRADER_NATS_URL}" if TRADER_NATS_URL else ""
-    live_bin    = f"{ORACLE_BASE}/trader/target/release/live"
-    cmd_inner   = (
-        f"{live_bin} {asset_flags} "
-        f"--env-file {TRADER_ENV_FILE} "
-        f"--config-dir {TRADER_CFG_DIR} "
-        f"--log-dir {TRADER_LOG_DIR}"
-    )
-    if nats_flag:
-        cmd_inner += f" {nats_flag}"
+    nats_flag = f"--nats-url {TRADER_NATS_URL}" if TRADER_NATS_URL else ""
+    unit_content = _trader_unit_file(asset_flags, nats_flag)
 
-    # ensure log dir exists
     ssh(client, f"mkdir -p {TRADER_LOG_DIR}", timeout=5)
 
-    tmux_cmd = f"tmux new-session -d -s {TRADER_TMUX} \"{cmd_inner}\""
+    print(f"  Checking {TRADER_UNIT_PATH} matches current config ({', '.join(TRADER_ASSETS)})...")
+    rc, current, _ = ssh(client, f"cat {TRADER_UNIT_PATH} 2>/dev/null", timeout=5)
+    unit_changed = current.strip() != unit_content.strip()
 
-    print(f"  Starting trader in tmux session '{TRADER_TMUX}'...")
-    print(f"    {cmd_inner}")
+    if unit_changed:
+        print("  Unit file differs from current strategy_*.toml's trade_assets — updating.")
+        if dry_run:
+            print(f"  [dry-run] write {TRADER_UNIT_PATH} + sudo systemctl daemon-reload")
+        else:
+            sftp = client.open_sftp()
+            with sftp.file("/tmp/trader-live.service.new", "w") as f:
+                f.write(unit_content)
+            sftp.close()
+            rc, out, err = ssh(client, f"sudo cp /tmp/trader-live.service.new {TRADER_UNIT_PATH} && sudo systemctl daemon-reload", timeout=15)
+            if rc != 0:
+                print(f"  unit file update failed:\n{out}{err}")
+                return False
+    else:
+        print("  Unit file already matches — no changes.")
+
+    print(f"  Restarting {TRADER_SERVICE} (systemd)...")
     if dry_run:
-        print(f"  [dry-run] {tmux_cmd}")
+        print(f"  [dry-run] sudo systemctl restart {TRADER_SERVICE}")
         return True
-
-    rc, out, err = ssh(client, tmux_cmd, timeout=10)
+    rc, out, err = ssh(client, f"sudo systemctl restart {TRADER_SERVICE}", timeout=20)
     if rc != 0:
-        print(f"  tmux start failed (exit {rc}):\n{out}{err}")
+        print(f"  systemctl restart failed:\n{out}{err}")
         return False
 
     time.sleep(3)
-    pid = find_trader_pid(client)
-    if not pid:
-        print("  WARNING: no trader process found after 3s — check tmux logs:")
-        print(f"    ssh {ORACLE_USER}@{ORACLE_HOST} tmux attach -t {TRADER_TMUX}")
-        return False
-
-    print(f"  Trader running (PID {pid}).")
-    return True
+    rc2, out2, _ = ssh(client, f"systemctl is-active {TRADER_SERVICE}")
+    status = out2.strip()
+    rc3, pid_out, _ = ssh(client, f"systemctl show {TRADER_SERVICE} -p MainPID --value")
+    print(f"  {TRADER_SERVICE}: {status} (PID {pid_out.strip()})")
+    return status == "active"
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -273,11 +292,8 @@ def main() -> None:
 
     # ── 3. trader ─────────────────────────────────────────────────────────────
     if do_trader:
-        print("\n[trader] stopping old process...")
-        stop_trader(client, args.dry_run)
-
-        print("\n[trader] deploying and starting...")
-        if not start_trader(client, args.dry_run):
+        print("\n[trader] deploying...")
+        if not deploy_trader(client, args.dry_run):
             print("  trader deploy failed.")
             ok = False
 

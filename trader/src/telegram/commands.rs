@@ -19,6 +19,8 @@ pub fn settable_params() -> HashSet<&'static str> {
         "sl_reversal",
         "unwind_pnl_rev",
         "sl_pnl_rev",
+        "unwind_pnl_hp",
+        "sl_pnl_hp",
         "enter_when_time_left",
         "no_enter_when_time_left",
         "reversal_low_threshold",

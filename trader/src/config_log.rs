@@ -45,6 +45,10 @@ pub struct ConfigSnapshot {
     pub sl_rev: HashMap<String, f64>,
     pub unwind_pnl_rev: HashMap<String, f64>,
     pub sl_pnl_rev: HashMap<String, f64>,
+    #[serde(default)]
+    pub unwind_pnl_hp: HashMap<String, f64>,
+    #[serde(default)]
+    pub sl_pnl_hp: HashMap<String, f64>,
 }
 
 /// Build a snapshot for `asset` from the full multi-asset TOML (mirrors
@@ -98,6 +102,8 @@ pub fn build_snapshot(
         sl_rev: toml.sl_reversal.clone(),
         unwind_pnl_rev: toml.unwind_pnl_rev.clone(),
         sl_pnl_rev: toml.sl_pnl_rev.clone(),
+        unwind_pnl_hp: toml.unwind_pnl_hp.clone(),
+        sl_pnl_hp: toml.sl_pnl_hp.clone(),
     }
 }
 

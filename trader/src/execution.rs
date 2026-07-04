@@ -33,6 +33,8 @@ pub struct TradeResult {
     /// Actual cost per share (fill price), not the limit price.
     pub cost: f64,
     pub error: Option<String>,
+    /// Number of order-placement attempts made (1 = no retry needed).
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -106,19 +108,46 @@ fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
 
+/// Truncates down to 2 decimals for constructing a SELL order size from a real
+/// share balance. Must never round *up* — `Amount::shares` rejects anything with
+/// more than 2 decimal places, so the caller has to pre-quantize, and rounding
+/// to nearest can push the requested size above the true balance (e.g.
+/// `round2(1.5151) == 1.52` on a 1.515150-share holding → permanent "not enough
+/// balance" on every attempt, see `trader/doc/incident_doge_2026-07-03.md`).
+/// This matches the reference Python client's own order-size quantization
+/// (`py_clob_client_v2.order_builder.helpers.round_down`, `floor(x*10**n)/10**n`),
+/// which the Rust SDK does not replicate — `Amount::shares` only validates scale,
+/// it doesn't quantize.
+fn floor2(x: f64) -> f64 {
+    (x * 100.0).floor() / 100.0
+}
+
+/// Price ceiling for a given BUY retry attempt: interpolates linearly from
+/// `base_price` (attempt 0) up to `max_buy_price` (the last attempt), so the final
+/// retry always sweeps the full configured ceiling instead of stalling short of it.
+/// `base_price` is expected to already be `<= max_buy_price`.
+fn retry_ladder_price(base_price: f64, max_buy_price: f64, order_max_retries: u32, attempt: u32) -> f64 {
+    let step = if order_max_retries > 0 {
+        (max_buy_price - base_price).max(0.0) / order_max_retries as f64
+    } else {
+        0.0
+    };
+    (base_price + attempt as f64 * step).min(max_buy_price)
+}
+
 #[async_trait]
 impl ExecutionEngine for SimExecutionEngine {
     async fn place(&self, _token_id: U256, price: f64, size_usdc: f64, max_buy_price: f64) -> TradeResult {
         if price <= 0.0 {
-            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()) };
+            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()), attempts: 1 };
         }
         let capped_price = price.min(max_buy_price);
         let requested_shares = round2(size_usdc / capped_price);
         let filled = round2(requested_shares * self.fill_ratio);
         if filled <= 0.0 {
-            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("ORDER_FAILED".to_string()) };
+            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("ORDER_FAILED".to_string()), attempts: 1 };
         }
-        TradeResult { placed: true, filled_shares: filled, cost: capped_price, error: None }
+        TradeResult { placed: true, filled_shares: filled, cost: capped_price, error: None, attempts: 1 }
     }
 
     async fn place_limit_sell(&self, _token_id: U256, shares: f64, price: f64) -> LimitSellResult {
@@ -153,8 +182,6 @@ pub struct LiveConfig {
     pub order_slippage: f64,
     /// Extra retries beyond the first attempt (bot/config.py order_max_retries).
     pub order_max_retries: u32,
-    /// Added to the slippage on each BUY retry (matches `_RETRY_SLIPPAGE_STEP = 0.02`).
-    pub retry_slippage_step: f64,
     /// Retries for "balance: 0" (BUY not yet settled on-chain) when placing the unwind GTC sell.
     pub settle_retries: u32,
     pub settle_sleep: Duration,
@@ -167,7 +194,6 @@ impl Default for LiveConfig {
         Self {
             order_slippage: 0.01,
             order_max_retries: 2,
-            retry_slippage_step: 0.02,
             settle_retries: 3,
             settle_sleep: Duration::from_millis(1500),
             close_max_retries: 5,
@@ -252,7 +278,7 @@ pub fn signature_type_from_env() -> anyhow::Result<SignatureType> {
 impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutionEngine<S> {
     async fn place(&self, token_id: U256, price: f64, size_usdc: f64, max_buy_price: f64) -> TradeResult {
         if price <= 0.0 {
-            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()) };
+            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()), attempts: 0 };
         }
         let base_price = (price + self.cfg.order_slippage).min(max_buy_price);
         let estimated_shares = round2(size_usdc / base_price);
@@ -261,16 +287,15 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         let mut last_err: Option<String> = None;
 
         for attempt in 0..max_attempts {
-            let capped_price = (price + self.cfg.order_slippage + attempt as f64 * self.cfg.retry_slippage_step)
-                .min(max_buy_price);
+            let capped_price = retry_ladder_price(base_price, max_buy_price, self.cfg.order_max_retries, attempt);
             let Ok(price_dec) = Decimal::from_str(&format!("{capped_price:.4}")) else {
-                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad price".to_string()) };
+                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad price".to_string()), attempts: attempt + 1 };
             };
             let Ok(amount) = Decimal::from_str(&format!("{size_usdc:.4}")).and_then(|d| Ok(Amount::usdc(d))) else {
-                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()) };
+                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()), attempts: attempt + 1 };
             };
             let Ok(amount) = amount else {
-                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()) };
+                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()), attempts: attempt + 1 };
             };
 
             let result = self
@@ -288,7 +313,7 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 Ok(resp) if resp.success => {
                     let filled: f64 = resp.taking_amount.to_string().parse().unwrap_or(estimated_shares);
                     let actual_cost = if filled > 0.0 { size_usdc / filled } else { price };
-                    return TradeResult { placed: true, filled_shares: filled, cost: actual_cost, error: None };
+                    return TradeResult { placed: true, filled_shares: filled, cost: actual_cost, error: None, attempts: attempt + 1 };
                 }
                 Ok(_) => {
                     last_err = Some("order not successful".to_string());
@@ -305,7 +330,7 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
-        TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: last_err.or(Some("ORDER_FAILED".to_string())) }
+        TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: last_err.or(Some("ORDER_FAILED".to_string())), attempts: max_attempts }
     }
 
     async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitSellResult {
@@ -315,7 +340,7 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         // Snap to 0.01 tick, clamp to [0.01, 0.99] (matches Python).
         let tick = 0.01;
         let snapped = ((price / tick).round() * tick).clamp(tick, 1.0 - tick);
-        let shares = round2(shares);
+        let shares = floor2(shares);
 
         let Ok(price_dec) = Decimal::from_str(&format!("{snapped:.2}")) else {
             return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some("bad price".to_string()) };
@@ -374,7 +399,12 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         // wanted ~$shares worth of proceeds, which at less-than-$1 prices needs MORE shares
         // than we actually hold, so the order could never match ("no orders found to match" /
         // "not enough balance" on every retry, forever) — see README bug writeup.
-        let size_dec = round2(shares);
+        //
+        // floor2, not round2: rounding to nearest can push the requested size *above* the
+        // true held balance (round2(1.5151) == 1.52 on a 1.515150-share holding), which
+        // guarantees a permanent "not enough balance" — see
+        // trader/doc/incident_doge_2026-07-03.md.
+        let size_dec = floor2(shares);
         let Ok(size_dec) = Decimal::from_str(&format!("{size_dec:.2}")) else {
             return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("bad size".to_string()) };
         };
@@ -401,12 +431,21 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    let retryable = msg.contains("no orders found to match with FAK order")
-                        || msg.contains("not enough balance");
-                    if retryable && attempt < self.cfg.close_max_retries {
-                        eprintln!("[SL close] retry {attempt}/{}: {msg}", self.cfg.close_max_retries);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
+                    // Matches bot/trading.py::_close_position's retry cadence: a FAK
+                    // no-match is retried immediately (no reason to wait — the book can
+                    // change tick to tick), while "not enough balance" gets a 1s sleep
+                    // since that specifically means the BUY fill hasn't settled
+                    // on-chain yet and hammering it immediately won't help.
+                    if attempt < self.cfg.close_max_retries {
+                        if msg.contains("no orders found to match with FAK order") {
+                            eprintln!("[close] retry {attempt}/{}: {msg}", self.cfg.close_max_retries);
+                            continue;
+                        }
+                        if msg.contains("not enough balance") {
+                            eprintln!("[close] retry {attempt}/{}: {msg}", self.cfg.close_max_retries);
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
                     }
                     return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some(msg) };
                 }
@@ -496,5 +535,73 @@ mod tests {
         let r = engine.place_limit_sell(dummy_token(), 0.0, 0.83).await;
         assert_eq!(r.status, SellStatus::Failed);
         assert!(r.order_id.is_none());
+    }
+
+    #[test]
+    fn retry_ladder_reaches_cap_on_last_attempt() {
+        // 2026-07-03 16:23 DOGE case: price 0.745, order_slippage 0.05 -> base 0.795,
+        // max_buy_price 0.95, order_max_retries 3 -> old fixed-step ladder (0.02/retry)
+        // topped out at 0.855, well short of the 0.95 ceiling.
+        let base_price = 0.795_f64;
+        let max_buy_price = 0.95_f64;
+        let order_max_retries = 3;
+        assert!((retry_ladder_price(base_price, max_buy_price, order_max_retries, 0) - 0.795).abs() < 1e-9);
+        assert!((retry_ladder_price(base_price, max_buy_price, order_max_retries, 3) - max_buy_price).abs() < 1e-9);
+    }
+
+    #[test]
+    fn retry_ladder_never_exceeds_max_buy_price() {
+        let base_price = 0.90_f64;
+        let max_buy_price = 0.95_f64;
+        for attempt in 0..=5 {
+            let p = retry_ladder_price(base_price, max_buy_price, 5, attempt);
+            assert!(p <= max_buy_price + 1e-9, "attempt {attempt} price {p} exceeded cap");
+        }
+    }
+
+    #[test]
+    fn retry_ladder_monotonic_non_decreasing() {
+        let base_price = 0.70_f64;
+        let max_buy_price = 0.95_f64;
+        let order_max_retries = 4;
+        let mut prev = 0.0;
+        for attempt in 0..=order_max_retries {
+            let p = retry_ladder_price(base_price, max_buy_price, order_max_retries, attempt);
+            assert!(p >= prev - 1e-9, "ladder decreased at attempt {attempt}: {p} < {prev}");
+            prev = p;
+        }
+    }
+
+    #[test]
+    fn retry_ladder_zero_retries_stays_at_base() {
+        assert!((retry_ladder_price(0.80, 0.95, 0, 0) - 0.80).abs() < 1e-9);
+    }
+
+    #[test]
+    fn retry_ladder_no_room_left_stays_at_cap() {
+        // base_price already >= max_buy_price (order_slippage pushed past the ceiling
+        // before retries even start) -> every attempt should sit at the ceiling, not
+        // decrease below it.
+        let p = retry_ladder_price(0.97, 0.95, 3, 0);
+        assert!((p - 0.95).abs() < 1e-9);
+        let p_last = retry_ladder_price(0.97, 0.95, 3, 3);
+        assert!((p_last - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn floor2_never_exceeds_input() {
+        // 2026-07-03 17:33 DOGE incident: round2(1.5151) rounded UP to 1.52, exceeding the
+        // true held balance (1.515150) and permanently failing "not enough balance" on
+        // every close attempt regardless of retries.
+        assert!((floor2(1.5151) - 1.51).abs() < 1e-9);
+        for shares in [0.001, 0.019, 0.125, 1.5151, 1.999, 9.996] {
+            assert!(floor2(shares) <= shares + 1e-9, "floor2({shares}) exceeded input");
+        }
+    }
+
+    #[test]
+    fn floor2_exact_two_decimals_unchanged() {
+        assert!((floor2(1.52) - 1.52).abs() < 1e-9);
+        assert!((floor2(0.0) - 0.0).abs() < 1e-9);
     }
 }

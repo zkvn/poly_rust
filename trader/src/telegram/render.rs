@@ -44,7 +44,8 @@ pub fn format_params(asset: &str, params: &crate::config::AssetParams) -> String
          price_high_rev: {}\n\
          delta_pct_rev: {}  delta_pct_hp: {}\n\
          sl_reversal: {}  sl_high_prob: {}\n\
-         sl_pnl: {}  unwind_pnl: {}\n\
+         sl_pnl_rev: {}  unwind_pnl_rev: {}\n\
+         sl_pnl_hp: {}  unwind_pnl_hp: {}\n\
          halt_rev: {}  halt_prob: {}\n\
          trade_size_usdc: {}",
         params.strategies,
@@ -52,7 +53,8 @@ pub fn format_params(asset: &str, params: &crate::config::AssetParams) -> String
         params.price_high_rev,
         params.delta_pct_rev, params.delta_pct_hp,
         params.sl_reversal, params.sl_high_prob,
-        params.sl_pnl, params.unwind_pnl,
+        params.sl_pnl_rev, params.unwind_pnl_rev,
+        params.sl_pnl_hp, params.unwind_pnl_hp,
         params.halt_rev, params.halt_prob,
         params.trade_size_usdc,
     )
