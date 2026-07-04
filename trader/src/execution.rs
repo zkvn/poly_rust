@@ -122,6 +122,39 @@ fn floor2(x: f64) -> f64 {
     (x * 100.0).floor() / 100.0
 }
 
+/// Rounds up to 2 decimals — the complement of `floor2`, used where a value must
+/// clear a floor rather than stay under a balance (see `MIN_MARKETABLE_NOTIONAL_USDC`
+/// below).
+fn ceil2(x: f64) -> f64 {
+    (x * 100.0).ceil() / 100.0
+}
+
+/// Polymarket rejects a marketable (FAK/market) BUY order below $1.00 notional
+/// ("invalid amount for a marketable BUY order ($X), min size: 1") — distinct from
+/// the GTC-limit "min 5 shares" rule (`trader/doc/incident_tele_pnl_2026-07-04.md`
+/// §3). Buying in rounded *shares* (`round2(size_usdc / capped_price)`, added by
+/// that same doc's plan C) can round the resulting cost down below this floor —
+/// e.g. `size_usdc=$1.00, price=0.95` rounds to 1.05 shares = $0.9975, rejected
+/// deterministically on every retry since the price (and therefore the rounding)
+/// repeats once retries pin at `max_buy_price`. See
+/// `trader/doc/incident_order_fail_2026-07-04.md`.
+const MIN_MARKETABLE_NOTIONAL_USDC: f64 = 1.0;
+
+/// Rounded share count for a marketable BUY of `size_usdc` at `capped_price`,
+/// guaranteed to clear `MIN_MARKETABLE_NOTIONAL_USDC` (see that constant's doc
+/// comment for why the naive `round2` alone isn't enough). `0.0` means "too small
+/// to trade" (only possible if `size_usdc` or `capped_price` is degenerate).
+fn entry_shares_for_buy(size_usdc: f64, capped_price: f64) -> f64 {
+    let target_shares = round2(size_usdc / capped_price);
+    if target_shares <= 0.0 {
+        return 0.0;
+    }
+    if target_shares * capped_price < MIN_MARKETABLE_NOTIONAL_USDC {
+        return ceil2(MIN_MARKETABLE_NOTIONAL_USDC / capped_price);
+    }
+    target_shares
+}
+
 /// Aggressive BUY entry price for a given attempt: the first attempt (attempt 0)
 /// splits the difference between the signal `price` and `max_buy_price` — half the
 /// spread — rather than a small fixed slippage, to bias toward actually filling.
@@ -300,7 +333,7 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
             // half a cent of `size_usdc` at the reference price, regardless of bet
             // size (doc's worked $1/$5/$100 table) — recomputed per attempt since
             // `capped_price` changes on retry.
-            let target_shares = round2(size_usdc / capped_price);
+            let target_shares = entry_shares_for_buy(size_usdc, capped_price);
             if target_shares <= 0.0 {
                 return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("size too small for price".to_string()), attempts: attempt + 1 };
             }
@@ -633,6 +666,57 @@ mod tests {
         assert!((round2(1.0 / 0.93) * 0.93 - 1.0044).abs() < 1e-4);
         // $100 example.
         assert!((round2(100.0 / 0.75) * 0.75 - 99.9975).abs() < 1e-4);
+    }
+
+    /// `trader/doc/incident_order_fail_2026-07-04.md` — Polymarket rejects a
+    /// marketable BUY under $1.00 notional. Reproduces the exact incident: $1.00 @
+    /// 0.9225 (attempt 0's half-spread price) and @ 0.95 (every retry after,
+    /// pinned at `max_buy_price`) both round down to a sub-$1 cost under the old
+    /// plain `round2`; `entry_shares_for_buy` must bump both up to clear the floor.
+    #[test]
+    fn entry_shares_for_buy_clears_marketable_notional_floor() {
+        let cases = [
+            // (price, naive round2 shares, expected bumped shares)
+            (0.95, 1.05, 1.06),
+            (0.9225, 1.08, 1.09),
+            (0.83, 1.20, 1.21),
+            (0.75, 1.33, 1.34),
+        ];
+        for (price, naive_shares, expected_shares) in cases {
+            assert!(
+                (round2(1.0 / price) - naive_shares).abs() < 1e-9,
+                "test setup: round2(1.0/{price}) should be {naive_shares}"
+            );
+            assert!(
+                naive_shares * price < 1.0,
+                "test setup: {naive_shares} shares @ {price} should be under the $1 floor"
+            );
+            let shares = entry_shares_for_buy(1.0, price);
+            assert!(
+                (shares - expected_shares).abs() < 1e-9,
+                "price={price}: expected bumped shares {expected_shares}, got {shares}"
+            );
+            assert!(shares * price >= 1.0 - 1e-9, "price={price}: bumped cost {} still under $1", shares * price);
+        }
+    }
+
+    /// Cases that already clear $1.00 (or aren't near the floor, e.g. a $5 bet)
+    /// must come back completely unchanged from plain `round2` — the bump is a
+    /// no-op outside the narrow band where it's needed.
+    #[test]
+    fn entry_shares_for_buy_unchanged_when_already_above_floor() {
+        assert!((entry_shares_for_buy(1.0, 0.55) - round2(1.0 / 0.55)).abs() < 1e-9);
+        assert!((entry_shares_for_buy(1.0, 0.93) - round2(1.0 / 0.93)).abs() < 1e-9);
+        assert!((entry_shares_for_buy(5.0, 0.83) - round2(5.0 / 0.83)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ceil2_never_undershoots_input() {
+        assert!((ceil2(1.051) - 1.06).abs() < 1e-9);
+        assert!((ceil2(2.0) - 2.0).abs() < 1e-9);
+        for x in [0.001, 1.0753, 1.999, 9.9901] {
+            assert!(ceil2(x) >= x - 1e-9, "ceil2({x}) undershot input");
+        }
     }
 
     /// `LiveExecutionEngine::place` rejects a buy outright once `round2(size_usdc /

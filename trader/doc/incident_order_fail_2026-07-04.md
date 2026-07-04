@@ -86,7 +86,22 @@ specifically.
    No current config does this (`trade_size_usdc.default = 1.0`), so this is a documented
    limitation, not something the fix handles.
 
-## 4. Not yet implemented
+## 4. Implemented
 
-This doc captures diagnosis + proposed fix only. `execution.rs` has not been changed —
-holding for review before implementing.
+Fixed in `execution.rs`: added `ceil2` (complement of the existing `floor2`) and
+`entry_shares_for_buy(size_usdc, capped_price)`, which computes the same
+`round2(size_usdc / capped_price)` as before but bumps up to
+`ceil2(MIN_MARKETABLE_NOTIONAL_USDC / capped_price)` whenever the naive result would
+cost under $1.00. `LiveExecutionEngine::place` now calls this instead of `round2`
+directly. Covered by three new tests: `entry_shares_for_buy_clears_marketable_notional_floor`
+(reproduces this incident's exact prices — 0.9225 and 0.95 — and asserts the bumped
+share count), `entry_shares_for_buy_unchanged_when_already_above_floor` (confirms the
+bump is a no-op for the $0.55/$0.93/$5-bet cases that were already fine), and
+`ceil2_never_undershoots_input`. Full suite (`cargo test`) passes at 130/130;
+`cargo clippy --all-targets --all-features -- -D warnings` and `cargo fmt --all --check`
+both show the same pre-existing, unrelated findings as before this change (27 clippy
+errors, 324 fmt diffs, both in files this fix doesn't touch) — nothing new introduced.
+
+Caveat 1 (boundary inclusivity) is still open — first live retry after deploy is the
+real test. Caveat 2 (sub-$1 `trade_size_usdc`) remains a documented limitation, not
+handled, since no current config hits it.
