@@ -647,3 +647,45 @@ golden-test trade this uncovered: `trader/doc/latency_2026-07-04.md` §8/§9.
 gating evaluation behind only one of them makes entry timing hostage to that one feed's
 cadence — even if the *other* feed is the one that's actually time-critical. Worth checking
 for this pattern anywhere else two signals are combined behind a single trigger event.
+
+### Entry BUYs rejected outright — Amount::shares violated a market-buy precision rule (2026-07-04, fixed, critical)
+
+A same-day change (`7d0f96c`, "buy in rounded shares instead of rounded dollars" — see the
+`incident_tele_pnl_2026-07-04.md` write-up it came from) switched entry BUYs from
+`Amount::usdc(size_usdc)` to `Amount::shares(...)`, to stop a `<0.01`-share dust remainder
+from being left behind on the exit leg. It shipped, was redeployed to Oracle at 22:51, and
+the very first entry attempt on the new binary (DOGE, 23:09:37) failed all 4 retries with
+`"invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals,
+taker amount a max of 4 decimals"` — and kept failing identically regardless of price. Full
+writeup: `trader/doc/incident_order_rejection_2026-07-04.md`.
+
+**Root cause:** the vendored SDK computes a market BUY's maker (USDC) leg differently
+depending on which `Amount` variant is submitted. `Amount::usdc(size_usdc)` passes the
+caller's own already-2-decimal dollar figure straight through as the maker amount (always
+valid) and derives shares (up to 4 decimals, which the API allows). `Amount::shares(...)`
+instead derives the maker amount as `shares × price` — and a 2-decimal share count times a
+2-decimal price generically needs *more* than 2 decimal places to represent exactly, which
+Polymarket rejects outright for a market BUY. This isn't a rounding-threshold bug fixable by
+adjusting the target share count (the way an earlier same-day incident,
+`incident_order_fail_2026-07-04.md`'s $1.00 marketable-notional floor, was) — it's structural
+to using `Amount::shares` on a market BUY's maker leg at all, so it hit essentially every
+entry, on every asset, blocking all new positions from the 22:51 redeploy until fixed.
+
+**Fix:** reverted the entry BUY to `Amount::usdc(size_usdc)`, and removed the
+`entry_shares_for_buy`/`ceil2`/$1-floor-bump code that existed only to serve the broken path.
+The exit-leg dust this reintroduces is already handled safely — `worker.rs`'s
+`MIN_SELLABLE_SHARES` write-off (from the same incident chain, implemented *before* this
+regression) already detects a residual below the sellable floor and finalizes the trade off
+realized proceeds instead of chasing an unfillable sell, so nothing needed to change there.
+Verified with `cargo test` (132 passed) and a clean redeploy to Oracle
+(`trader-live.service` restarted 23:48:29 HKT, healthy).
+
+**Lesson:** the two `Amount` constructors aren't interchangeable ways to size the same order
+— which one is "raw" (caller-supplied, therefore safely-scaled) and which is "derived"
+(computed by multiplying by price, therefore only as precise as that multiplication allows)
+flips depending on which leg you pick, and Polymarket enforces different decimal-precision
+caps on each leg of a market BUY specifically. A fix that only checked the *exit* side's
+already-known constraints (`Amount::shares` caps at 2 decimals) missed a *different*,
+previously-undocumented constraint on the *entry* side's maker amount — test the two legs of
+an order against the API's actual rules independently, not just the one already bitten by a
+prior incident.
