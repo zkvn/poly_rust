@@ -759,7 +759,6 @@ async fn main() -> Result<()> {
     }
 
     let live_config = LiveConfig {
-        order_slippage: toml.order_slippage,
         order_max_retries: toml.order_max_retries,
         ..LiveConfig::default()
     };

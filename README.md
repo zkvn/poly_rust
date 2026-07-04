@@ -369,6 +369,16 @@ below available liquidity. `TradeResult` also now carries an `attempts` count, s
 in the Telegram "Order REJECTED" message, so a repeat of this is visible without
 grepping `live.log`.
 
+**Superseded 2026-07-04** by an even more aggressive scheme
+(`execution.rs::aggressive_entry_price`), by request: the first attempt no longer uses
+`price + order_slippage` — it splits the difference between `price` and `max_buy_price`
+(half the spread), and **every retry after the first jumps straight to
+`max_buy_price`** instead of interpolating gradually. `order_slippage` is gone (removed
+from `LiveConfig`/`strategy_*.toml` schema — the interpolated approach it fed no longer
+exists). Same incident's numbers under the new scheme: price 0.745, max_buy_price 0.95 →
+first attempt 0.8475 (half the 0.205 spread), any retry 0.95 immediately — reaches the
+ceiling on the very first retry instead of the fourth.
+
 ### Take-profit never filled — oversell bug + no retry backoff (2026-07-03, fixed)
 
 A DOGE take-profit at 17:33 crossed its trigger almost immediately after entry and

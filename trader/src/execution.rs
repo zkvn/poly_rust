@@ -122,17 +122,20 @@ fn floor2(x: f64) -> f64 {
     (x * 100.0).floor() / 100.0
 }
 
-/// Price ceiling for a given BUY retry attempt: interpolates linearly from
-/// `base_price` (attempt 0) up to `max_buy_price` (the last attempt), so the final
-/// retry always sweeps the full configured ceiling instead of stalling short of it.
-/// `base_price` is expected to already be `<= max_buy_price`.
-fn retry_ladder_price(base_price: f64, max_buy_price: f64, order_max_retries: u32, attempt: u32) -> f64 {
-    let step = if order_max_retries > 0 {
-        (max_buy_price - base_price).max(0.0) / order_max_retries as f64
+/// Aggressive BUY entry price for a given attempt: the first attempt (attempt 0)
+/// splits the difference between the signal `price` and `max_buy_price` — half the
+/// spread — rather than a small fixed slippage, to bias toward actually filling.
+/// Every retry after that skips straight to `max_buy_price` instead of
+/// incrementally stepping toward it, since a retry means the first, less
+/// aggressive price already failed to fill. Supersedes the old
+/// `retry_ladder_price` interpolation (2026-07-04, by request).
+fn aggressive_entry_price(price: f64, max_buy_price: f64, attempt: u32) -> f64 {
+    if attempt == 0 {
+        let spread = (max_buy_price - price).max(0.0);
+        (price + spread / 2.0).min(max_buy_price)
     } else {
-        0.0
-    };
-    (base_price + attempt as f64 * step).min(max_buy_price)
+        max_buy_price
+    }
 }
 
 #[async_trait]
@@ -178,8 +181,6 @@ impl ExecutionEngine for SimExecutionEngine {
 
 #[derive(Debug, Clone)]
 pub struct LiveConfig {
-    /// Added to the intent's midpoint before capping at `max_buy_price` (bot/config.py order_slippage).
-    pub order_slippage: f64,
     /// Extra retries beyond the first attempt (bot/config.py order_max_retries).
     pub order_max_retries: u32,
     /// Retries for "balance: 0" (BUY not yet settled on-chain) when placing the unwind GTC sell.
@@ -192,7 +193,6 @@ pub struct LiveConfig {
 impl Default for LiveConfig {
     fn default() -> Self {
         Self {
-            order_slippage: 0.01,
             order_max_retries: 2,
             settle_retries: 3,
             settle_sleep: Duration::from_millis(1500),
@@ -280,14 +280,13 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         if price <= 0.0 {
             return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()), attempts: 0 };
         }
-        let base_price = (price + self.cfg.order_slippage).min(max_buy_price);
-        let estimated_shares = round2(size_usdc / base_price);
+        let estimated_shares = round2(size_usdc / aggressive_entry_price(price, max_buy_price, 0));
 
         let max_attempts = 1 + self.cfg.order_max_retries;
         let mut last_err: Option<String> = None;
 
         for attempt in 0..max_attempts {
-            let capped_price = retry_ladder_price(base_price, max_buy_price, self.cfg.order_max_retries, attempt);
+            let capped_price = aggressive_entry_price(price, max_buy_price, attempt);
             let Ok(price_dec) = Decimal::from_str(&format!("{capped_price:.4}")) else {
                 return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad price".to_string()), attempts: attempt + 1 };
             };
@@ -538,54 +537,37 @@ mod tests {
     }
 
     #[test]
-    fn retry_ladder_reaches_cap_on_last_attempt() {
-        // 2026-07-03 16:23 DOGE case: price 0.745, order_slippage 0.05 -> base 0.795,
-        // max_buy_price 0.95, order_max_retries 3 -> old fixed-step ladder (0.02/retry)
-        // topped out at 0.855, well short of the 0.95 ceiling.
-        let base_price = 0.795_f64;
-        let max_buy_price = 0.95_f64;
-        let order_max_retries = 3;
-        assert!((retry_ladder_price(base_price, max_buy_price, order_max_retries, 0) - 0.795).abs() < 1e-9);
-        assert!((retry_ladder_price(base_price, max_buy_price, order_max_retries, 3) - max_buy_price).abs() < 1e-9);
+    fn aggressive_entry_first_attempt_splits_the_spread() {
+        // price 0.80, max_buy_price 0.95 -> spread 0.15 -> first attempt sits at
+        // the midpoint, 0.875, not a small fixed-slippage bump off 0.80.
+        assert!((aggressive_entry_price(0.80, 0.95, 0) - 0.875).abs() < 1e-9);
     }
 
     #[test]
-    fn retry_ladder_never_exceeds_max_buy_price() {
-        let base_price = 0.90_f64;
+    fn aggressive_entry_retry_jumps_straight_to_cap() {
+        let price = 0.80_f64;
+        let max_buy_price = 0.95_f64;
+        for attempt in 1..=5 {
+            assert!((aggressive_entry_price(price, max_buy_price, attempt) - max_buy_price).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn aggressive_entry_never_exceeds_max_buy_price() {
+        let price = 0.90_f64;
         let max_buy_price = 0.95_f64;
         for attempt in 0..=5 {
-            let p = retry_ladder_price(base_price, max_buy_price, 5, attempt);
+            let p = aggressive_entry_price(price, max_buy_price, attempt);
             assert!(p <= max_buy_price + 1e-9, "attempt {attempt} price {p} exceeded cap");
         }
     }
 
     #[test]
-    fn retry_ladder_monotonic_non_decreasing() {
-        let base_price = 0.70_f64;
-        let max_buy_price = 0.95_f64;
-        let order_max_retries = 4;
-        let mut prev = 0.0;
-        for attempt in 0..=order_max_retries {
-            let p = retry_ladder_price(base_price, max_buy_price, order_max_retries, attempt);
-            assert!(p >= prev - 1e-9, "ladder decreased at attempt {attempt}: {p} < {prev}");
-            prev = p;
-        }
-    }
-
-    #[test]
-    fn retry_ladder_zero_retries_stays_at_base() {
-        assert!((retry_ladder_price(0.80, 0.95, 0, 0) - 0.80).abs() < 1e-9);
-    }
-
-    #[test]
-    fn retry_ladder_no_room_left_stays_at_cap() {
-        // base_price already >= max_buy_price (order_slippage pushed past the ceiling
-        // before retries even start) -> every attempt should sit at the ceiling, not
-        // decrease below it.
-        let p = retry_ladder_price(0.97, 0.95, 3, 0);
-        assert!((p - 0.95).abs() < 1e-9);
-        let p_last = retry_ladder_price(0.97, 0.95, 3, 3);
-        assert!((p_last - 0.95).abs() < 1e-9);
+    fn aggressive_entry_price_already_at_or_above_cap_stays_at_cap() {
+        // price already >= max_buy_price -> zero/negative spread -> first attempt
+        // (and every retry) sits at the ceiling, never above it.
+        assert!((aggressive_entry_price(0.97, 0.95, 0) - 0.95).abs() < 1e-9);
+        assert!((aggressive_entry_price(0.97, 0.95, 3) - 0.95).abs() < 1e-9);
     }
 
     #[test]
