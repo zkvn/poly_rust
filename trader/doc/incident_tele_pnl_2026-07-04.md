@@ -73,7 +73,7 @@ This means the take-profit path is *structurally* incapable of fully closing out
 
 Also updated `partial_unwind_then_cycle_close_totals_both_legs_pnl` and `api_result_flips_confirming_outcome_and_recomputes_pnl`'s expected pnl values to the new fee-inclusive numbers (both previously asserted the old gross figures).
 
-**C. (Planned — not yet implemented) Buy in rounded shares instead of rounded dollars, so no dust is ever created.**
+**C. Buy in rounded shares instead of rounded dollars, so no dust is ever created. — Implemented (`execution.rs`).**
 
 Today's entry BUY is `Amount::usdc(size_usdc)` — "spend exactly $1.00" — which is why `filled_shares = size_usdc / fill_price` is essentially never a clean 2-decimal number (`1.00 / 0.83 = 1.2048...`). But `market_order()` also accepts `Amount::shares(_)` on the **buy** side (`order_builder.rs:588`, not just sells), so the entry can instead request "buy exactly N shares" for a pre-rounded `N`. Once the position starts life at a clean 2-decimal share count, there's nothing beyond 2 decimals left to strand later — B's write-off path becomes a rare fallback (only for a *partial* fill on entry itself) instead of firing on nearly every trade.
 
@@ -106,12 +106,17 @@ So: a $1 bet lands at $0.996–$1.004, a $5 bet at $4.997–$5.003, a $100 bet a
 
 **This is on top of, not instead of, ordinary price slippage** — which exists today too. Right now slippage shows up as "you got fewer/more shares than size_usdc/signal_price implied"; under this plan it shows up as "you paid a bit more/less than size_usdc" instead. Same underlying market risk, just which side absorbs it changes. The only *new* number here is the sub-half-cent rounding term above.
 
-**What's needed to implement it** (`execution.rs::LiveExecutionEngine::place`):
-1. Per attempt (mirroring how `capped_price` is already recomputed per retry), compute `target_shares = round2(size_usdc / capped_price)`, guard against `target_shares <= 0.0` (possible if `size_usdc` is tiny relative to a near-$1 price) by failing fast instead of submitting a zero-share order.
-2. Swap `Amount::usdc(size_usdc)` for `Amount::shares(target_shares)` in the `market_order()` builder call.
-3. Fix the fill-accounting formula alongside it: `cost = size_usdc / filled` is only correct when we actually spent `size_usdc`, which is no longer guaranteed once the *shares* side is the fixed one. Use `resp.making_amount` (the real USDC actually spent) instead: `cost = making_amount / filled_shares` — this is also just a more correct formula in general (matches what `close_position` already does on the sell side with `making_amount`/`taking_amount`), and correctly handles a partial fill on entry (rare, but possible, and would otherwise reintroduce a non-2-decimal share count — B's write-off already covers that residual if it happens).
-4. Add a test mirroring `dust_residual_below_min_sellable_is_written_off_not_chased` but for the entry side: a `Amount::shares`-denominated BUY that fully fills should produce a `HoldingData.shares` with exactly 2 decimal places, and the CSV/Telegram entry cost should reconcile against `making_amount / filled_shares`, not the nominal `size_usdc`.
+**Implementation** (`execution.rs::LiveExecutionEngine::place`):
+1. Per attempt (mirroring how `capped_price` is already recomputed per retry), compute `target_shares = round2(size_usdc / capped_price)`; if it's `<= 0.0` (possible if `size_usdc` is tiny relative to a near-$1 price), fail fast (`"size too small for price"`) instead of submitting a zero-share order.
+2. Swapped `Amount::usdc(size_usdc)` for `Amount::shares(target_shares)` in the `market_order()` builder call.
+3. Fixed the fill-accounting formula alongside it: `cost = size_usdc / filled` was only correct when we actually spent `size_usdc`, which is no longer guaranteed once the *shares* side is the fixed one. Now uses `resp.making_amount` (the real USDC actually spent) — `cost = making_amount / filled_shares` — matching what `close_position` already does on the sell side with `making_amount`/`taking_amount`, and correctly handling a partial fill on entry (rare, but possible, and would otherwise reintroduce a non-2-decimal share count — B's write-off still covers that residual if it ever happens).
+4. `estimated_shares` (the old fallback-on-parse-failure value) is gone — `target_shares` *is* what gets submitted now, so there's nothing separate to keep in sync; a parse failure on the response just falls back to `filled = 0.0`, which already routes through the existing `cost = price` fallback.
 
-Lower priority than (A)/(B), which are already deployed and fully close the accounting gap — this is about eliminating the (now harmless) dust at the source rather than continuing to absorb and write it off. Revisit if the accumulating on-chain dust (still real, unredeemed ERC-1155 remainders, just economically invisible to the bot now) becomes worth cleaning up, or if `sizing precision` becomes a stated goal in its own right.
+**Tests added** (`execution.rs`):
+- `sim_rounds_shares_to_nearest_not_floor` — `1.0 / 0.93 = 1.07527...` must round to 1.08, not floor to 1.07 (`SimExecutionEngine` already modeled rounded-share buys; this pins nearest-not-floor so a regression back to truncation would fail loudly).
+- `rounded_share_buy_cost_never_drifts_more_than_half_a_cent` — the doc's $1/$5/$100 × several-price table, asserting the `≤ 0.005 × price` deviation bound generally, not just for one example.
+- `round2_of_a_too_small_size_collapses_to_zero` — confirms the precondition the `target_shares <= 0.0` guard depends on.
+
+`LiveExecutionEngine::place` itself isn't unit-testable (needs a live/authenticated SDK client) — coverage is via the pure rounding math above plus `SimExecutionEngine`, which already shares the same `round2(size_usdc / capped_price)` sizing philosophy.
 
 **D. Surface real fee-adjusted pnl in recon.** Once (A) lands, have `trade_reconcile.py`/`daily_recon` show gross vs. net (fee-adjusted) pnl side by side, so future gaps between "what Telegram said" and "what the wallet shows" are visible from the CSV alone instead of requiring a fresh log-diving investigation each time.

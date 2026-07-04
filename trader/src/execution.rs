@@ -280,7 +280,6 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         if price <= 0.0 {
             return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()), attempts: 0 };
         }
-        let estimated_shares = round2(size_usdc / aggressive_entry_price(price, max_buy_price, 0));
 
         let max_attempts = 1 + self.cfg.order_max_retries;
         let mut last_err: Option<String> = None;
@@ -290,7 +289,22 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
             let Ok(price_dec) = Decimal::from_str(&format!("{capped_price:.4}")) else {
                 return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad price".to_string()), attempts: attempt + 1 };
             };
-            let Ok(amount) = Decimal::from_str(&format!("{size_usdc:.4}")).and_then(|d| Ok(Amount::usdc(d))) else {
+
+            // Buy in rounded *shares*, not rounded dollars. `size_usdc / capped_price`
+            // is essentially never a clean 2-decimal number, and `Amount::shares`
+            // can't exceed 2 decimals — every USDC-denominated buy therefore left a
+            // <0.01-share dust remainder on the exit leg that could never itself be
+            // sold (Polymarket's makerAmount floor; see
+            // trader/doc/incident_tele_pnl_2026-07-04.md §3/plan C). Rounding to the
+            // *nearest* 0.01 shares (not floor/ceil) keeps the resulting cost within
+            // half a cent of `size_usdc` at the reference price, regardless of bet
+            // size (doc's worked $1/$5/$100 table) — recomputed per attempt since
+            // `capped_price` changes on retry.
+            let target_shares = round2(size_usdc / capped_price);
+            if target_shares <= 0.0 {
+                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("size too small for price".to_string()), attempts: attempt + 1 };
+            }
+            let Ok(amount) = Decimal::from_str(&format!("{target_shares:.2}")).and_then(|d| Ok(Amount::shares(d))) else {
                 return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()), attempts: attempt + 1 };
             };
             let Ok(amount) = amount else {
@@ -310,8 +324,14 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
 
             match result {
                 Ok(resp) if resp.success => {
-                    let filled: f64 = resp.taking_amount.to_string().parse().unwrap_or(estimated_shares);
-                    let actual_cost = if filled > 0.0 { size_usdc / filled } else { price };
+                    // `taking_amount`/`making_amount` are actual-fill amounts, not the
+                    // signed order's own (target) values — using them (rather than the
+                    // nominal `size_usdc`) is what makes `cost` correct even on a
+                    // partial fill, matching how `close_position` already reads them
+                    // on the sell side.
+                    let filled: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
+                    let spent: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
+                    let actual_cost = if filled > 0.0 { spent / filled } else { price };
                     return TradeResult { placed: true, filled_shares: filled, cost: actual_cost, error: None, attempts: attempt + 1 };
                 }
                 Ok(_) => {
@@ -488,6 +508,23 @@ mod tests {
         assert!((r.filled_shares - 1.25).abs() < 1e-9); // 1.0 / 0.80
     }
 
+    /// `SimExecutionEngine::place` already rounds the requested share count to the
+    /// *nearest* 0.01 (`round2`), not the floor — same rounding `LiveExecutionEngine`
+    /// now uses to buy in rounded shares instead of rounded dollars (plan C,
+    /// `trader/doc/incident_tele_pnl_2026-07-04.md`). `1.0 / 0.93 = 1.07527...`
+    /// rounds *up* to 1.08 shares, not down to 1.07 — pins the "nearest, not
+    /// truncated" behavior so a future regression to floor-based sizing (which
+    /// would silently make every buy slightly *undersized* relative to
+    /// `size_usdc`, defeating the point of rounding to begin with) shows up here.
+    #[tokio::test]
+    async fn sim_rounds_shares_to_nearest_not_floor() {
+        let engine = SimExecutionEngine::new();
+        let r = engine.place(dummy_token(), 0.93, 1.0, 0.95).await;
+        assert!(r.placed);
+        assert!((r.filled_shares - 1.08).abs() < 1e-9,
+            "1.0/0.93 = 1.07527... must round to nearest (1.08), not floor (1.07); got {}", r.filled_shares);
+    }
+
     #[tokio::test]
     async fn sim_caps_price_at_max_buy_price() {
         let engine = SimExecutionEngine::new();
@@ -568,6 +605,44 @@ mod tests {
         // (and every retry) sits at the ceiling, never above it.
         assert!((aggressive_entry_price(0.97, 0.95, 0) - 0.95).abs() < 1e-9);
         assert!((aggressive_entry_price(0.97, 0.95, 3) - 0.95).abs() < 1e-9);
+    }
+
+    /// Plan C's core guarantee (`incident_tele_pnl_2026-07-04.md` §4C worked table):
+    /// rounding `size_usdc / price` to the nearest 0.01 shares moves the cost at
+    /// most `0.005 * price` away from `size_usdc` — under half a cent at *any* bet
+    /// size, because the rounding grid is fixed in shares (0.01), not dollars, and
+    /// gets multiplied by a sub-$1 price. Checks the doc's $1/$5/$100 examples plus
+    /// the bound in general.
+    #[test]
+    fn rounded_share_buy_cost_never_drifts_more_than_half_a_cent() {
+        let sizes = [1.0, 5.0, 100.0];
+        let prices = [0.55, 0.65, 0.75, 0.83, 0.93];
+        for &size_usdc in &sizes {
+            for &price in &prices {
+                let target_shares = round2(size_usdc / price);
+                let cost = target_shares * price;
+                let deviation = (cost - size_usdc).abs();
+                assert!(
+                    deviation <= 0.005 * price + 1e-9,
+                    "size=${size_usdc} price={price}: deviation ${deviation:.4} exceeded the 0.005*price bound"
+                );
+            }
+        }
+        // Doc's worked $1 examples, exact values.
+        assert!((round2(1.0 / 0.83) * 0.83 - 0.9960).abs() < 1e-4);
+        assert!((round2(1.0 / 0.93) * 0.93 - 1.0044).abs() < 1e-4);
+        // $100 example.
+        assert!((round2(100.0 / 0.75) * 0.75 - 99.9975).abs() < 1e-4);
+    }
+
+    /// `LiveExecutionEngine::place` rejects a buy outright once `round2(size_usdc /
+    /// capped_price) <= 0.0` (size too small to round to even 0.01 shares) rather
+    /// than submitting a zero-share order. Confirms the rounding that guard relies
+    /// on: anything under half a cent's worth of shares collapses to exactly 0.0.
+    #[test]
+    fn round2_of_a_too_small_size_collapses_to_zero() {
+        assert_eq!(round2(0.001), 0.0, "under half a share-cent must round down to 0.0, not up to 0.01");
+        assert_eq!(round2(0.006), 0.01, "at/over half a share-cent should round up to 0.01");
     }
 
     #[test]
