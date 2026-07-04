@@ -66,6 +66,17 @@ pub struct HoldingData {
     /// position that's never had a partial exit.
     #[serde(default)]
     pub realized_pnl: f64,
+    /// Taker fees (USDC) already incurred against this position: the entry BUY's
+    /// fee (charged once, on the full fill, at `on_order_filled`) plus one SELL
+    /// fee per completed early-exit fill against it so far. Polymarket charges
+    /// takers `shares * fee_rate * price * (1 - price)` per matched order
+    /// (`taker_fee`, below) — resolution/redemption itself is not a trade and
+    /// incurs no further fee. Subtracted from the gross `shares * (exit -
+    /// token_price)` figure at final settlement (`settle_pnl`) so logged `pnl`
+    /// reflects real cash, not the exchange-fee-blind gross number (see
+    /// `trader/doc/incident_tele_pnl_2026-07-04.md` §2).
+    #[serde(default)]
+    pub fees: f64,
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -200,8 +211,31 @@ fn round4(x: f64) -> f64 {
 /// and the real fill price for an early exit.
 #[inline]
 fn settle_pnl(h: &HoldingData, exit_price: f64) -> f64 {
-    round4(h.realized_pnl + h.shares * (exit_price - h.token_price))
+    round4(h.realized_pnl + h.shares * (exit_price - h.token_price) - h.fees)
 }
+
+/// Polymarket's per-order taker fee (maker fills are free): `shares * rate *
+/// price * (1 - price)` — symmetric around p=0.5, charged on every matched
+/// taker order (our BUYs and early-exit SELLs are always taker; resolution/
+/// redemption is not an order at all and pays nothing). `0.07` is the
+/// documented Crypto-category rate (`docs.polymarket.com/polymarket-learn/
+/// trading/fees`) — the only category any of `trade_assets` (BTC/ETH/DOGE)
+/// currently trade in. See `trader/doc/incident_tele_pnl_2026-07-04.md` §2:
+/// neither this port nor `bot/worker.py` used to subtract this at all, so
+/// every logged pnl was gross, overstating real cash by the fee on both legs.
+const TAKER_FEE_RATE: f64 = 0.07;
+
+#[inline]
+fn taker_fee(shares: f64, price: f64) -> f64 {
+    shares * TAKER_FEE_RATE * price * (1.0 - price)
+}
+
+/// Below this, `shares * 1e6` (Polymarket's on-chain `makerAmount` units) is
+/// under the exchange's hard floor of 10_000 — no price can ever make such an
+/// order valid, so it's not worth attempting (see incident doc §3: this is
+/// what "invalid maker amount" means for a sub-cent residual). A partial-fill
+/// leftover this small is written off (excluded from pnl) rather than chased.
+const MIN_SELLABLE_SHARES: f64 = 0.01;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
@@ -535,7 +569,10 @@ impl Worker {
         // regardless of exit_arm — cancel any resting GTC first, then FAK-close.
         let sl_hit = (self.sl_pnl > 0.0 && exit_price <= h.token_price - self.sl_pnl)
             || (self.sl > 0.0 && exit_price < self.sl);
-        if sl_hit {
+        // Below MIN_SELLABLE_SHARES, any sell attempt is doomed regardless of price
+        // (Polymarket's makerAmount floor — see the constant's doc comment / incident
+        // doc §3), so don't bother placing one; leave it to resolve at cycle close.
+        if sl_hit && h.shares >= MIN_SELLABLE_SHARES {
             self.state = WorkerState::StopExiting(h.clone());
             let mut actions = vec![];
             if let ExitArm::GtcResting { order_id } = &h.exit_arm {
@@ -549,7 +586,7 @@ impl Worker {
         // Take-profit: only the PriceMonitor arm reacts to PolyTick directly —
         // a GtcResting arm's fill arrives via UnwindFilled instead.
         if let ExitArm::PriceMonitor { tp_price } = h.exit_arm {
-            if exit_price >= tp_price {
+            if exit_price >= tp_price && h.shares >= MIN_SELLABLE_SHARES {
                 self.state = WorkerState::Unwinding(h.clone());
                 return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit }, Action::Persist];
             }
@@ -581,6 +618,7 @@ impl Worker {
         let holding = HoldingData {
             side, entry_type, token_price: cost, entry_ts: self.last_binance_ts(), shares: filled_shares, exit_arm,
             exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
+            fees: taker_fee(filled_shares, cost),
         };
         self.state = WorkerState::Holding(holding);
         actions.push(Action::Persist);
@@ -606,8 +644,9 @@ impl Worker {
             }
             SellStatus::Matched => {
                 // Marketable limit — filled immediately; this *is* the unwind.
-                let h = h.clone();
+                let mut h = h.clone();
                 let exit_price = h.token_price + self.unwind_pnl;
+                h.fees += taker_fee(h.shares, exit_price);
                 let pnl = settle_pnl(&h, exit_price);
                 let record = TradeRecord {
                     slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
@@ -633,22 +672,43 @@ impl Worker {
     fn on_unwind_filled(&mut self, sold_shares: f64, exit_price: f64) -> Vec<Action> {
         let WorkerState::Unwinding(h) = &self.state else { return vec![] };
         let h = h.clone();
-        if sold_shares < h.shares {
-            // Partial fill — residual continues to be managed. Bank this
-            // slice's proceeds now (`sold_shares * (exit_price - token_price)`)
-            // so the eventual terminal settlement of the leftover residual
-            // doesn't silently drop what this partial sale already realized
-            // (see `settle_pnl` doc comment).
-            let realized_pnl = h.realized_pnl + sold_shares * (exit_price - h.token_price);
-            let residual = HoldingData { shares: h.shares - sold_shares, realized_pnl, ..h };
+        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::Unwind)
+    }
+
+    /// Shared tail of `on_unwind_filled`/`on_stop_sell_filled`: bank this fill's
+    /// (fee-inclusive) result, then either keep holding a genuine residual or
+    /// close the trade out now. A leftover under `MIN_SELLABLE_SHARES` is
+    /// written off here rather than carried forward — Polymarket's `makerAmount`
+    /// floor means it can never itself be sold (see `MIN_SELLABLE_SHARES` doc
+    /// comment / `trader/doc/incident_tele_pnl_2026-07-04.md` §3), and it's
+    /// excluded from `pnl` rather than valued at cycle-close's `exit_price` (§2's
+    /// "don't count unsellable dust as won-at-$1" fix).
+    fn finalize_or_hold_residual(
+        &mut self,
+        h: HoldingData,
+        sold_shares: f64,
+        exit_price: f64,
+        outcome: Outcome,
+    ) -> Vec<Action> {
+        let sell_fee = taker_fee(sold_shares, exit_price);
+        let realized_pnl = h.realized_pnl + sold_shares * (exit_price - h.token_price);
+        let fees = h.fees + sell_fee;
+        let leftover = h.shares - sold_shares;
+
+        if leftover >= MIN_SELLABLE_SHARES {
+            // Genuine partial fill — residual continues to be managed.
+            let residual = HoldingData { shares: leftover, realized_pnl, fees, ..h };
             self.state = WorkerState::Holding(residual);
             return vec![Action::Persist];
         }
-        let pnl = settle_pnl(&h, exit_price);
+
+        // Fully sold, or left with an un-sellable dust remainder that's written
+        // off (excluded — not added as a `leftover * (exit_price - cost)` term).
+        let pnl = round4(realized_pnl - fees);
         let record = TradeRecord {
             slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
             strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
-            token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
+            token_price: h.token_price, exit_price, outcome, pnl,
             exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
         };
         self.halt.record_trade(&record, self.strategy_name);
@@ -677,27 +737,12 @@ impl Worker {
     fn on_stop_sell_filled(&mut self, sold_shares: f64, exit_price: f64) -> Vec<Action> {
         let WorkerState::StopExiting(h) = &self.state else { return vec![] };
         let h = h.clone();
-        if sold_shares < h.shares {
-            let realized_pnl = h.realized_pnl + sold_shares * (exit_price - h.token_price);
-            let residual = HoldingData { shares: h.shares - sold_shares, realized_pnl, ..h };
-            self.state = WorkerState::Holding(residual);
-            return vec![Action::Persist];
-        }
         // Absolute-SL-style pnl (proceeds − cost basis of whatever's still
         // held, plus anything already realized from an earlier partial
         // fill) — PnL-SL is computed at trigger time in on_poly in a live
         // system, but here we use the realized exit price uniformly,
         // matching the sim/backtest STOPLOSS formula.
-        let pnl = settle_pnl(&h, exit_price);
-        let record = TradeRecord {
-            slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
-            strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
-            token_price: h.token_price, exit_price, outcome: Outcome::StopLoss, pnl,
-            exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
-        };
-        self.halt.record_trade(&record, self.strategy_name);
-        self.state = WorkerState::EnrichOnly(record.clone());
-        vec![Action::LogTrade(record), Action::Persist]
+        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::StopLoss)
     }
 
     fn on_stop_sell_failed(&mut self, error: Option<String>) -> Vec<Action> {
@@ -726,7 +771,9 @@ impl Worker {
                 let exit_price = if won { 1.0 } else { 0.0 };
                 record.outcome = if won { Outcome::Win } else { Outcome::Loss };
                 record.exit_price = exit_price;
-                record.pnl = round4(shares * exit_price - self.trade_size);
+                // Resolution/redemption itself is fee-free (§2 of the incident doc) —
+                // only the original entry BUY's taker fee applies here.
+                record.pnl = round4(shares * exit_price - self.trade_size - taker_fee(shares, record.token_price));
                 vec![Action::LogTradeCorrection { previous_outcome, previous_pnl, record }, Action::Persist]
             }
             WorkerState::EnrichOnly(record) => {
@@ -1047,6 +1094,43 @@ mod tests {
         assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
     }
 
+    /// Reproduces the 2026-07-04 10:00:00 ETH `high_prob` incident
+    /// (`trader/doc/incident_tele_pnl_2026-07-04.md`): a BUY fill of 1.2048
+    /// shares (`$1.00 / 0.83`), a take-profit `close_position` that could only
+    /// sell `floor2(1.2048) = 1.20` of them (`execution.rs`'s 2-decimal cap),
+    /// leaving a 0.0048-share remainder that can never itself be sold —
+    /// `0.0048 * 1e6 = 4,800`, under Polymarket's 10,000-unit `makerAmount`
+    /// floor at any price (`MIN_SELLABLE_SHARES`). Two things must hold: (1)
+    /// the trade finalizes immediately instead of parking the dust in
+    /// `Holding` to be chased or mark-to-marketed at cycle close, and (2) the
+    /// logged pnl is the real, fee-inclusive cash result — `1.20 * (0.88 -
+    /// 0.83) = 0.06` gross, minus entry fee `1.2048 * 0.07 * 0.83 * 0.17 ≈
+    /// 0.0119` and exit fee `1.20 * 0.07 * 0.88 * 0.12 ≈ 0.0089` — not the
+    /// `0.0608` the pre-fix code logged (0.06 realized + the dust valued at
+    /// $1/share as if it had resolved, which it never actually did).
+    #[test]
+    fn dust_residual_below_min_sellable_is_written_off_not_chased() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
+        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
+        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
+        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
+        w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
+        w.step(Event::OrderFilled { filled_shares: 1.2048, cost: 0.83 }); // tp_price = 0.83 + 0.03 = 0.86
+
+        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.12, dn: 0.88 })); // crosses tp -> Unwinding
+        assert!(matches!(w.state, WorkerState::Unwinding(_)));
+
+        let actions = w.step(Event::UnwindFilled { sold_shares: 1.20, exit_price: 0.88 });
+        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None });
+        let record = record.expect("dust leftover (0.0048 < MIN_SELLABLE_SHARES) must finalize now, not stay Holding");
+        assert_eq!(record.outcome, Outcome::Unwind);
+        assert!((record.pnl - 0.0392).abs() < 1e-4,
+            "expected ~0.0392 net (0.06 realized - ~0.0207 fees, dust excluded), got {}", record.pnl);
+        assert!(matches!(w.state, WorkerState::EnrichOnly(_)), "must not linger in Holding chasing unsellable dust");
+    }
+
     /// Reproduces the pnl bug from the 2026-07-03 ETH `high_prob` Telegram
     /// report (`entry=0.8900 -> exit=1.0000, pnl=-$0.9964` for a WIN): a
     /// partial take-profit fill left a small residual, and the eventual
@@ -1056,7 +1140,12 @@ mod tests {
     /// actually being settled. The total across both legs must equal what a
     /// human doing the arithmetic by hand would get: 6 shares sold at 0.73
     /// (cost 0.70) + 4 residual shares resolved at $1 (still cost 0.70) =
-    /// $8.38 proceeds on a $7.00 stake = +$1.38, not something close to -$1.
+    /// $8.38 proceeds on a $7.00 stake = +$1.38 gross, not something close to
+    /// -$1. Net of Polymarket's taker fee on the two real (taker) legs — entry
+    /// `10 * 0.07 * 0.70 * 0.30 = 0.147` and the partial exit `6 * 0.07 * 0.73
+    /// * 0.27 = 0.082782` (resolution of the residual 4 shares is not a trade
+    /// and is fee-free) — that's `1.38 - 0.229782 = 1.1502`
+    /// (`trader/doc/incident_tele_pnl_2026-07-04.md` §2).
     #[test]
     fn partial_unwind_then_cycle_close_totals_both_legs_pnl() {
         let p = btc_params();
@@ -1080,7 +1169,8 @@ mod tests {
         let actions = w.step(Event::CycleClose);
         let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
         assert_eq!(record.outcome, Outcome::Win);
-        assert!((record.pnl - 1.38).abs() < 1e-9, "expected +1.38 total (0.18 realized + 4*0.30 residual), got {}", record.pnl);
+        assert!((record.pnl - 1.1502).abs() < 1e-9,
+            "expected +1.1502 net (1.38 gross - 0.229782 fees), got {}", record.pnl);
     }
 
     /// Reproduces the 2026-07-03 ETH audit scenario (trader/doc/audit_trades_2026-07-03.md):
@@ -1214,7 +1304,8 @@ mod tests {
         assert_eq!(previous_outcome, Outcome::Win);
         assert!(previous_pnl > 0.0, "original estimate should have been a WIN pnl, got {previous_pnl}");
         assert_eq!(record.outcome, Outcome::Loss);
-        assert!((record.pnl - (-1.0)).abs() < 1e-9, "LOSS pnl should be -trade_size, got {}", record.pnl);
+        // -trade_size(1.0) - buy_fee(shares(1/0.7) * 0.07 * 0.7 * 0.3 = trade_size * 0.07 * 0.3 = 0.021)
+        assert!((record.pnl - (-1.021)).abs() < 1e-9, "LOSS pnl should be -trade_size - entry fee, got {}", record.pnl);
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
@@ -1263,7 +1354,7 @@ mod tests {
             side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "gone-order".to_string() },
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
 
@@ -1281,7 +1372,7 @@ mod tests {
             side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "still-live".to_string() },
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &["still-live".to_string()], 10.0);
@@ -1297,7 +1388,7 @@ mod tests {
             side: Side::Up, entry_type: EntryType::Reversal, token_price: 0.70,
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::PriceMonitor { tp_price: 0.73 },
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
+            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &[], 0.0);
