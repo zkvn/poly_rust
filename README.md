@@ -53,7 +53,29 @@ and rewritten into a properly-closed file at the final name, bounded by at most 
 **Recovery of already-corrupted files:** `price_feed/scripts/recover_rust_parquet.py` recovers
 footerless/truncated files by scanning raw page bytes directly (bypassing the need for a footer).
 Usage: `python price_feed/scripts/recover_rust_parquet.py "raw_4hr/*.parquet"` (dry run, reports
-row counts) or add `--write` to overwrite the source files with recovered data.
+row counts) or add `--write` to overwrite the source files with recovered data. Handles `poly`,
+`book`, and `binance` schemas; also decodes PLAIN-encoded pages (arrow-rs falls back from
+RLE_DICTIONARY to PLAIN for a column once its dictionary page exceeds the writer's size threshold —
+`ts` is nearly all-unique, so this triggers reliably on large daily files, and the old decoder
+silently dropped the whole row group when it hit one).
+
+**Checking for corruption without recovering:** add `--check` to just test whether files are
+readable (fast, no page-scan recovery) — prints any `BAD` files and a `N checked, M bad` summary,
+exit code 1 if any are bad:
+
+```
+python price_feed/scripts/recover_rust_parquet.py --check "raw*/**/*.parquet"
+```
+
+**Audit — 2026-07-04:** ran `--check` across every file in `raw/`, `raw_15_mins/`, `raw_4hr/`,
+`raw_1hr/`, `raw_new/`, `raw_new_15_mins/`, `raw_new_4hr/` (3,274 files, all dates). Result: 1 bad
+file, `raw/BTC_poly_2026-07-02.parquet` — a 4-byte empty stub (just the `PAR1` magic, no data
+pages) left over from the pre-hourly-seal migration on 2026-07-02; the real pre-fix data for that
+file already lives in `raw/_stale_pre_hourly_seal_2026-07-02/BTC_poly_2026-07-02.parquet` (40,277
+rows, reads fine) and July 2nd's actual data is fully covered by the hourly files (`_13.parquet`
+through `_23.parquet`). Not data loss, nothing to recover. July 1st (commit `87f7461`, fixed the
+PLAIN-encoding decode gap and recovered all 42 poly/book + 5 binance files) was the only genuine
+corruption incident found.
 
 ### Sync to local
 

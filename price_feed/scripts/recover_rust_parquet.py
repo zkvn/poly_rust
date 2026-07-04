@@ -303,6 +303,16 @@ def recover_rust_book_parquet(path: str) -> pd.DataFrame:
     return pd.DataFrame({k: v[:n] for k, v in cols.items()})
 
 
+def check_file(path: str) -> bool:
+    """Fast readability check (footer present, parses cleanly) — no page-scan recovery."""
+    try:
+        pd.read_parquet(path)
+        return True
+    except Exception as e:
+        print(f"{path}: BAD — {e}")
+        return False
+
+
 def recover_file(path: str, write: bool) -> None:
     if "_poly_" in path:
         kind = "poly"
@@ -345,8 +355,17 @@ if __name__ == "__main__":
     parser.add_argument("paths", nargs="+", help="parquet file path(s) or glob pattern(s)")
     parser.add_argument("--write", action="store_true",
                         help="overwrite the source file with the recovered data (default: dry run, report only)")
+    parser.add_argument("--check", action="store_true",
+                        help="only check whether files are readable (fast, no recovery); prints BAD files "
+                             "and a summary count, ignores --write")
     args = parser.parse_args()
 
     files = sorted({f for pattern in args.paths for f in glob.glob(pattern)} or set(args.paths))
+
+    if args.check:
+        bad = [f for f in files if not check_file(f)]
+        print(f"\n{len(files)} files checked, {len(bad)} bad")
+        raise SystemExit(1 if bad else 0)
+
     for path in files:
         recover_file(path, args.write)
