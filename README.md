@@ -608,3 +608,42 @@ automatically since it just calls into `deploy_oracle.py --trader-only`.
 otherwise), all future tooling touching that process must go through the supervisor's
 own restart command — never signal the process directly, even for a "graceful" SIGTERM.
 The supervisor can't tell a deliberate redeploy apart from a crash.
+
+### Entry evaluation only checked on Binance ticks, missing fast poly-side crossings (2026-07-04, fixed)
+
+`Worker::on_binance`/`Machine::on_binance` (`trader/src/worker.rs`, `trader/src/machine.rs`)
+were the only place `ReversalStrategy`/`HighProbStrategy::evaluate` ever got called — even
+though the entry condition for both strategies is a conjunction of a **poly** price
+band/threshold (the primary, time-critical trigger) and a `delta_pct` sign check (a
+directional filter). `Worker::on_poly`/`Machine::on_poly` updated poly state but never
+triggered entry evaluation itself, so a poly price that crossed its trigger band **between**
+Binance ticks sat unnoticed until the next Binance tick happened to arrive — up to the
+Binance feed's own tick interval (see "Latency & observability infrastructure" above: ~250ms
+today, sampled/coalesced from the real per-trade WS stream).
+
+Confirmed this isn't just a synthetic-test concern: replaying real BTC data from
+2026-06-20 (`backtest::btc_20260620_golden`, previously validated against the Python
+reference engine) turned up a case where poly's `up` price spiked 0.145 → 0.605 in under
+half a second while Binance ticks in that window landed roughly once per second — the old
+design couldn't see the crossing in time to act on it at all.
+
+**Fix:** both `on_binance` and `on_poly` now call a shared `try_enter(now)`, so entry can
+fire off either feed using the latest cached value of the other (`check_gates`'s existing
+`|delta_pct| >= threshold` gate is unchanged — this only affects how promptly the condition
+is checked, not how permissive it is). `worker.rs` (live) and `machine.rs` (backtest) were
+kept in sync so backtest results stay representative of live behavior.
+
+Fixing this exposed a real latent bug: `DeltaPctSignal::reset()` (`trader/src/signal/
+delta_pct.rs`) cleared `open` but not `price` on a new cycle — harmless under the old
+design (`on_binance` always refreshed `price` in the same call that evaluated it), but a
+real risk once `on_poly` can trigger evaluation without refreshing `price` itself, since a
+stale Binance price left over from the *previous* cycle could otherwise pass as this
+cycle's already-known delta. Fixed by clearing `price` on every `reset()` too.
+
+Full writeup, the poly-vs-Binance latency reasoning behind the decision, and the exact
+golden-test trade this uncovered: `trader/doc/latency_2026-07-04.md` §8/§9.
+
+**Lesson:** when a strategy's entry condition depends on two independently-arriving feeds,
+gating evaluation behind only one of them makes entry timing hostage to that one feed's
+cadence — even if the *other* feed is the one that's actually time-critical. Worth checking
+for this pattern anywhere else two signals are combined behind a single trigger event.
