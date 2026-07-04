@@ -304,6 +304,45 @@ trades. Requires `/home/kev/apps/btc_5mins/.env` mounted read-only into the trad
 
 ---
 
+## Latency & observability infrastructure
+
+Full study: `trader/doc/latency_2026-07-04.md` (data + method: `price_feed/analysis/latency_study.py`
+over `price_feed/raw/*.parquet`, plus a source read of the SDK's own WS subscription/broadcast
+code). Summary:
+
+- **CLOB (Poly) price feed latency is not a concern** — p50 ≈ 4–5ms, p95 ≈ 15–17ms,
+  Polymarket-server-timestamp to Oracle-box-receive, consistent across every asset. Every
+  `poly`/`book` parquet row already carries this as `latency_ms` (see "Data Files" above).
+- **Binance feed carries a flat ~115ms network-distance floor** (not jitter — p50 ≈ p99) and is
+  additionally sampled to 250ms before being published to NATS / written to parquet, so bursts of
+  Binance trades faster than 4/s get thinned before the trader (or the historical record) ever
+  sees them. The Poly feed the trader actually trades on does **not** have this sampling problem —
+  `spawn_bba_task` in `price_feed/src/collect.rs` publishes to NATS immediately per event; only
+  the *parquet-recorded* copy of Poly data is 200ms-sampled.
+- **WS subscriptions are explicit per-asset-ID, not a firehose** — confirmed both in this repo's
+  subscribe calls and in the vendored `polymarket_client_sdk_v2` source: the SDK sends
+  ref-counted subscribe requests for only the assets in play, multiplexed over one shared "Market"
+  WS connection, and filters each consumer's stream by asset_id inside the SDK itself before this
+  repo's own (redundant, defensive) asset_id filter ever runs.
+- **Two real "an update went missing" mechanisms exist and are currently invisible in the logs**:
+  (1) the SDK's internal `tokio::sync::broadcast` channel can silently drop messages under
+  backpressure (`RecvError::Lagged`), but its warning is compiled out because neither
+  `trader/Cargo.toml` nor `price_feed/Cargo.toml` enables the SDK's `tracing` feature; (2) the
+  200ms/250ms/1s samplers in `collect.rs` only persist/publish whatever the shared per-asset state
+  holds at tick time, so anything overwritten between ticks is lost from the *recorded* copy (not
+  from what the live trader itself acts on for Poly — only for Binance, and for the parquet
+  record generally).
+- **Order placement has zero timing instrumentation** — no code in `trader/src/execution.rs`
+  records how long Polymarket (via the EC2 proxy, `CLOB_PROXY_URL`) takes to confirm an entry BUY,
+  an exit market SELL, or an unwind GTC limit SELL. `trader/src/unwind.rs`'s `UnwindWatcher` — a
+  real-time USER-channel fill listener that would give an accurate, event-driven fill timestamp
+  for the unwind leg — is fully built and tested but never invoked from `live.rs`. This is the
+  system's biggest latency blind spot; the study's §8 has a concrete, ordered plan to close it
+  (enable `tracing`, time the three order calls, wire up `UnwindWatcher`, and only build a
+  dedicated always-on latency-probe service if per-trade samples prove too sparse).
+
+---
+
 ## Trading engine — known incidents
 
 ### Stop-loss close never filled (2026-07-02, fixed)
