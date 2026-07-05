@@ -152,6 +152,12 @@ impl StrategyToml {
 }
 
 /// Load the latest strategy_*.toml from config_dir (same glob+sort as Python).
+///
+/// `config_dir` is conventionally `btc_5mins/config` (see README "Strategy
+/// config" section) — but as of `strategy_20260705.toml`, that directory
+/// holds a symlink to this crate's own `config/`, which is the real,
+/// git-tracked copy. `read_to_string` follows symlinks transparently, so
+/// this function doesn't need to know or care which side is real.
 pub fn load_latest(config_dir: &str) -> Result<StrategyToml> {
     let pattern = format!("{}/strategy_*.toml", config_dir.trim_end_matches('/'));
     let mut paths: Vec<PathBuf> = glob(&pattern)
@@ -174,7 +180,8 @@ mod tests {
 
     #[test]
     fn load_and_resolve_btc() {
-        let toml = load_latest("/home/kev/apps/btc_5mins/config").expect("load config");
+        let toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
         // BTC-specific overrides from strategy_20260705.toml (Highest Win Rate,
         // final cal 2026-05-26 -> 2026-07-02, report_5m_20260704_004615.md)
@@ -191,7 +198,8 @@ mod tests {
 
     #[test]
     fn default_fallback() {
-        let toml = load_latest("/home/kev/apps/btc_5mins/config").expect("load config");
+        let toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         // ETH uses default delta_pct_rev = 0.001
         let p = toml.resolve("ETH").expect("resolve ETH");
         assert!((p.delta_pct_rev - 0.001).abs() < 1e-9);

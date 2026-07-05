@@ -27,6 +27,13 @@ Usage:
     python scripts/deploy_oracle.py --skip-build        # rsync + restart only
     python scripts/deploy_oracle.py --price-feed-only   # skip trader steps
     python scripts/deploy_oracle.py --trader-only       # skip price-feed steps
+    python scripts/deploy_oracle.py --config-only       # sync strategy config + restart trader only
+
+--config-only is for a config-only change (new/edited strategy_*.toml, no code
+change): rsyncs this repo's trader/config/ (the real, git-tracked copy — see
+README "Strategy config") to Oracle, git-pulls btc_5mins on Oracle (delivers
+the config/ symlink pointing at that copy), then restarts trader-live.service
+so it re-globs and loads the new file. No build, no binary rsync.
 """
 
 from __future__ import annotations
@@ -74,6 +81,14 @@ TRADER_ASSETS   = _latest_trade_assets(REPO_ROOT.parent / "btc_5mins" / "config"
 TRADER_ENV_FILE = "/home/ubuntu/apps/poly_rust/trader/.env"
 TRADER_CFG_DIR  = "/home/ubuntu/apps/btc_5mins/config"
 TRADER_LOG_DIR  = f"{ORACLE_BASE}/trader/live_logs"
+
+# ── Strategy config (real copy — see README "Strategy config") ────────────────
+# The real, git-tracked strategy_*.toml files live in this repo's trader/config/;
+# btc_5mins/config holds a symlink pointing at whichever is current, so
+# TRADER_CFG_DIR above still works unchanged. `--config-only` only needs to
+# land this directory on Oracle plus pull btc_5mins for its symlink.
+LOCAL_TRADER_CFG_DIR = REPO_ROOT / "trader" / "config"
+BTC5MINS_REMOTE      = "/home/ubuntu/apps/btc_5mins"
 TRADER_SERVICE  = "trader-live.service"
 TRADER_UNIT_PATH = "/etc/systemd/system/trader-live.service"
 # price_feed publishes ticks here (poly-collector.service) and the trader
@@ -168,6 +183,31 @@ def build(bins: list[str], dry_run: bool) -> bool:
     return True
 
 
+def sync_config(client: paramiko.SSHClient, dry_run: bool) -> bool:
+    """Land the current strategy config on Oracle without touching any binary:
+    rsync this repo's trader/config/ (the real copy), then `git pull` btc_5mins
+    on Oracle so its config/ symlink resolves to the file just rsynced. Both
+    steps are safe/idempotent — rsync only ever adds/updates files under
+    trader/config/, and btc_5mins's Oracle checkout is a clean, single-branch
+    clone with no local changes of its own (unlike this repo's Oracle checkout,
+    which is stale and has unrelated local modifications — deliberately not
+    touched here; config lands via rsync, not a git pull of this repo)."""
+    print(f"\n  rsyncing {LOCAL_TRADER_CFG_DIR} → Oracle...")
+    if not rsync(LOCAL_TRADER_CFG_DIR, f"{ORACLE_BASE}/trader/", dry_run):
+        return False
+
+    print(f"  git pull in {BTC5MINS_REMOTE} (delivers the config/ symlink)...")
+    if dry_run:
+        print(f"  [dry-run] git -C {BTC5MINS_REMOTE} pull --ff-only")
+        return True
+    rc, out, err = ssh(client, f"git -C {BTC5MINS_REMOTE} pull --ff-only", timeout=30)
+    print(f"  {out.strip()}")
+    if rc != 0:
+        print(f"  git pull failed:\n{out}{err}")
+        return False
+    return True
+
+
 def deploy_price_feed(client: paramiko.SSHClient, dry_run: bool) -> bool:
     bin_path = PRICE_FEED_BIN
     if not bin_path.exists():
@@ -193,21 +233,23 @@ def deploy_price_feed(client: paramiko.SSHClient, dry_run: bool) -> bool:
     return status == "active"
 
 
-def deploy_trader(client: paramiko.SSHClient, dry_run: bool) -> bool:
-    """rsync the binary, keep trader-live.service's unit file in sync with the
-    current TRADER_ASSETS, then `systemctl restart` it. Always goes through
-    systemd — never `kill`/`tmux` the process directly (see module docstring
-    for why: that raced with systemd's own Restart=always and produced two
-    concurrent live-trading processes on 2026-07-03)."""
-    bin_path = TRADER_BIN
-    if not bin_path.exists():
-        print(f"  Binary not found: {bin_path}")
-        return False
+def deploy_trader(client: paramiko.SSHClient, dry_run: bool, skip_binary: bool = False) -> bool:
+    """rsync the binary (unless skip_binary — used by --config-only, which has
+    nothing new to rsync here), keep trader-live.service's unit file in sync
+    with the current TRADER_ASSETS, then `systemctl restart` it. Always goes
+    through systemd — never `kill`/`tmux` the process directly (see module
+    docstring for why: that raced with systemd's own Restart=always and
+    produced two concurrent live-trading processes on 2026-07-03)."""
+    if not skip_binary:
+        bin_path = TRADER_BIN
+        if not bin_path.exists():
+            print(f"  Binary not found: {bin_path}")
+            return False
 
-    print(f"\n  rsyncing {bin_path} → Oracle...")
-    remote_dir = f"{ORACLE_BASE}/trader/target/release/"
-    if not rsync(bin_path, remote_dir, dry_run):
-        return False
+        print(f"\n  rsyncing {bin_path} → Oracle...")
+        remote_dir = f"{ORACLE_BASE}/trader/target/release/"
+        if not rsync(bin_path, remote_dir, dry_run):
+            return False
 
     asset_flags = " ".join(f"--asset {a}" for a in TRADER_ASSETS)
     nats_flag = f"--nats-url {TRADER_NATS_URL}" if TRADER_NATS_URL else ""
@@ -260,13 +302,31 @@ def main() -> None:
     ap.add_argument("--skip-build",      action="store_true", help="Skip cross-compile, use existing binaries")
     ap.add_argument("--price-feed-only", action="store_true", help="Deploy price_feed only")
     ap.add_argument("--trader-only",     action="store_true", help="Deploy trader only")
+    ap.add_argument("--config-only",     action="store_true",
+                     help="Sync strategy config (rsync trader/config/ + git pull btc_5mins) and "
+                          "restart trader-live.service only — no build, no binary rsync")
     args = ap.parse_args()
-
-    do_price_feed = not args.trader_only
-    do_trader     = not args.price_feed_only
 
     if args.dry_run:
         print("[DRY RUN — no changes will be made]\n")
+
+    # ── config-only fast path ────────────────────────────────────────────────
+    if args.config_only:
+        print(f"\nConnecting to {ORACLE_USER}@{ORACLE_HOST} ...")
+        client = connect_oracle()
+        print("\n[config] syncing strategy config...")
+        ok = sync_config(client, args.dry_run)
+        if ok:
+            print("\n[trader] restarting to pick up new config...")
+            ok = deploy_trader(client, args.dry_run, skip_binary=True)
+        else:
+            print("  config sync failed.")
+        client.close()
+        print("\nDone." if ok else "\nDone (with errors).")
+        sys.exit(0 if ok else 1)
+
+    do_price_feed = not args.trader_only
+    do_trader     = not args.price_feed_only
 
     # ── 1. build ──────────────────────────────────────────────────────────────
     if not args.skip_build:

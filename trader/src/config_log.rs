@@ -168,7 +168,8 @@ mod tests {
 
     #[test]
     fn write_and_read_roundtrip() {
-        let toml = load_latest("/home/kev/apps/btc_5mins/config").expect("load config");
+        let toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let dir = std::env::temp_dir().join(format!("config_log_test_{}", std::process::id()));
         let dir_str = dir.to_str().unwrap().to_string();
 
@@ -195,7 +196,8 @@ mod tests {
 
     #[test]
     fn latest_snapshot_filters_by_ts_and_asset() {
-        let toml = load_latest("/home/kev/apps/btc_5mins/config").expect("load config");
+        let toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let dir = std::env::temp_dir().join(format!("config_log_test2_{}", std::process::id()));
         let dir_str = dir.to_str().unwrap().to_string();
 

@@ -117,12 +117,21 @@ on the remote before the nightly sync runs.
   **not** include this backfilled window either; re-run the merge after backfilling on Oracle if
   the 14:00–14:09 window matters for whatever you're testing.
 
-- **Binance data gap 2026-07-02 00:00–13:50 HKT — permanent, not fixable.** Binance recording was
-  down for this window (see the git-branch-convention incident above: a branch predating the
-  Binance feature was deployed over the box, and it took until ~13:50 to get Binance recording
-  running again under the new hourly-seal code). The old daily-rotation `{asset}_binance_2026-07-
-  02.parquet` files are 0 bytes for this reason — nothing to recover, no page bytes were ever
-  written. Binance data for today starts cleanly at 13:50 HKT onward.
+- **Binance data gap 2026-07-02 00:00–13:50 HKT — backfilled 2026-07-05 from btc_5mins.** Binance
+  recording was down for this window (see the git-branch-convention incident above: a branch
+  predating the Binance feature was deployed over the box, and it took until ~13:50 to get Binance
+  recording running again under the new hourly-seal code). The old daily-rotation
+  `{asset}_binance_2026-07-02.parquet` files are 0 bytes for this reason — no page bytes were ever
+  written natively for this recorder. **BTC only** has since been backfilled for local `raw/`
+  (`BTC_binance_2026-07-02_00.parquet` through `_12.parquet` created, `_13.parquet` merged) using
+  the sibling `btc_5mins` project's independently-recorded `prices/BTC_binance.parquet` (its own
+  python WS collector was live and gap-free for this window). Backfilled rows have real `ts`/
+  `binance`/`slug` values but **null `server_ts`/`latency_ms`** (btc_5mins never captured Binance's
+  `E` field or network latency) — filter `server_ts.notna()` to distinguish native vs backfilled
+  rows. Also lower density than native (~1 Hz vs ~4 Hz sampling). Pre-backfill originals saved to
+  `raw/_pre_python_backfill_2026-07-05/`. Other assets (ETH/SOL/BNB/XRP/DOGE/HYPE) remain
+  unfilled for this window — btc_5mins only records BTC. A separate ~6.4h gap on 2026-07-03
+  08:15–14:38 HKT (unrelated collector restart) was backfilled the same way and same day.
 
 ## Build and deploy
 
@@ -187,6 +196,52 @@ from distinct bots without `getUpdates` conflicts.
 constant). Do not change it to point at `btc_5mins/.env` — that causes both bots to poll
 the same token, producing 409 Conflict errors on `getUpdates` and cross-contaminated
 startup notifications.
+
+### Strategy config (`strategy_*.toml`) — symlink convention (2026-07-05)
+
+`bot/config.py` (Python) and `trader/src/config.rs` (Rust, this repo) both load
+whatever `strategy_*.toml` sorts last inside a `config_dir` — historically that
+was `btc_5mins/config`, with every revision's full ~150-line TOML committed
+there directly. As of `strategy_20260705.toml`, that changed:
+
+- **The real, git-tracked file now lives in this repo, at `trader/config/`.**
+  This repo is what actually consumes it for live trading, so it's the
+  natural owner going forward.
+- **`btc_5mins/config/strategy_20260705.toml` is a relative symlink** —
+  `-> ../../poly_rust/trader/config/strategy_20260705.toml` — not a second
+  real copy. This relies on `poly_rust` and `btc_5mins` being checked out as
+  sibling directories (`apps/poly_rust`, `apps/btc_5mins`), true today on both
+  the dev machine and Oracle (confirmed: `/home/ubuntu/apps/{poly_rust,
+  btc_5mins}` on Oracle). `read_to_string`/Python's `open()` follow symlinks
+  transparently, and glob-by-filename-sort doesn't care whether a match is a
+  symlink — so **no code changes were needed** on either the Python or Rust
+  loader, or any `--config-dir` default, to make this work.
+- **Earlier dated files (`strategy_20260527.toml` … `strategy_20260703.toml`)
+  were *not* retroactively migrated** — they stay as real files in
+  `btc_5mins/config`, serving as historical record. Only new revisions from
+  here on live in `trader/config/`.
+
+**Workflow for a new config revision:** add the new `strategy_YYYYMMDD.toml`
+under `poly_rust/trader/config/`, commit+push this repo; then in
+`btc_5mins/config/`, remove the old symlink (or leave it — it's a fixed
+historical name) and add a new symlink with the new date pointing at the new
+file, commit+push `btc_5mins`. Both repos need the push — `btc_5mins`'s
+symlink is what the Python bot (and, transitively, anything reading
+`btc_5mins/config` as `config_dir`) actually resolves.
+
+**Deploying a config-only change to Oracle:** `scripts/deploy_oracle.py
+--config-only` — rsyncs `trader/config/` (the real files) to Oracle, `git
+pull`s `btc_5mins` on Oracle (delivers the matching symlink), then restarts
+`trader-live.service` so it re-globs and loads the new file. No build, no
+binary rsync. (Oracle's own `poly_rust` git checkout is stale and has
+unrelated local modifications — deliberately not touched by this path; the
+config lands via `rsync`, matching how binaries are already deployed, not via
+a `git pull` of this repo.)
+
+```bash
+python scripts/deploy_oracle.py --config-only            # sync config + restart trader
+python scripts/deploy_oracle.py --config-only --dry-run   # preview, no changes
+```
 
 ### Oracle infra: NATS price bridge
 
