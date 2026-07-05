@@ -181,9 +181,9 @@ mod tests {
         assert_eq!(e.asset, "BTC");
         assert_eq!(e.event, "startup");
         assert_eq!(e.strategies, vec!["reversal".to_string()]);
-        assert!((e.reversal["BTC"] - 0.60).abs() < 1e-9);
-        assert!((e.delta_pct_rev["BTC"] - 0.0008).abs() < 1e-9);
-        // halt_rev has no explicit BTC override in strategy_20260630.toml — falls back to "default",
+        assert!((e.reversal["BTC"] - 0.70).abs() < 1e-9);
+        assert!((e.delta_pct_rev["BTC"] - 0.0006).abs() < 1e-9);
+        // halt_rev has no explicit BTC override in strategy_20260705.toml — falls back to "default",
         // exactly like Python's `d.get(asset, d.get("default", 0))`.
         assert_eq!(*e.halt_rev.get("BTC").unwrap_or(&e.halt_rev["default"]), 2);
         assert!(e.hkt.ends_with(" HKT"));

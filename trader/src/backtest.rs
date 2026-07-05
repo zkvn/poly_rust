@@ -444,9 +444,43 @@ mod tests {
             return;
         }
 
-        let toml = crate::config::load_latest("/home/kev/apps/btc_5mins/config")
-            .expect("load config");
-        let mut params = toml.resolve("BTC").expect("resolve BTC");
+        // BTC's resolved params from strategy_20260703.toml — the config in effect
+        // when this golden trace (and the poly-tick-entry fix it documents) was
+        // captured and verified, 2026-07-04. Hardcoded rather than `load_latest`
+        // deliberately: this test pins one specific historical trace, and a later
+        // strategy recalibration (e.g. strategy_20260705.toml's higher BTC
+        // `reversal` threshold) changes which trades fire on this same price data,
+        // which would silently invalidate the very scenario this test documents
+        // without this test itself ever noticing why.
+        let mut params = crate::config::AssetParams {
+            asset: "BTC".to_string(),
+            strategies: vec!["reversal".to_string()],
+            enter_when_time_left: 20.0,
+            no_enter_when_time_left: 10.0,
+            reversal: 0.60,
+            reversal_low_threshold: 0.20,
+            reversal_start_time: 120.0,
+            price_high_rev: 0.9,
+            delta_pct_rev: 0.0008,
+            sl_reversal: 0.0,
+            unwind_pnl_rev: 0.03,
+            sl_pnl_rev: 0.20,
+            price_low: 0.80,
+            price_high: 0.93,
+            delta_pct_hp: 0.0004,
+            sl_high_prob: 0.49,
+            unwind_pnl_hp: 0.05,
+            sl_pnl_hp: 0.25,
+            halt_rev: 2,
+            halt_prob: 2,
+            halt_reset_hour_rev: 2,
+            halt_reset_hour_hp: 8,
+            max_buy_price: 0.95,
+            spread_premium_limit: 1.05,
+            spread_discount_limit: 0.95,
+            max_price_age_secs: 2.0,
+            trade_size_usdc: 1.0,
+        };
         // Match Python --no-halt
         params.halt_rev = 0;
         params.halt_prob = 0;

@@ -176,14 +176,15 @@ mod tests {
     fn load_and_resolve_btc() {
         let toml = load_latest("/home/kev/apps/btc_5mins/config").expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // BTC-specific overrides from strategy_20260630.toml
-        assert!((p.reversal - 0.60).abs() < 1e-9, "BTC reversal = 0.60");
+        // BTC-specific overrides from strategy_20260705.toml (Highest Win Rate,
+        // final cal 2026-05-26 -> 2026-07-02, report_5m_20260704_004615.md)
+        assert!((p.reversal - 0.70).abs() < 1e-9, "BTC reversal = 0.70");
         assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0008).abs() < 1e-9);
+        assert!((p.delta_pct_rev - 0.0006).abs() < 1e-9);
         assert_eq!(p.halt_rev, 2);
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.03).abs() < 1e-9);
-        assert!((p.sl_pnl_rev - 0.20).abs() < 1e-9);
+        assert!((p.sl_pnl_rev - 0.50).abs() < 1e-9);
         assert!((p.unwind_pnl_hp - 0.05).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.25).abs() < 1e-9);
     }
