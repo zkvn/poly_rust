@@ -230,13 +230,17 @@ symlink is what the Python bot (and, transitively, anything reading
 `btc_5mins/config` as `config_dir`) actually resolves.
 
 **Deploying a config-only change to Oracle:** `scripts/deploy_oracle.py
---config-only` — rsyncs `trader/config/` (the real files) to Oracle, `git
-pull`s `btc_5mins` on Oracle (delivers the matching symlink), then restarts
-`trader-live.service` so it re-globs and loads the new file. No build, no
-binary rsync. (Oracle's own `poly_rust` git checkout is stale and has
-unrelated local modifications — deliberately not touched by this path; the
-config lands via `rsync`, matching how binaries are already deployed, not via
-a `git pull` of this repo.)
+--config-only` — rsyncs `trader/config/` (the real files) to Oracle, then
+creates/updates the matching symlink in Oracle's `btc_5mins/config/` directly
+via SSH (`ln -sfn`), and restarts `trader-live.service` so it re-globs and
+loads the new file. No build, no binary rsync, and deliberately **no `git
+pull` of either repo on Oracle** — a config-only deploy has no business
+depending on either project's Oracle checkout being clean/fast-forwardable
+(this repo's Oracle checkout in particular is stale with unrelated local
+modifications), and a `git pull` of `btc_5mins` would also silently drag in
+whatever else had been pushed to its `main` since, not just the config
+change being deployed. Both the binary rsync and the config symlink land the
+same way now: directly, from this script, with no git operation on Oracle.
 
 ```bash
 python scripts/deploy_oracle.py --config-only            # sync config + restart trader

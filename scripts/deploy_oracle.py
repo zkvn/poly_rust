@@ -31,9 +31,10 @@ Usage:
 
 --config-only is for a config-only change (new/edited strategy_*.toml, no code
 change): rsyncs this repo's trader/config/ (the real, git-tracked copy — see
-README "Strategy config") to Oracle, git-pulls btc_5mins on Oracle (delivers
-the config/ symlink pointing at that copy), then restarts trader-live.service
-so it re-globs and loads the new file. No build, no binary rsync.
+README "Strategy config") to Oracle, creates/updates the matching symlink in
+Oracle's btc_5mins/config/ directly (no git pull of btc_5mins — see
+sync_config), then restarts trader-live.service so it re-globs and loads the
+new file. No build, no binary rsync.
 """
 
 from __future__ import annotations
@@ -76,19 +77,21 @@ def _latest_trade_assets(config_dir: Path) -> list[str]:
     return [a.strip().upper() for a in data["trade_assets"] if a.strip()]
 
 
+# ── Strategy config (real copy — see README "Strategy config") ────────────────
+# The real, git-tracked strategy_*.toml files live in this repo's trader/config/;
+# btc_5mins/config holds only a symlink pointing at whichever is current (kept
+# there via a normal commit for local dev, but Oracle's copy is delivered by
+# this script directly — see sync_config). Reading TRADER_ASSETS from this
+# repo's own directory, not through btc_5mins, means this script has no
+# dependency on the sibling repo even being checked out.
+LOCAL_TRADER_CFG_DIR = REPO_ROOT / "trader" / "config"
+BTC5MINS_CFG_REMOTE  = "/home/ubuntu/apps/btc_5mins/config"
+
 # ── Oracle trader startup command ─────────────────────────────────────────────
-TRADER_ASSETS   = _latest_trade_assets(REPO_ROOT.parent / "btc_5mins" / "config")
+TRADER_ASSETS   = _latest_trade_assets(LOCAL_TRADER_CFG_DIR)
 TRADER_ENV_FILE = "/home/ubuntu/apps/poly_rust/trader/.env"
 TRADER_CFG_DIR  = "/home/ubuntu/apps/btc_5mins/config"
 TRADER_LOG_DIR  = f"{ORACLE_BASE}/trader/live_logs"
-
-# ── Strategy config (real copy — see README "Strategy config") ────────────────
-# The real, git-tracked strategy_*.toml files live in this repo's trader/config/;
-# btc_5mins/config holds a symlink pointing at whichever is current, so
-# TRADER_CFG_DIR above still works unchanged. `--config-only` only needs to
-# land this directory on Oracle plus pull btc_5mins for its symlink.
-LOCAL_TRADER_CFG_DIR = REPO_ROOT / "trader" / "config"
-BTC5MINS_REMOTE      = "/home/ubuntu/apps/btc_5mins"
 TRADER_SERVICE  = "trader-live.service"
 TRADER_UNIT_PATH = "/etc/systemd/system/trader-live.service"
 # price_feed publishes ticks here (poly-collector.service) and the trader
@@ -184,26 +187,41 @@ def build(bins: list[str], dry_run: bool) -> bool:
 
 
 def sync_config(client: paramiko.SSHClient, dry_run: bool) -> bool:
-    """Land the current strategy config on Oracle without touching any binary:
-    rsync this repo's trader/config/ (the real copy), then `git pull` btc_5mins
-    on Oracle so its config/ symlink resolves to the file just rsynced. Both
-    steps are safe/idempotent — rsync only ever adds/updates files under
-    trader/config/, and btc_5mins's Oracle checkout is a clean, single-branch
-    clone with no local changes of its own (unlike this repo's Oracle checkout,
-    which is stale and has unrelated local modifications — deliberately not
-    touched here; config lands via rsync, not a git pull of this repo)."""
+    """Land the current strategy config on Oracle without touching any binary
+    — and without depending on the sibling btc_5mins repo's git state at all.
+
+    1. rsync this repo's trader/config/ (the real, git-tracked copy) to Oracle.
+    2. `ln -sfn` a symlink at Oracle's btc_5mins/config/<latest>.toml pointing
+       back at the file just rsynced — the same relative symlink already
+       committed in btc_5mins for local dev, just created directly here
+       instead of via `git pull`.
+
+    Earlier this did a `git pull` of btc_5mins on Oracle instead of step 2.
+    Dropped that: it made a config-only deploy depend on btc_5mins's Oracle
+    checkout staying clean/fast-forwardable (the same class of problem this
+    project's own Oracle checkout already has — see README "Build and
+    deploy"), and it silently pulled in whatever else had been pushed to
+    btc_5mins's main since, not just the config change being deployed. A
+    symlink write is one idempotent command with neither failure mode."""
     print(f"\n  rsyncing {LOCAL_TRADER_CFG_DIR} → Oracle...")
     if not rsync(LOCAL_TRADER_CFG_DIR, f"{ORACLE_BASE}/trader/", dry_run):
         return False
 
-    print(f"  git pull in {BTC5MINS_REMOTE} (delivers the config/ symlink)...")
+    candidates = sorted(LOCAL_TRADER_CFG_DIR.glob("strategy_*.toml"))
+    if not candidates:
+        print(f"  no strategy_*.toml found in {LOCAL_TRADER_CFG_DIR}")
+        return False
+    latest_name = candidates[-1].name
+    link_path = f"{BTC5MINS_CFG_REMOTE}/{latest_name}"
+    link_target = f"../../poly_rust/trader/config/{latest_name}"
+
+    print(f"  symlinking {link_path} -> {link_target} on Oracle...")
     if dry_run:
-        print(f"  [dry-run] git -C {BTC5MINS_REMOTE} pull --ff-only")
+        print(f"  [dry-run] ln -sfn {link_target} {link_path}")
         return True
-    rc, out, err = ssh(client, f"git -C {BTC5MINS_REMOTE} pull --ff-only", timeout=30)
-    print(f"  {out.strip()}")
+    rc, out, err = ssh(client, f"ln -sfn {link_target} {link_path}", timeout=10)
     if rc != 0:
-        print(f"  git pull failed:\n{out}{err}")
+        print(f"  symlink update failed:\n{out}{err}")
         return False
     return True
 
