@@ -299,21 +299,44 @@ impl Driver<'_> {
             let name = &slot.worker.asset;
             let halted = slot.worker.is_halted();
             let light = if halted { "🟡 halted" } else { "🟢 active" };
-            let (sl, delta_gate, halt_n, unwind_pnl, sl_pnl) = if slot.worker.strategy_name == "high_prob" {
-                (slot.params.sl_high_prob, slot.params.delta_pct_hp, slot.params.halt_prob, slot.params.unwind_pnl_hp, slot.params.sl_pnl_hp)
-            } else {
-                (slot.params.sl_reversal, slot.params.delta_pct_rev, slot.params.halt_rev, slot.params.unwind_pnl_rev, slot.params.sl_pnl_rev)
-            };
+            // `low`/`high` are the strategy's entry trigger band — reversal_low_threshold/
+            // reversal for reversal (aka "unwind" — the reversal+take-profit-unwind
+            // strategy), price_low/price_high for high_prob.
+            let (sl, delta_gate, low, high, halt_n, unwind_pnl, sl_pnl) =
+                if slot.worker.strategy_name == "high_prob" {
+                    (
+                        slot.params.sl_high_prob,
+                        slot.params.delta_pct_hp,
+                        slot.params.price_low,
+                        slot.params.price_high,
+                        slot.params.halt_prob,
+                        slot.params.unwind_pnl_hp,
+                        slot.params.sl_pnl_hp,
+                    )
+                } else {
+                    (
+                        slot.params.sl_reversal,
+                        slot.params.delta_pct_rev,
+                        slot.params.reversal_low_threshold,
+                        slot.params.reversal,
+                        slot.params.halt_rev,
+                        slot.params.unwind_pnl_rev,
+                        slot.params.sl_pnl_rev,
+                    )
+                };
             ta_lines.push(format!(
-                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  size=${:.2}",
+                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  size=${:.2}",
                 slot.worker.strategy_name, slot.params.trade_size_usdc
             ));
 
             if seen_markets.insert(name.clone()) {
                 match &slot.current_slug {
-                    Some(slug) => mkt_lines.push(format!(
-                        "  {name}  binance=${:.5}  UP={:.4}  DN={:.4}  Δ={:.5}  slug={slug}",
-                        slot.last_binance, slot.last_poly_up, slot.last_poly_dn, slot.worker.delta_pct()
+                    Some(_) => mkt_lines.push(format!(
+                        "  {name}  binance=${:.5}  UP={:.4}  DN={:.4}  Δ={:.5}",
+                        slot.last_binance,
+                        slot.last_poly_up,
+                        slot.last_poly_dn,
+                        slot.worker.delta_pct()
                     )),
                     None => mkt_lines.push(format!("  {name}  no active cycle yet")),
                 }
