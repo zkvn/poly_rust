@@ -390,7 +390,7 @@ impl Driver<'_> {
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
-                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0} attempts={})",
+                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.worker.asset, result.placed, result.filled_shares, result.cost, result.error, result.attempts);
 
                 let dt = hkt_now().format("%H:%M:%S");
@@ -398,13 +398,13 @@ impl Driver<'_> {
                 let delta_pct = slot.worker.delta_pct() * 100.0;
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms | attempts={}",
+                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
                     Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost, signal_latency_ms, process_latency_ms })
                 } else {
                     self.notify(&format!(
-                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | attempts={} | error={}",
+                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | n_attempts={} | error={}",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name,
                         result.attempts,
                         result.error.as_deref().unwrap_or("unknown")
@@ -465,7 +465,7 @@ impl Driver<'_> {
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
-                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0} attempts={})",
+                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.worker.asset, result.status, result.shares_sold, result.filled_usdc, result.error, result.attempts);
                 let sold = result.shares_sold;
                 let exit_price = if sold > 0.0 { result.filled_usdc / sold } else { 0.0 };
@@ -474,7 +474,7 @@ impl Driver<'_> {
                     let dt = hkt_now().format("%H:%M:%S");
                     let label = if matches!(reason, CloseReason::StopLoss) { "STOP LOSS" } else { "TAKE PROFIT" };
                     self.notify(&format!(
-                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms | attempts={}",
+                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, slot.worker.strategy_name, result.filled_usdc, result.attempts
                     )).await;
                 }
