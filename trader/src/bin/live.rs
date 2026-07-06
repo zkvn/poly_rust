@@ -209,10 +209,50 @@ fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
     Ok(())
 }
 
+/// Extracts the optional `server_ts` field price_feed publishes alongside
+/// each NATS tick (the exchange's own event timestamp, seconds since epoch —
+/// see price_feed/src/collect.rs's `poly_nats_payload`/`binance_nats_payload`).
+/// Parsed separately from the typed `BinanceTick`/`PolyTick`, which don't (and
+/// shouldn't) carry this field themselves — it's an observability-only value,
+/// irrelevant to strategy logic, and adding it to those shared tick types
+/// would ripple into every strategy/backtest/worker test that constructs one.
+fn extract_server_ts(payload: &[u8]) -> Option<f64> {
+    #[derive(serde::Deserialize)]
+    struct ServerTs {
+        #[serde(default)]
+        server_ts: Option<f64>,
+    }
+    serde_json::from_slice::<ServerTs>(payload).ok().and_then(|s| s.server_ts)
+}
+
 fn persist(worker: &Worker, state_file: &str) {
     let snap = worker.to_persisted();
     if let Ok(json) = serde_json::to_string_pretty(&snap) {
         let _ = std::fs::write(state_file, json);
+    }
+}
+
+/// Which upstream feed produced the tick that triggered the action currently
+/// being executed. Entries can fire off either feed (`Worker::try_enter` is
+/// called from both `on_binance` and `on_poly` — see worker.rs), so
+/// `execute()` needs to know which one to label its exchange-latency reading
+/// with; exits (`ClosePosition`) are always Poly/CLOB-triggered (only
+/// `on_poly` ever produces one), so that arm ignores this and always reports
+/// `Clob`.
+#[derive(Clone, Copy)]
+enum Feed {
+    Clob,
+    Binance,
+}
+
+/// Format an exchange-latency reading (receipt-time − the exchange's own
+/// event timestamp) for the console/Telegram order logs. `None` means the
+/// exchange didn't supply a timestamp for this tick (e.g. Binance's `E`
+/// field missing) — printed as `n/a` rather than a bogus number.
+fn fmt_latency(ms: Option<f64>) -> String {
+    match ms {
+        Some(v) => format!("{v:.0}ms"),
+        None => "n/a".to_string(),
     }
 }
 
@@ -253,6 +293,16 @@ struct AssetSlot {
     last_poly_up: f64,
     last_poly_dn: f64,
     poly_sub: Option<PolySub>,
+    /// The most recently received tick's own exchange timestamp (seconds since
+    /// epoch) for each feed — `None` if the exchange didn't supply one, or no
+    /// tick has arrived yet on that feed, or this is the direct-WS (non-NATS)
+    /// path where price_feed isn't in the loop to capture it at all. Cached
+    /// here (rather than threaded through `Action`/`Event`) because it's
+    /// updated synchronously immediately before the exact `worker.step()` call
+    /// that may produce a `PlaceBuy`/`ClosePosition` off that same tick, so
+    /// reading it back in `execute()` is exact, not approximate.
+    last_binance_server_ts: Option<f64>,
+    last_poly_server_ts: Option<f64>,
 }
 
 /// Shared context (account connection + Telegram) threaded through the
@@ -380,7 +430,7 @@ impl Driver<'_> {
 
     /// Execute one `Action` against the live engine; returns the follow-up
     /// `Event` (if any) to feed back into `worker.step`.
-    async fn execute(&self, slot: &mut AssetSlot, action: &Action) -> Option<Event> {
+    async fn execute(&self, slot: &mut AssetSlot, action: &Action, feed: Feed) -> Option<Event> {
         match action {
             Action::PlaceBuy { side, price, size_usdc, signal_ts } => {
                 let token_id = if *side == Side::Up { slot.up_id } else { slot.dn_id };
@@ -390,7 +440,19 @@ impl Driver<'_> {
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
-                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0} n_attempts={})",
+                // Real exchange latency: receipt time minus the *exchange's own*
+                // event timestamp for the tick that triggered this entry — not
+                // `signal_ts` above, which is price_feed's local receipt time and
+                // only measures the (tiny, same-box) NATS+processing hop, never
+                // the actual CLOB/Binance network leg. `feed` says which feed
+                // triggered this entry (`Worker::try_enter` fires off either),
+                // so the label always matches the value's real source.
+                let (exchange_label, exchange_latency_ms) = match feed {
+                    Feed::Clob => ("clob_latency", slot.last_poly_server_ts.map(|s| (received_ts - s) * 1000.0)),
+                    Feed::Binance => ("binance_latency", slot.last_binance_server_ts.map(|s| (received_ts - s) * 1000.0)),
+                };
+                let exchange_latency_str = format!("{exchange_label}={}", fmt_latency(exchange_latency_ms));
+                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({exchange_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.worker.asset, result.placed, result.filled_shares, result.cost, result.error, result.attempts);
 
                 let dt = hkt_now().format("%H:%M:%S");
@@ -398,7 +460,7 @@ impl Driver<'_> {
                 let delta_pct = slot.worker.delta_pct() * 100.0;
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {exchange_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
                     Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost, signal_latency_ms, process_latency_ms })
@@ -465,7 +527,12 @@ impl Driver<'_> {
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
-                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0} n_attempts={})",
+                // Exits are always Poly/CLOB-triggered (only `on_poly` ever
+                // produces a ClosePosition — see worker.rs), so this is always
+                // the CLOB exchange latency, unlike the entry side above.
+                let clob_latency_ms = slot.last_poly_server_ts.map(|s| (received_ts - s) * 1000.0);
+                let clob_latency_str = format!("clob_latency={}", fmt_latency(clob_latency_ms));
+                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.worker.asset, result.status, result.shares_sold, result.filled_usdc, result.error, result.attempts);
                 let sold = result.shares_sold;
                 let exit_price = if sold > 0.0 { result.filled_usdc / sold } else { 0.0 };
@@ -474,7 +541,7 @@ impl Driver<'_> {
                     let dt = hkt_now().format("%H:%M:%S");
                     let label = if matches!(reason, CloseReason::StopLoss) { "STOP LOSS" } else { "TAKE PROFIT" };
                     self.notify(&format!(
-                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | {clob_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, slot.worker.strategy_name, result.filled_usdc, result.attempts
                     )).await;
                 }
@@ -505,6 +572,7 @@ impl Driver<'_> {
         &'b self,
         slot: &'b mut AssetSlot,
         actions: Vec<Action>,
+        feed: Feed,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'b>> {
         Box::pin(async move {
             for action in &actions {
@@ -590,9 +658,9 @@ impl Driver<'_> {
                         )).await;
                     }
                     _ => {
-                        if let Some(followup) = self.execute(slot, action).await {
+                        if let Some(followup) = self.execute(slot, action, feed).await {
                             let more = slot.worker.step(followup);
-                            self.process_actions(slot, more).await;
+                            self.process_actions(slot, more, feed).await;
                         }
                     }
                 }
@@ -684,8 +752,12 @@ async fn main() -> Result<()> {
 
     // binance/poly channels are shared across assets, each tick tagged with its asset
     // name — tokio::select! can't cleanly select over a dynamic set.
-    let (binance_tx, mut binance_rx) = mpsc::unbounded_channel::<(String, BinanceTick)>();
-    let (poly_tx, mut poly_rx) = mpsc::unbounded_channel::<(String, PolyTick)>();
+    // Third element: the tick's own exchange timestamp (seconds since epoch,
+    // from Polymarket CLOB's/Binance's own event time), when the source
+    // provided one — `None` on the direct-WS (non-NATS) path, which has no
+    // price_feed hop to have captured it.
+    let (binance_tx, mut binance_rx) = mpsc::unbounded_channel::<(String, BinanceTick, Option<f64>)>();
+    let (poly_tx, mut poly_rx) = mpsc::unbounded_channel::<(String, PolyTick, Option<f64>)>();
     // (asset, strategy, won) handoff from background Gamma-resolution watchers
     // (spawned per closed trade) back into the single-threaded step() loop.
     let (api_result_tx, mut api_result_rx) = mpsc::unbounded_channel::<(String, &'static str, bool)>();
@@ -723,7 +795,7 @@ async fn main() -> Result<()> {
                 let a = asset.clone();
                 tokio::spawn(async move {
                     while let Some(tick) = raw_rx.recv().await {
-                        if out.send((a.clone(), tick)).is_err() {
+                        if out.send((a.clone(), tick, None)).is_err() {
                             return;
                         }
                     }
@@ -752,6 +824,8 @@ async fn main() -> Result<()> {
                 last_poly_up: 0.0,
                 last_poly_dn: 0.0,
                 poly_sub: None,
+                last_binance_server_ts: None,
+                last_poly_server_ts: None,
             });
         }
     }
@@ -780,7 +854,8 @@ async fn main() -> Result<()> {
                         if n == 1 {
                             println!("[NATS] first binance tick for {a}: price={:.4}", tick.price);
                         }
-                        if out.send((a.clone(), tick)).is_err() {
+                        let server_ts = extract_server_ts(&msg.payload);
+                        if out.send((a.clone(), tick, server_ts)).is_err() {
                             return;
                         }
                     }
@@ -799,7 +874,8 @@ async fn main() -> Result<()> {
                         if n == 1 {
                             println!("[NATS] first poly tick for {a}: up={:.4} dn={:.4}", tick.up, tick.dn);
                         }
-                        if out.send((a.clone(), tick)).is_err() {
+                        let server_ts = extract_server_ts(&msg.payload);
+                        if out.send((a.clone(), tick, server_ts)).is_err() {
                             return;
                         }
                     }
@@ -853,9 +929,10 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
-            Some((asset, tick)) = binance_rx.recv() => {
+            Some((asset, tick, server_ts)) = binance_rx.recv() => {
                 for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
                     slot.last_binance = tick.price;
+                    slot.last_binance_server_ts = server_ts;
                     // `Worker`'s own state machine already can't fire a second
                     // entry within one cycle (on_binance only acts from
                     // Watching, and entering leaves Watching until the next
@@ -865,18 +942,19 @@ async fn main() -> Result<()> {
                     // written to close.
                     if slot.current_slug.is_some() && slot.cycle_trades < args.max_trades {
                         let actions = slot.worker.step(Event::BinanceTick(tick));
-                        driver.process_actions(slot, actions).await;
+                        driver.process_actions(slot, actions, Feed::Binance).await;
                     }
                 }
             }
 
-            Some((asset, tick)) = poly_rx.recv() => {
+            Some((asset, tick, server_ts)) = poly_rx.recv() => {
                 for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
                     slot.last_poly_up = tick.up;
                     slot.last_poly_dn = tick.dn;
+                    slot.last_poly_server_ts = server_ts;
                     if slot.current_slug.is_some() {
                         let actions = slot.worker.step(Event::PolyTick(tick));
-                        driver.process_actions(slot, actions).await;
+                        driver.process_actions(slot, actions, Feed::Clob).await;
                     }
                 }
             }
@@ -899,7 +977,9 @@ async fn main() -> Result<()> {
                         let asset = slot.worker.asset.clone();
                         if slot.current_slug.is_some() {
                             let actions = slot.worker.step(Event::CycleClose);
-                            driver.process_actions(slot, actions).await;
+                            // CycleClose never produces PlaceBuy/ClosePosition, so the
+                            // feed tag is unused here — Clob is an arbitrary default.
+                            driver.process_actions(slot, actions, Feed::Clob).await;
                         }
                         if slot.last_binance <= 0.0 {
                             slot.current_slug = None;
@@ -926,7 +1006,7 @@ async fn main() -> Result<()> {
                                     let a = asset.clone();
                                     tokio::spawn(async move {
                                         while let Some(tick) = raw_rx.recv().await {
-                                            if out.send((a.clone(), tick)).is_err() {
+                                            if out.send((a.clone(), tick, None)).is_err() {
                                                 return;
                                             }
                                         }
@@ -938,7 +1018,8 @@ async fn main() -> Result<()> {
                                 };
                                 println!("[live] new cycle {asset} ({}) slug={slug} open_binance={}", slot.worker.strategy_name, slot.last_binance);
                                 let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone() });
-                                driver.process_actions(slot, actions).await;
+                                // CycleOpen never produces PlaceBuy/ClosePosition either — see note above.
+                                driver.process_actions(slot, actions, Feed::Clob).await;
                                 slot.current_slug = Some(slug);
                             }
                             Err(e) => eprintln!("[live] meta fetch failed for {asset} {slug}: {e:#}"),
@@ -1031,7 +1112,8 @@ async fn main() -> Result<()> {
             Some((asset, strategy, won)) = api_result_rx.recv() => {
                 if let Some(slot) = assets.iter_mut().find(|s| s.worker.asset == asset && s.worker.strategy_name == strategy) {
                     let actions = slot.worker.step(Event::ApiResult { won });
-                    driver.process_actions(slot, actions).await;
+                    // ApiResult never produces PlaceBuy/ClosePosition either — see note above.
+                    driver.process_actions(slot, actions, Feed::Clob).await;
                 }
             }
 
@@ -1111,5 +1193,34 @@ mod csv_header_tests {
             assert_eq!(line.matches(',').count(), 14, "every row must have 15 fields: {line}");
         }
         std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod exchange_latency_tests {
+    use super::*;
+
+    #[test]
+    fn extract_server_ts_reads_the_field_when_present() {
+        let payload = br#"{"ts":1751234567.123,"up":0.5,"dn":0.5,"server_ts":1751234567.010}"#;
+        assert_eq!(extract_server_ts(payload), Some(1751234567.010));
+    }
+
+    #[test]
+    fn extract_server_ts_is_none_on_null_or_missing() {
+        let with_null = br#"{"ts":1.0,"price":1.0,"server_ts":null}"#;
+        assert_eq!(extract_server_ts(with_null), None);
+
+        // Older payloads (pre this feature, or a price_feed that hasn't been
+        // redeployed yet) simply lack the field — must not error out.
+        let without_field = br#"{"ts":1.0,"price":1.0}"#;
+        assert_eq!(extract_server_ts(without_field), None);
+    }
+
+    #[test]
+    fn fmt_latency_formats_some_and_none() {
+        assert_eq!(fmt_latency(Some(12.4)), "12ms");
+        assert_eq!(fmt_latency(Some(-3.0)), "-3ms");
+        assert_eq!(fmt_latency(None), "n/a");
     }
 }

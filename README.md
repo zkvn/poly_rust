@@ -452,9 +452,33 @@ code). Summary:
   process-latency numbers read tighter and lower than entry/stop-loss ones. `CloseResult` now
   carries an `attempts: u32` field (mirroring `TradeResult.attempts`, which already existed but was
   never logged), and both the console `[ORDER]` line and the Telegram "Order placed" /
-  "... order executed" messages in `bin/live.rs` now print `attempts=N` alongside
-  `signal_latency`/`process_latency`, so a slow reading is explainable at a glance instead of
-  looking like unexplained network variance.
+  "... order executed" messages in `bin/live.rs` now print `n_attempts=N` (renamed from the
+  ambiguous `attempts=N` — see next bullet) alongside `process_latency`, so a slow reading is
+  explainable at a glance instead of looking like unexplained network variance.
+- **`signal_latency_ms` replaced by real per-feed exchange latency (`clob_latency`/
+  `binance_latency`), and `attempts` renamed to `n_attempts` (2026-07-06)** — the previous
+  `signal_latency_ms` (`received_ts − signal_ts`, where `signal_ts` was `tick.ts`, price_feed's
+  *local* receipt timestamp) never measured real exchange network latency: since `poly-collector`
+  and `trader-live.service` run on the same Oracle box against the same loopback NATS broker, that
+  number only ever reflected the (genuinely near-zero, 0-1ms) intra-box NATS+processing hop —
+  reading as "0ms" isn't a bug, it's just not what the name implied. Real exchange latency (CLOB
+  server timestamp → price_feed receipt) was already computed for the parquet record
+  (`latency_ms`, from `server_ts_ms`/`received_at_ms`) but never published to the trader. Fix:
+  `poly_nats_payload`/`binance_nats_payload` (`price_feed/src/collect.rs`) now also publish
+  `server_ts` (the exchange's own event timestamp, `null` when unavailable, e.g. Binance's `E`
+  field missing). `bin/live.rs` extracts it alongside the typed tick (`extract_server_ts` — kept
+  separate from `PolyTick`/`BinanceTick` themselves so this stays a `bin/live.rs`-only change, not
+  a new field rippling into the ~80 existing tick-construction sites across
+  `worker.rs`/`strategies.rs`/`machine.rs`/`backtest.rs`/`gates.rs`/tests), caches the latest value
+  per feed on `AssetSlot`, and computes latency at order time as `received_ts − server_ts`. Exits
+  print a single `clob_latency=` (exits are always Poly/CLOB-triggered — only `on_poly` ever
+  produces a `ClosePosition`, confirmed by grep). Entries print whichever of `clob_latency=`/
+  `binance_latency=` matches the feed that actually fired `try_enter` (`Worker::try_enter` runs
+  from both `on_binance` and `on_poly` — a `Feed` tag threaded through `process_actions`/`execute`
+  from each `tokio::select!` branch says which, so this is exact per-order, not a guess). Also
+  renamed the entry/exit order logs' `attempts=1` to `n_attempts=1` — the counter was already
+  correctly 1-indexed (`attempts=1` = succeeded on the first try, zero retries), just an
+  ambiguous-looking label.
 
 ---
 

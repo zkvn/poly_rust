@@ -43,15 +43,40 @@ fn current_slot_for(interval: u64) -> u64 {
     (now_secs() / interval) * interval
 }
 
+/// Formats an optional exchange-side event timestamp (ms since epoch, `<= 0`
+/// meaning the exchange didn't supply one — the existing convention this
+/// file already uses for `server_ts_ms`) as a NATS JSON field value: either
+/// the timestamp in seconds (matching `ts`'s own units/precision) or `null`.
+fn server_ts_json(server_ts_ms: i64) -> String {
+    if server_ts_ms > 0 {
+        format!("{:.3}", server_ts_ms as f64 / 1000.0)
+    } else {
+        "null".to_string()
+    }
+}
+
 /// Build the `price.binance.*` NATS payload. `ts` is the sample's own real
 /// receive timestamp (`received_at_ms`, ms since epoch) — deliberately *not*
 /// the 250ms sampler tick's fire time, which is quantized to a 0.25s grid for
 /// parquet bucketing and can round up to 125ms into the future of when the
 /// price was actually received, producing a negative signal_latency downstream
-/// in trader/src/bin/live.rs.
-fn binance_nats_payload(received_at_ms: i64, price: f64) -> String {
+/// in trader/src/bin/live.rs. `server_ts` is Binance's own event timestamp
+/// (the `E` field) — lets the trader compute real exchange network latency
+/// (received_at_ms - server_ts) instead of just the local NATS+processing hop.
+fn binance_nats_payload(received_at_ms: i64, price: f64, server_ts_ms: i64) -> String {
     let ts = received_at_ms as f64 / 1000.0;
-    format!(r#"{{"ts":{ts:.3},"price":{price:.6}}}"#)
+    let server_ts = server_ts_json(server_ts_ms);
+    format!(r#"{{"ts":{ts:.3},"price":{price:.6},"server_ts":{server_ts}}}"#)
+}
+
+/// Build the `price.poly.*` NATS payload. `server_ts` is the CLOB's own event
+/// timestamp for this bba/price-change update — see `binance_nats_payload`'s
+/// doc comment for why this (not `ts`) is what measures real exchange latency.
+fn poly_nats_payload(received_at_ms: i64, up_mid: f64, server_ts_ms: i64) -> String {
+    let ts = received_at_ms as f64 / 1000.0;
+    let dn = 1.0 - up_mid;
+    let server_ts = server_ts_json(server_ts_ms);
+    format!(r#"{{"ts":{ts:.3},"up":{up_mid:.6},"dn":{dn:.6},"server_ts":{server_ts}}}"#)
 }
 
 fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
@@ -1039,11 +1064,7 @@ fn spawn_bba_task(
                                     if let Some(ref nc) = nats {
                                         if idx < assets.len() {
                                             let up_mid = (bid + ask) / 2.0;
-                                            let ts = received_at_ms as f64 / 1000.0;
-                                            let payload = format!(
-                                                r#"{{"ts":{ts:.3},"up":{up_mid:.6},"dn":{:.6}}}"#,
-                                                1.0 - up_mid
-                                            );
+                                            let payload = poly_nats_payload(received_at_ms, up_mid, server_ts_ms);
                                             let subject = format!("price.poly.{}", assets[idx]);
                                             let _ = nc.publish(subject, payload.into_bytes().into()).await;
                                         }
@@ -1283,7 +1304,7 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
                     if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
                     if let Some(ref nc) = nats {
-                        let payload = binance_nats_payload(sample.received_at_ms, sample.price);
+                        let payload = binance_nats_payload(sample.received_at_ms, sample.price, sample.server_ts_ms);
                         let _ = nc.publish(format!("price.binance.{}", assets[i]), payload.into_bytes().into()).await;
                     }
                     let slug = slugs.get(i).cloned().unwrap_or_default();
@@ -1354,13 +1375,35 @@ mod tests {
     fn binance_nats_payload_uses_exact_received_at_ms_unrounded() {
         // 1751234567.123s, deliberately not aligned to any 0.25s/0.2s grid point.
         let received_at_ms: i64 = 1_751_234_567_123;
-        let payload = binance_nats_payload(received_at_ms, 42.5);
-        assert_eq!(payload, r#"{"ts":1751234567.123,"price":42.500000}"#);
+        let payload = binance_nats_payload(received_at_ms, 42.5, 1_751_234_567_010);
+        assert_eq!(payload, r#"{"ts":1751234567.123,"price":42.500000,"server_ts":1751234567.010}"#);
     }
 
     #[test]
     fn binance_nats_payload_formats_price_with_six_decimals() {
-        let payload = binance_nats_payload(1_000, 0.1);
-        assert_eq!(payload, r#"{"ts":1.000,"price":0.100000}"#);
+        let payload = binance_nats_payload(1_000, 0.1, 900);
+        assert_eq!(payload, r#"{"ts":1.000,"price":0.100000,"server_ts":0.900}"#);
+    }
+
+    /// Binance's `E` field defaults to 0 when missing from the WS message
+    /// (see `server_ts_ms = v["E"].as_i64().unwrap_or(0)` above) — the NATS
+    /// payload must publish `null`, not a bogus `0.000` timestamp the trader
+    /// would otherwise treat as a real (and wildly wrong) exchange latency.
+    #[test]
+    fn binance_nats_payload_omits_server_ts_when_zero() {
+        let payload = binance_nats_payload(1_000, 0.1, 0);
+        assert_eq!(payload, r#"{"ts":1.000,"price":0.100000,"server_ts":null}"#);
+    }
+
+    #[test]
+    fn poly_nats_payload_includes_server_ts_and_complement_dn() {
+        let payload = poly_nats_payload(1_751_234_567_123, 0.65, 1_751_234_567_010);
+        assert_eq!(payload, r#"{"ts":1751234567.123,"up":0.650000,"dn":0.350000,"server_ts":1751234567.010}"#);
+    }
+
+    #[test]
+    fn poly_nats_payload_omits_server_ts_when_unavailable() {
+        let payload = poly_nats_payload(1_000, 0.5, -1);
+        assert_eq!(payload, r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"server_ts":null}"#);
     }
 }
