@@ -429,6 +429,32 @@ code). Summary:
   `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md` for the incident that closed this gap
   (previously flagged here as the system's biggest latency blind spot; a dedicated always-on
   latency-probe service remains the next step if per-trade samples prove too sparse).
+- **`signal_latency_ms` could go negative for Binance-triggered entries (fixed 2026-07-06)** —
+  the NATS payload published on `price.binance.*` (`price_feed/src/collect.rs`) was reusing the
+  250ms sampler ticker's own quantized fire time (`(now_secs_f64()*4.0).round()/4.0`, snapped to a
+  0.25s grid for parquet bucketing) as the tick's `ts`, instead of the sample's real receive
+  timestamp (`received_at_ms`, already tracked per-sample for `latency_ms` in the parquet record).
+  Rounding can push that quantized `ts` up to 125ms into the *future* of when the price was
+  actually received, so `signal_latency_ms = (received_ts − signal_ts) * 1000` in
+  `bin/live.rs::execute()` could come out negative even though nothing actually happened before
+  its own trigger. `PolyTick.ts` never had this bug — `spawn_bba_task` already publishes the exact
+  `received_at_ms`. Fix: `binance_nats_payload()` (`price_feed/src/collect.rs`) now publishes
+  `sample.received_at_ms` unrounded; the quantized `ts` is still used for parquet-row bucketing
+  only, which is unaffected. Regression-guarded by
+  `collect::tests::binance_nats_payload_uses_exact_received_at_ms_unrounded`.
+- **`process_latency_ms` swings (e.g. 314ms vs. 1716ms) are retry sleeps, not network jitter
+  (2026-07-06)** — `LiveExecutionEngine::place` (entries) and `::close_position` (stop-loss exits)
+  in `trader/src/execution.rs` each retry internally on failure, sleeping a full second between
+  attempts (`tokio::time::sleep(Duration::from_secs(1))`). A `process_latency_ms` reading that
+  swallowed even one retry is therefore `(attempts − 1) × ~1s sleep + actual CLOB round-trip time`,
+  not raw network latency. `close_position_at_price` (used specifically for take-profit exits) is
+  the one exception — single-attempt by design, no retry sleep — which is why take-profit exit
+  process-latency numbers read tighter and lower than entry/stop-loss ones. `CloseResult` now
+  carries an `attempts: u32` field (mirroring `TradeResult.attempts`, which already existed but was
+  never logged), and both the console `[ORDER]` line and the Telegram "Order placed" /
+  "... order executed" messages in `bin/live.rs` now print `attempts=N` alongside
+  `signal_latency`/`process_latency`, so a slow reading is explainable at a glance instead of
+  looking like unexplained network variance.
 
 ---
 

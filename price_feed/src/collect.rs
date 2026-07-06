@@ -43,6 +43,17 @@ fn current_slot_for(interval: u64) -> u64 {
     (now_secs() / interval) * interval
 }
 
+/// Build the `price.binance.*` NATS payload. `ts` is the sample's own real
+/// receive timestamp (`received_at_ms`, ms since epoch) — deliberately *not*
+/// the 250ms sampler tick's fire time, which is quantized to a 0.25s grid for
+/// parquet bucketing and can round up to 125ms into the future of when the
+/// price was actually received, producing a negative signal_latency downstream
+/// in trader/src/bin/live.rs.
+fn binance_nats_payload(received_at_ms: i64, price: f64) -> String {
+    let ts = received_at_ms as f64 / 1000.0;
+    format!(r#"{{"ts":{ts:.3},"price":{price:.6}}}"#)
+}
+
 fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
     format!("{}-updown-{}-{}", asset.to_lowercase(), suffix, slot)
 }
@@ -1272,7 +1283,7 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
                     if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
                     if let Some(ref nc) = nats {
-                        let payload = format!(r#"{{"ts":{ts:.3},"price":{:.6}}}"#, sample.price);
+                        let payload = binance_nats_payload(sample.received_at_ms, sample.price);
                         let _ = nc.publish(format!("price.binance.{}", assets[i]), payload.into_bytes().into()).await;
                     }
                     let slug = slugs.get(i).cloned().unwrap_or_default();
@@ -1328,5 +1339,28 @@ fn flush_all(
         if let Err(e) = w.finish() {
             eprintln!("close error: {e:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard for the negative-signal_latency bug: the published
+    /// `ts` must be the sample's exact real receive time, not a value snapped
+    /// to a coarser grid (which is what the old `(now_secs_f64()*4.0).round()/4.0`
+    /// ticker-fire timestamp did, up to 125ms off in either direction).
+    #[test]
+    fn binance_nats_payload_uses_exact_received_at_ms_unrounded() {
+        // 1751234567.123s, deliberately not aligned to any 0.25s/0.2s grid point.
+        let received_at_ms: i64 = 1_751_234_567_123;
+        let payload = binance_nats_payload(received_at_ms, 42.5);
+        assert_eq!(payload, r#"{"ts":1751234567.123,"price":42.500000}"#);
+    }
+
+    #[test]
+    fn binance_nats_payload_formats_price_with_six_decimals() {
+        let payload = binance_nats_payload(1_000, 0.1);
+        assert_eq!(payload, r#"{"ts":1.000,"price":0.100000}"#);
     }
 }
