@@ -319,8 +319,9 @@ struct Driver<'a> {
 impl Driver<'_> {
     async fn notify(&self, text: &str) {
         if let Some(bot) = &self.telegram {
-            if let Err(e) = bot.send(text).await {
-                eprintln!("[telegram] send error: {e:#}");
+            match bot.send(text).await {
+                Ok(_) => println!("[telegram] sent: {}", text.lines().next().unwrap_or("")),
+                Err(e) => eprintln!("[telegram] send error: {e:#}"),
             }
         }
     }
