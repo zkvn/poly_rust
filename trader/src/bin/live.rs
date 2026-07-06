@@ -54,6 +54,8 @@ const DEFAULT_FUND_ADDRESS: &str = "0x9FC2A777C26CCA2C218D8E7BBC340D14058CC13A";
 // for 301), which turns into a 405 on the real endpoint. Use the real host
 // directly — same one bot/config.py's CLOB_HOST has always pointed at.
 const CLOB_HOST: &str = "https://clob.polymarket.com";
+// Matches the vendored SDK's own `Client<Unauthenticated>::default()` endpoint.
+const UNWIND_WS_HOST: &str = "wss://ws-subscriptions-clob.polymarket.com";
 
 type Signer = alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>;
 
@@ -140,13 +142,14 @@ fn spawn_resolution_watcher(
 }
 
 const CSV_HEADER: &str =
-    "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error";
+    "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error,\
+     entry_signal_latency_ms,entry_process_latency_ms,exit_signal_latency_ms,exit_process_latency_ms";
 
-/// Writes the CSV header for a new file, or heals a stale pre-`exit_attempts`/
-/// `exit_last_error` header (9 columns, from before those fields existed) on an
-/// existing file into the current 11-column schema — padding any legacy 9-field
-/// data rows with two empty trailing fields so every row's column count matches
-/// the header.
+/// Writes the CSV header for a new file, or heals a stale header from an
+/// earlier schema generation (9 columns, pre-`exit_attempts`/`exit_last_error`;
+/// 11 columns, pre-latency) on an existing file into the current schema —
+/// padding any legacy data row with however many empty trailing fields its
+/// generation is short, so every row's column count matches the header.
 ///
 /// Without this, `csv.DictReader`-based tooling (`trade_reconcile.py`) doesn't
 /// error on the mismatch — it silently drops the extra fields into an unnamed
@@ -169,19 +172,19 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
         return Ok(()); // already current, or not a header we recognize — leave untouched
     }
 
+    let target_commas = CSV_HEADER.matches(',').count();
     let mut healed = String::new();
     healed.push_str(CSV_HEADER);
     healed.push('\n');
     for line in lines {
         let line = line?;
-        // Current schema has 10 commas (11 fields); pad legacy 8-comma (9-field) rows.
-        if line.matches(',').count() == 8 {
-            healed.push_str(&line);
-            healed.push_str(",,\n");
-        } else {
-            healed.push_str(&line);
-            healed.push('\n');
-        }
+        // Pad any row short of the current field count, regardless of which
+        // older generation it came from — a row already at (or past) the
+        // target width is left untouched.
+        let short_by = target_commas.saturating_sub(line.matches(',').count());
+        healed.push_str(&line);
+        healed.push_str(&",".repeat(short_by));
+        healed.push('\n');
     }
     std::fs::write(path, healed)?;
     Ok(())
@@ -197,10 +200,12 @@ fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
     use std::io::Write as _;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     let exit_last_error = rec.exit_last_error.as_deref().map(csv_sanitize).unwrap_or_default();
-    writeln!(f, "{},{},{},{},{},{},{},{},{},{},{}",
+    writeln!(f, "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         trader::marketdata::now_secs_f64(), rec.slug, rec.strategy, rec.side.as_str(),
         rec.entry_ts, rec.token_price, rec.exit_price, rec.outcome.as_str(), rec.pnl,
-        rec.exit_attempts, exit_last_error)?;
+        rec.exit_attempts, exit_last_error,
+        rec.entry_signal_latency_ms, rec.entry_process_latency_ms,
+        rec.exit_signal_latency_ms, rec.exit_process_latency_ms)?;
     Ok(())
 }
 
@@ -377,11 +382,15 @@ impl Driver<'_> {
     /// `Event` (if any) to feed back into `worker.step`.
     async fn execute(&self, slot: &mut AssetSlot, action: &Action) -> Option<Event> {
         match action {
-            Action::PlaceBuy { side, price, size_usdc } => {
+            Action::PlaceBuy { side, price, size_usdc, signal_ts } => {
                 let token_id = if *side == Side::Up { slot.up_id } else { slot.dn_id };
                 slot.current_token_id = Some(token_id);
+                let received_ts = now_secs_f64();
                 let result = self.engine.place(token_id, *price, *size_usdc, slot.max_buy_price).await;
-                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?}",
+                let confirmed_ts = now_secs_f64();
+                let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
+                let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
+                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0})",
                     slot.worker.asset, result.placed, result.filled_shares, result.cost, result.error);
 
                 let dt = hkt_now().format("%H:%M:%S");
@@ -389,10 +398,10 @@ impl Driver<'_> {
                 let delta_pct = slot.worker.delta_pct() * 100.0;
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}%",
+                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name, result.cost
                     )).await;
-                    Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost })
+                    Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost, signal_latency_ms, process_latency_ms })
                 } else {
                     self.notify(&format!(
                         "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | attempts={} | error={}",
@@ -405,12 +414,20 @@ impl Driver<'_> {
             }
             Action::PlaceLimitSell { shares, price } => {
                 let Some(token_id) = slot.current_token_id else { return None };
+                let received_ts = now_secs_f64();
                 let r = self.engine.place_limit_sell(token_id, *shares, *price).await;
+                let confirmed_ts = now_secs_f64();
                 println!("[ORDER] {} LIMIT SELL {shares:.4} @ {price:.4} -> status={:?} order_id={:?} err={:?}",
                     slot.worker.asset, r.status, r.order_id, r.error);
-                Some(Event::LimitSellPlaced { order_id: r.order_id, status: r.status, error: r.error })
+                // No external signal_ts for this action (it's an internal
+                // follow-up to the entry fill, not driven by a market tick) —
+                // only the process leg is meaningful here.
+                Some(Event::LimitSellPlaced {
+                    order_id: r.order_id, status: r.status, error: r.error,
+                    signal_latency_ms: 0.0, process_latency_ms: (confirmed_ts - received_ts) * 1000.0,
+                })
             }
-            Action::ClosePosition { shares, reason } => {
+            Action::ClosePosition { shares, reason, limit_price, signal_ts } => {
                 let Some(token_id) = slot.current_token_id else { return None };
                 if matches!(reason, CloseReason::StopLoss) {
                     println!("[SL] {} stop-loss triggered — closing {shares:.4} shares (sl_pnl floor crossed; up to 5 retries)", slot.worker.asset);
@@ -436,8 +453,19 @@ impl Driver<'_> {
                         )).await;
                     }
                 }
-                let result = self.engine.close_position(token_id, *shares).await;
-                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?}",
+                let received_ts = now_secs_f64();
+                // Take-profit closes are bounded at limit_price (== the position's
+                // own tp_price — no separate config, see
+                // trader/doc/incident_sol_unwind_but_loss_2026-07-06.md); a
+                // stop-loss has no floor and must close regardless of price.
+                let result = match limit_price {
+                    Some(price) => self.engine.close_position_at_price(token_id, *shares, *price).await,
+                    None => self.engine.close_position(token_id, *shares).await,
+                };
+                let confirmed_ts = now_secs_f64();
+                let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
+                let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
+                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} (signal_ms={signal_latency_ms:.0} process_ms={process_latency_ms:.0})",
                     slot.worker.asset, result.status, result.shares_sold, result.filled_usdc, result.error);
                 let sold = result.shares_sold;
                 let exit_price = if sold > 0.0 { result.filled_usdc / sold } else { 0.0 };
@@ -446,13 +474,13 @@ impl Driver<'_> {
                     let dt = hkt_now().format("%H:%M:%S");
                     let label = if matches!(reason, CloseReason::StopLoss) { "STOP LOSS" } else { "TAKE PROFIT" };
                     self.notify(&format!(
-                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4}",
+                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | signal_latency={signal_latency_ms:.0}ms | process_latency={process_latency_ms:.0}ms",
                         slot.worker.asset, slot.worker.strategy_name, result.filled_usdc
                     )).await;
                 }
                 let event = match (matched, reason) {
-                    (true, CloseReason::TakeProfit) => Event::UnwindFilled { sold_shares: sold, exit_price },
-                    (true, CloseReason::StopLoss) => Event::StopSellFilled { sold_shares: sold, exit_price },
+                    (true, CloseReason::TakeProfit) => Event::UnwindFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
+                    (true, CloseReason::StopLoss) => Event::StopSellFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
                     (false, CloseReason::TakeProfit) => Event::UnwindFailed { error: result.error },
                     (false, CloseReason::StopLoss) => Event::StopSellFailed { error: result.error },
                 };
@@ -787,6 +815,20 @@ async fn main() -> Result<()> {
     };
     let engine =
         LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, live_config).await?;
+
+    // Real-time USER-channel fill logger (diagnostic sidecar — doesn't feed
+    // back into trading decisions). Subscribes to all markets for this
+    // account (empty `markets` list — see unwind.rs's `run()` doc comment).
+    {
+        let watcher = trader::unwind::UnwindWatcher::new();
+        let credentials = engine.credentials();
+        tokio::spawn(async move {
+            if let Err(e) = watcher.run(UNWIND_WS_HOST, credentials, funder, vec![]).await {
+                eprintln!("[unwind] watcher exited: {e:#}");
+            }
+        });
+    }
+
     let driver = Driver { engine: &engine, telegram: telegram_send.clone(), http: http.clone(), api_result_tx: api_result_tx.clone() };
     let asset_strategy_summary = assets.iter()
         .map(|s| format!("{}:{}", s.worker.asset, s.worker.strategy_name))
@@ -1035,17 +1077,20 @@ mod csv_header_tests {
     fn leaves_current_header_untouched() {
         let path = scratch_path("current");
         let path_str = path.to_str().unwrap();
-        std::fs::write(&path, format!("{CSV_HEADER}\n1.0,slug,strategy,UP,1.0,0.5,1.0,WIN,0.1,0,\n")).unwrap();
+        let row = "1.0,slug,strategy,UP,1.0,0.5,1.0,WIN,0.1,0,,0,0,0,0\n";
+        std::fs::write(&path, format!("{CSV_HEADER}\n{row}")).unwrap();
         append_csv_header_if_new(path_str).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(contents, format!("{CSV_HEADER}\n1.0,slug,strategy,UP,1.0,0.5,1.0,WIN,0.1,0,\n"));
+        assert_eq!(contents, format!("{CSV_HEADER}\n{row}"));
         std::fs::remove_file(&path).unwrap();
     }
 
     /// Reproduces the stale-header files found across `live_logs/` on
     /// 2026-07-03 (trader/doc/incident_doge_2026-07-03.md §3): a header written
     /// before `exit_attempts`/`exit_last_error` existed, with a mix of legacy
-    /// 9-field rows and current 11-field rows already appended underneath it.
+    /// 9-field rows and 11-field rows (pre-latency-columns, itself now a second,
+    /// more-recent legacy generation) already appended underneath it. Both
+    /// generations must be padded up to the current 15-field schema.
     #[test]
     fn heals_stale_header_and_pads_legacy_rows() {
         let path = scratch_path("stale");
@@ -1060,10 +1105,10 @@ mod csv_header_tests {
         let healed = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = healed.lines().collect();
         assert_eq!(lines[0], CSV_HEADER);
-        assert_eq!(lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,", "legacy row padded to 11 fields");
-        assert_eq!(lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price", "current-schema row untouched");
+        assert_eq!(lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,,,,,", "9-field legacy row padded to 15 fields");
+        assert_eq!(lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price,,,,", "11-field legacy row padded to 15 fields");
         for line in &lines {
-            assert_eq!(line.matches(',').count(), 10, "every row must have 11 fields: {line}");
+            assert_eq!(line.matches(',').count(), 14, "every row must have 15 fields: {line}");
         }
         std::fs::remove_file(&path).unwrap();
     }

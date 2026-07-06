@@ -335,6 +335,10 @@ impl Machine {
             pnl,
             exit_attempts: 0,
             exit_last_error: None,
+            // Backtest fills are instantaneous (no real order round-trip) —
+            // latency is only meaningful for the live driver (worker.rs).
+            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
+            exit_signal_latency_ms: 0.0, exit_process_latency_ms: 0.0,
         };
         self.state = TradeState::Watching;
         Some(rec)

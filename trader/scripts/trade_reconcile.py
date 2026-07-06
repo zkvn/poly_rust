@@ -6,7 +6,13 @@ TradeRecord schema (trader/src/types.rs; header is self-healed on read by
 `live.rs::append_csv_header_if_new` if an older CSV predates exit_attempts/
 exit_last_error — see trader/doc/incident_doge_2026-07-03.md):
 
-    logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error
+    logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error,
+    entry_signal_latency_ms,entry_process_latency_ms,exit_signal_latency_ms,exit_process_latency_ms
+
+Latency columns (added 2026-07-06, trader/doc/incident_sol_unwind_but_loss_2026-07-06.md):
+signal latency is tick-timestamp -> driver-receipt, process latency is
+driver-receipt -> order-confirmed; exit_* is 0 for a WIN/LOSS resolved by
+natural market close (no exit order was ever placed).
 
 logged_at/entry_ts are Unix epoch seconds (float, UTC) — window filtering is
 plain arithmetic, no HKT string parsing needed. asset is derived from the
@@ -53,6 +59,8 @@ HKT = timezone(timedelta(hours=8))
 CSV_COLUMNS = [
     "logged_at", "slug", "strategy", "side", "entry_ts", "token_price",
     "exit_price", "outcome", "pnl", "exit_attempts", "exit_last_error",
+    "entry_signal_latency_ms", "entry_process_latency_ms",
+    "exit_signal_latency_ms", "exit_process_latency_ms",
 ]
 
 SLUG_ASSET_PREFIX = {
@@ -327,11 +335,16 @@ def compute_performance_stats(rows: list) -> dict:
 
     trade_history = []
     for r in rows:
+        entry_latency_ms = _safe_float(r.get("entry_signal_latency_ms")) + _safe_float(r.get("entry_process_latency_ms"))
+        exit_latency_ms = _safe_float(r.get("exit_signal_latency_ms")) + _safe_float(r.get("exit_process_latency_ms"))
         trade_history.append({
             "time": datetime.fromtimestamp(_safe_float(r["logged_at"]), tz=HKT).strftime("%Y-%m-%d %H:%M:%S"),
             "asset": r["asset"], "strategy": r["strategy"], "side": r["side"],
             "outcome": r["outcome"], "token_price": _safe_float(r.get("token_price")),
             "exit_price": _safe_float(r.get("exit_price")), "pnl": _safe_float(r.get("pnl")),
+            # Combined signal+process latency per leg (ms); full breakdown lives
+            # in the raw CSV (entry_signal_latency_ms etc.) for deep-dives.
+            "entry_latency_ms": entry_latency_ms, "exit_latency_ms": exit_latency_ms,
         })
     trade_history.sort(key=lambda t: t["time"])
 
@@ -611,16 +624,17 @@ def write_markdown_summary(
     if trade_history:
         lines.extend([
             "### Trade History", "",
-            "| Time | Asset | Strategy | Side | Outcome | Entry Price | Exit Price | PnL |",
-            "|---|---|---|---|---|---|---|---|",
+            "| Time | Asset | Strategy | Side | Outcome | Entry Price | Exit Price | PnL | Entry Latency (ms) | Exit Latency (ms) |",
+            "|---|---|---|---|---|---|---|---|---|---|",
         ])
         for t in trade_history:
             lines.append(
                 f"| {t['time']} | {t['asset']} | {t['strategy']} | {t['side']} | {t['outcome']} | "
-                f"{t['token_price']:.4f} | {t['exit_price']:.4f} | {t['pnl']:+.4f} |"
+                f"{t['token_price']:.4f} | {t['exit_price']:.4f} | {t['pnl']:+.4f} | "
+                f"{t['entry_latency_ms']:.0f} | {t['exit_latency_ms']:.0f} |"
             )
         total_pnl = sum(t["pnl"] for t in trade_history)
-        lines.append(f"| **Total** | | | | | | | **{total_pnl:+.4f}** |")
+        lines.append(f"| **Total** | | | | | | | **{total_pnl:+.4f}** | | |")
         lines.append("")
 
     sl_unwind_rows = ps.get("sl_unwind_rows", [])

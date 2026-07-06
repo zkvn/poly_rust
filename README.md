@@ -413,14 +413,22 @@ code). Summary:
   holds at tick time, so anything overwritten between ticks is lost from the *recorded* copy (not
   from what the live trader itself acts on for Poly — only for Binance, and for the parquet
   record generally).
-- **Order placement has zero timing instrumentation** — no code in `trader/src/execution.rs`
-  records how long Polymarket (via the EC2 proxy, `CLOB_PROXY_URL`) takes to confirm an entry BUY,
-  an exit market SELL, or an unwind GTC limit SELL. `trader/src/unwind.rs`'s `UnwindWatcher` — a
-  real-time USER-channel fill listener that would give an accurate, event-driven fill timestamp
-  for the unwind leg — is fully built and tested but never invoked from `live.rs`. This is the
-  system's biggest latency blind spot; the study's §8 has a concrete, ordered plan to close it
-  (enable `tracing`, time the three order calls, wire up `UnwindWatcher`, and only build a
-  dedicated always-on latency-probe service if per-trade samples prove too sparse).
+- **Order placement latency is now instrumented (2026-07-06, closed the gap below)** — every
+  `Action::PlaceBuy`/`Action::ClosePosition` in `bin/live.rs::execute()` now brackets the
+  engine call with wall-clock timestamps and reports **signal latency** (triggering tick's own
+  timestamp → driver receipt) and **process latency** (driver receipt → order confirmed), in ms,
+  on both the "Order placed" and "... order executed" Telegram messages, and as four new
+  `TradeRecord`/CSV columns (`entry_signal_latency_ms`, `entry_process_latency_ms`,
+  `exit_signal_latency_ms`, `exit_process_latency_ms` — 0 for the exit pair when a position
+  resolved by natural market close rather than an early exit order). `trader/src/unwind.rs`'s
+  `UnwindWatcher` is now wired up too (`bin/live.rs::main()`, spawned at startup, subscribed to
+  the USER channel for all markets) as a passive, always-on real-time fill logger — every
+  exchange-reported fill is printed with our own receipt timestamp regardless of whether
+  anything is `watch()`-ing that specific order, giving an independent, event-driven data point
+  to cross-check the request/response timestamps above against. See
+  `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md` for the incident that closed this gap
+  (previously flagged here as the system's biggest latency blind spot; a dedicated always-on
+  latency-probe service remains the next step if per-trade samples prove too sparse).
 
 ---
 
@@ -748,3 +756,99 @@ already-known constraints (`Amount::shares` caps at 2 decimals) missed a *differ
 previously-undocumented constraint on the *entry* side's maker amount — test the two legs of
 an order against the API's actual rules independently, not just the one already bitten by a
 prior incident.
+
+### Take-profit exit had no price floor — an 8¢ slippage turned a 3¢ profit into a loss (2026-07-06, fixed)
+
+A SOL reversal position bought "Up" at 0.90 with a 3¢ take-profit target (`tp_price = 0.93`),
+but the logged exit was `TRADE UNWIND ... entry=0.9000 → exit=0.8200 ... pnl=-$0.1073` — a
+take-profit that lost money, even though the underlying (Binance SOL) moved the *correct*
+direction across the cycle. Full writeup, including the exact `live.log` sequence and pnl
+arithmetic: `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md`.
+
+**Root cause:** entry BUYs have always had a real max-price guard (`gates.rs`'s `MaxBuyPrice`/
+`PriceHighRev` gates, plus a *limit* FAK with `.price()` capped at `max_buy_price` in
+`execution.rs::place`), but the take-profit ("unwind") exit's `close_position()` was a **bare
+market FAK with no price bound at all** — once the take-profit trigger fired, the sell would
+fill at whatever price the book gave it, arbitrarily far below the trigger. In this trade, a
+brief thin-book spike crossed `tp_price`, the close fired correctly, but the FAK needed 3
+internal retries (~3.4s: one for the entry BUY's on-chain settlement lag, two for "no orders
+found to match") before it filled — by which point the spike had reverted and the sell landed
+at 0.82, 11¢ below the 0.93 target.
+
+**Fix:** `execution.rs::close_position_at_price(token_id, shares, min_price)` — a single-attempt
+FAK **with** `.price(min_price)`, used only for take-profit closes, bounded at the position's own
+`tp_price` (no new config — the minimum acceptable sell price *is* the take-profit target).
+Stop-loss closes are unchanged (`close_position()`, still unbounded — a stop-loss must close
+regardless of price). If the bounded attempt can't fill immediately, `worker.rs::on_unwind_failed`
+now re-arms `PriceMonitor { tp_price }` and waits for the next real `PolyTick` to retry, instead
+of the old one-shot `TakeProfitAbandoned` latch — safe now that each attempt is price-bounded
+(can't fill worse than the target) and naturally rate-limited by real ticks rather than an
+internal retry loop (which is what caused a *different* incident's 284-attempts-in-9s hammering,
+`incident_doge_2026-07-03.md`).
+
+**Lesson:** a price guard on one leg of a trade (entry) doesn't imply the mirror-image guard
+exists on the other leg (exit) — check both independently. A dead config key
+(`order_slippage` in `strategy_*.toml`, parsed nowhere in `trader/src`) turned out to be exactly
+this gap, seemingly planned and then never wired up.
+
+**What exactly changed on the "3 internal retries," precisely:** it's not *just* adding a price
+— the retry mechanism itself changed. The old `close_position()` (still used for stop-loss)
+retries internally, in one call, up to 5 times: on `"balance: 0"` (the entry BUY's fill is
+confirmed by the API immediately, but the token isn't actually spendable until the Polygon
+transaction settles on-chain, typically ~1-2s) it sleeps 1s and retries; on `"no orders found to
+match with FAK order"` (a FAK only matches liquidity resting on the book *right now* — a thin
+book like SOL's routinely has brief moments with none) it retries immediately. That internal
+loop, with no price floor, is exactly what produced this incident's 3.4-second, 3-failed-attempt
+sequence ending 11¢ away from target. `close_position_at_price()` has **no internal retry loop
+at all** — one attempt; if it fails, for either reason, it returns `Failed` immediately, and
+`worker.rs::on_unwind_failed` re-arms `PriceMonitor{tp_price}` so the *next real `PolyTick`*
+triggers the next attempt, rather than an internal sleep. One consequence worth flagging
+explicitly: the old settlement-lag retry (`"balance: 0"` → sleep 1s → retry) is gone for
+take-profit closes specifically. If a take-profit fires within ~1-2s of entry (before the BUY
+settles on-chain — exactly this incident's shape), the first bounded attempt will still hit
+`"balance: 0"` and return immediately; recovery now depends on the next `PolyTick` arriving and
+the price still qualifying, not a guaranteed 1-second internal wait. In practice this is usually
+equal or faster (real ticks tend to arrive more than once a second in an active market), but it
+is a genuine behavioral difference from before, not merely "same retries, now with a floor."
+Stop-loss (`close_position()`) got neither change — still unbounded, still the internal 5x retry
+loop, per direction (a stop-loss must close regardless of price or retry cadence).
+
+## Order sizing: limit (GTC) vs market (FAK), by trade size
+
+Polymarket enforces two independent, differently-denominated minimum order sizes (no single
+official page states both together; pieced together from `docs.polymarket.com`'s
+`INVALID_ORDER_MIN_SIZE` error code, the CLOB orderbook response's own `min_order_size` field —
+present in the vendored SDK as `clob::types::response::OrderBookSummary::min_order_size` — and
+this repo's own production history):
+
+- **A resting GTC/GTD limit order must be for at least 5 shares.** Below that, Polymarket
+  rejects it outright — this isn't a preference, it's illegal to even attempt. `../btc_5mins`
+  (the reference Python bot this Rust trader ports) hit and documented this directly: "Polymarket
+  CLOB enforces a hard 5-token minimum for all resting (GTC) SELL orders. At $1 stake / 0.80–0.95
+  token price the fill is 1.05–1.25 tokens, always below 5, so the GTC path always fails at
+  typical live stakes" (`../btc_5mins/README.md`'s stop-loss/unwind section).
+- **A marketable FAK/FOK order has no share-count floor**, only a **$1 USDC notional floor**
+  (`docs.polymarket.com`'s `INVALID_ORDER_MIN_SIZE`; hit and fixed here in
+  `incident_order_fail_2026-07-04.md`).
+
+At this bot's current $1 stake and typical 0.80–0.95 entry prices, every position is 1.05–1.5
+shares — always under the 5-share GTC floor — so the exit path always takes FAK, either as a
+bounded `close_position_at_price` (take-profit) or unbounded `close_position` (stop-loss); see
+the incident above. **Raising the stake to $5+ crosses the GTC floor at these same prices**
+(5 shares × ~$0.90–1.00 ≈ $4.50–5.00), which is likely the source of "$5 minimum" as a rule of
+thumb even though the actual exchange constraint is share-denominated, not dollar-denominated.
+`worker.rs::on_order_filled` already had this branch (`filled_shares >= 5.0` → attempt a
+resting GTC via `Action::PlaceLimitSell`, matching `../btc_5mins`'s hybrid path and its
+`UnwindWatcher`-based fill notification — both now ported here, see the latency section above)
+— today's change only centralized the threshold into a named, tested, documented function
+(`execution::choose_exit_order_kind`, `execution::MIN_GTC_SHARES`/`MIN_MARKETABLE_USDC`) instead
+of an inline magic number, so it's exercised automatically and correctly at any stake size,
+not just today's $1.
+
+**Entry (BUY) intentionally does not have this same choice** — it always uses a marketable FAK
+(`execution.rs::place`, limit-priced up to `max_buy_price`), regardless of stake size. This is a
+strategy design choice, not a size limitation: the reversal/high_prob strategies react to a
+live price crossing a trigger band and need to grab the current price immediately — resting a
+GTC buy would risk missing the entry window entirely if price moves away before a passive limit
+fills. `../btc_5mins` makes the same choice (`TradingEngine.place()` is always a market order for
+entries).

@@ -55,6 +55,55 @@ pub struct LimitSellResult {
     pub error: Option<String>,
 }
 
+// ── Order-kind selection (GTC vs FAK), by size ────────────────────────────────
+//
+// Polymarket's CLOB enforces two independent, differently-denominated size
+// floors (see trader/README.md's "Order sizing: limit vs FAK" section for the
+// full writeup + sources):
+//   - A resting GTC/GTD limit order must be for at least `MIN_GTC_SHARES`
+//     shares (undocumented in the public API reference beyond an opaque
+//     "INVALID_ORDER_MIN_SIZE" error; confirmed via the CLOB orderbook
+//     response's own `min_order_size` field — vendored SDK's
+//     `clob::types::response`, and matches this bot's own
+//     `on_order_filled` >=5-share GTC-attempt threshold prior to this
+//     constant existing).
+//   - A marketable FAK/FOK order has no share-count floor of its own, only a
+//     $1 notional floor (`MIN_MARKETABLE_USDC` — docs.polymarket.com,
+//     INVALID_ORDER_MIN_SIZE; empirically confirmed in
+//     trader/doc/incident_order_fail_2026-07-04.md).
+// Below MIN_GTC_SHARES, GTC is not just suboptimal but *illegal* — FAK/FOK is
+// the only order type Polymarket will accept. At the near-$1 prices this
+// bot's exits usually resolve at, 5 shares is roughly $5 notional — likely
+// the source of "$5 minimum" as a rule of thumb, even though the real
+// exchange constraint is share-denominated, not dollar-denominated.
+
+/// Minimum share count Polymarket accepts for a resting GTC/GTD limit order.
+pub const MIN_GTC_SHARES: f64 = 5.0;
+
+/// Minimum USDC notional Polymarket accepts for a marketable FAK/FOK order.
+pub const MIN_MARKETABLE_USDC: f64 = 1.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderKind {
+    /// Rest on the book at a fixed price — only legal at `shares >= MIN_GTC_SHARES`.
+    Gtc,
+    /// Fill-and-kill against current liquidity — the only legal choice below
+    /// `MIN_GTC_SHARES`, and always legal down to `MIN_MARKETABLE_USDC`.
+    Fak,
+}
+
+/// The only exit order type Polymarket will actually accept for a sell of
+/// `shares` shares: GTC at/above the exchange's resting-order minimum, FAK
+/// below it. Pure and total — every `shares` value maps to exactly one legal
+/// choice, so callers don't need their own size-threshold fallback logic.
+/// Entry (BUY) doesn't need this chooser: this bot always enters via a
+/// marketable FAK order by strategy design (grabbing the current price
+/// immediately, not resting and risking a missed entry window) — see
+/// trader/README.md for why that's a design choice, not a size limitation.
+pub fn choose_exit_order_kind(shares: f64) -> OrderKind {
+    if shares >= MIN_GTC_SHARES { OrderKind::Gtc } else { OrderKind::Fak }
+}
+
 // ── ExecutionEngine trait ─────────────────────────────────────────────────────
 
 /// The trade-API boundary. Strategy/machine code holds a `Box<dyn ExecutionEngine>`
@@ -69,8 +118,19 @@ pub trait ExecutionEngine: Send + Sync {
     /// Resting GTC limit SELL (unwind take-profit).
     async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitSellResult;
 
-    /// Market SELL (FAK) to close a position at stop-loss / cycle end.
+    /// Market SELL (FAK) to close a position at stop-loss / cycle end. No price
+    /// floor — a stop-loss must close regardless of how far the book has moved.
     async fn close_position(&self, token_id: U256, shares: f64) -> CloseResult;
+
+    /// Market SELL (FAK) with a limit price floor — used for take-profit
+    /// ("unwind") closes, where `min_price` is the position's own tp_price. A
+    /// single attempt: if the book can't fill at `min_price` or better right
+    /// now, returns `Failed` immediately rather than retrying internally —
+    /// the caller re-tries on the next real price tick instead (see
+    /// `worker.rs::on_unwind_failed`), which is both a natural backoff (no
+    /// hammering) and price-safe (repeated attempts can't fill worse than
+    /// `min_price`).
+    async fn close_position_at_price(&self, token_id: U256, shares: f64, min_price: f64) -> CloseResult;
 
     /// Cancel a resting GTC limit sell. Returns true on success or if already gone.
     async fn cancel_limit_sell(&self, order_id: &str) -> bool;
@@ -169,6 +229,17 @@ impl ExecutionEngine for SimExecutionEngine {
         CloseResult { filled_usdc: 0.0, status: SellStatus::Matched, shares_sold: sold, error: None }
     }
 
+    async fn close_position_at_price(&self, _token_id: U256, shares: f64, min_price: f64) -> CloseResult {
+        if shares <= 0.0 || min_price <= 0.0 {
+            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("invalid shares/price".to_string()) };
+        }
+        let sold = round2(shares * self.fill_ratio);
+        if sold <= 0.0 {
+            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("ORDER_FAILED".to_string()) };
+        }
+        CloseResult { filled_usdc: sold * min_price, status: SellStatus::Matched, shares_sold: sold, error: None }
+    }
+
     async fn cancel_limit_sell(&self, _order_id: &str) -> bool {
         true
     }
@@ -245,6 +316,12 @@ impl<S: Signer + Clone + Send + Sync + 'static> LiveExecutionEngine<S> {
             .ok()?;
         let raw: f64 = resp.balance.to_string().parse().ok()?;
         Some(raw / 1e6)
+    }
+
+    /// The L2 API credentials derived at `connect()` time — needed to
+    /// authenticate a separate USER-channel WS subscription (`unwind::UnwindWatcher`).
+    pub fn credentials(&self) -> polymarket_client_sdk_v2::auth::Credentials {
+        self.client.credentials().clone()
     }
 }
 
@@ -472,6 +549,48 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("CLOSE_RETRIES_EXHAUSTED".to_string()) }
     }
 
+    async fn close_position_at_price(&self, token_id: U256, shares: f64, min_price: f64) -> CloseResult {
+        if shares <= 0.0 || min_price <= 0.0 {
+            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("invalid shares/price".to_string()) };
+        }
+        // Same size quantization as close_position (floor2, never round — see
+        // that function's doc comment for why rounding up permanently breaks
+        // "not enough balance").
+        let size_dec = floor2(shares);
+        let Ok(size_dec) = Decimal::from_str(&format!("{size_dec:.2}")) else {
+            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("bad size".to_string()) };
+        };
+        let Ok(price_dec) = Decimal::from_str(&format!("{min_price:.4}")) else {
+            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("bad price".to_string()) };
+        };
+
+        // Single attempt, no internal retry loop: unlike close_position, a
+        // no-match here isn't retried immediately at the same price (that
+        // wouldn't help within the same instant) — the caller waits for the
+        // next real price tick before trying again, which is both a natural
+        // backoff and can't produce a worse fill than min_price.
+        let result = self
+            .client
+            .market_order()
+            .token_id(token_id)
+            .side(SdkSide::Sell)
+            .amount(Amount::shares(size_dec).unwrap_or(Amount::shares(Decimal::ZERO).unwrap()))
+            .price(price_dec)
+            .order_type(OrderType::FAK)
+            .build_sign_and_post(&self.signer)
+            .await;
+
+        match result {
+            Ok(resp) if resp.success => {
+                let filled_usdc: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
+                let sold: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
+                CloseResult { filled_usdc, status: SellStatus::Matched, shares_sold: sold, error: None }
+            }
+            Ok(_) => CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("order not successful".to_string()) },
+            Err(e) => CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some(e.to_string()) },
+        }
+    }
+
     async fn cancel_limit_sell(&self, order_id: &str) -> bool {
         if order_id.is_empty() {
             return true;
@@ -554,6 +673,43 @@ mod tests {
         let r = engine.close_position(dummy_token(), 1.25).await;
         assert_eq!(r.status, SellStatus::Matched);
         assert!((r.shares_sold - 0.75).abs() < 1e-9); // round2(1.25*0.6)
+    }
+
+    #[test]
+    fn choose_exit_order_kind_below_five_shares_is_fak() {
+        // A $1 bet at a typical ~0.90 entry price yields ~1.11 shares — always
+        // below the GTC floor, which is why this bot's exits have historically
+        // always taken the FAK/PriceMonitor path (trader/doc/incident_sol_unwind_but_loss_2026-07-06.md).
+        assert_eq!(choose_exit_order_kind(1.11), OrderKind::Fak);
+        assert_eq!(choose_exit_order_kind(4.99), OrderKind::Fak);
+        assert_eq!(choose_exit_order_kind(0.0), OrderKind::Fak);
+    }
+
+    #[test]
+    fn choose_exit_order_kind_at_or_above_five_shares_is_gtc() {
+        // A $5+ bet (per direction: "I will use 5 dollar above bet later")
+        // crosses the boundary at typical entry prices, making GTC legal.
+        assert_eq!(choose_exit_order_kind(MIN_GTC_SHARES), OrderKind::Gtc);
+        assert_eq!(choose_exit_order_kind(5.5), OrderKind::Gtc);
+        assert_eq!(choose_exit_order_kind(10.0), OrderKind::Gtc);
+    }
+
+    #[tokio::test]
+    async fn sim_close_position_at_price_fills_at_floor() {
+        let engine = SimExecutionEngine::new();
+        let r = engine.close_position_at_price(dummy_token(), 1.25, 0.93).await;
+        assert_eq!(r.status, SellStatus::Matched);
+        assert!((r.shares_sold - 1.25).abs() < 1e-9);
+        assert!((r.filled_usdc - 1.25 * 0.93).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn sim_close_position_at_price_rejects_invalid_inputs() {
+        let engine = SimExecutionEngine::new();
+        let r = engine.close_position_at_price(dummy_token(), 0.0, 0.93).await;
+        assert_eq!(r.status, SellStatus::Failed);
+        let r = engine.close_position_at_price(dummy_token(), 1.25, 0.0).await;
+        assert_eq!(r.status, SellStatus::Failed);
     }
 
     #[tokio::test]

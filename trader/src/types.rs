@@ -110,4 +110,19 @@ pub struct TradeRecord {
     pub exit_attempts: u32,
     /// Most recent failed exit attempt's error message, if any.
     pub exit_last_error: Option<String>,
+    /// Entry BUY latency (ms): time from the triggering tick's own timestamp
+    /// to the driver receiving/starting to process it.
+    #[serde(default)]
+    pub entry_signal_latency_ms: f64,
+    /// Entry BUY latency (ms): time from the driver starting to process the
+    /// order to the fill confirmation coming back from the CLOB.
+    #[serde(default)]
+    pub entry_process_latency_ms: f64,
+    /// Exit order latency (ms), signal leg — 0.0 when the position resolved
+    /// by natural market close rather than an early exit order.
+    #[serde(default)]
+    pub exit_signal_latency_ms: f64,
+    /// Exit order latency (ms), process leg — 0.0 when there was no early exit order.
+    #[serde(default)]
+    pub exit_process_latency_ms: f64,
 }

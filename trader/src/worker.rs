@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backtest::HaltTracker;
 use crate::config::AssetParams;
-use crate::execution::SellStatus;
+use crate::execution::{choose_exit_order_kind, OrderKind, SellStatus};
 use crate::gates::{check_gates, GateParams};
 use crate::signal::{
     DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
@@ -29,16 +29,6 @@ pub enum ExitArm {
     GtcResting { order_id: String },
     /// shares < 5: no GTC support at that size; watch PolyTick and FAK-sell on TP cross.
     PriceMonitor { tp_price: f64 },
-    /// A `PriceMonitor` FAK close was attempted (with its own internal bounded
-    /// retries/backoff, `execution.rs::close_position`) and failed. One-shot latch,
-    /// matching `bot/worker.py::_on_poly_snap`'s design (`_rev_unwind_tp_price` is
-    /// zeroed the moment a close is fired, never re-armed on failure) — without
-    /// this, every subsequent `PolyTick` while price stays above `tp_price`
-    /// re-fires a brand new close attempt with no backoff, hammering the CLOB
-    /// every tick until cycle end (284 attempts in ~9s in the incident that found
-    /// this: `trader/doc/incident_doge_2026-07-03.md`). Stop-loss checks are
-    /// unconditional on `exit_arm` and stay fully armed regardless.
-    TakeProfitAbandoned,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +67,14 @@ pub struct HoldingData {
     /// `trader/doc/incident_tele_pnl_2026-07-04.md` §2).
     #[serde(default)]
     pub fees: f64,
+    /// Entry BUY latency (ms) — signal leg (tick timestamp -> driver receipt)
+    /// and process leg (driver receipt -> fill confirmation). Carried onto the
+    /// eventual `TradeRecord` unchanged; see `types::TradeRecord`'s own doc
+    /// comments for the exit-side counterparts.
+    #[serde(default)]
+    pub entry_signal_latency_ms: f64,
+    #[serde(default)]
+    pub entry_process_latency_ms: f64,
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -109,13 +107,13 @@ pub enum Event {
     CycleClose,
     BinanceTick(BinanceTick),
     PolyTick(PolyTick),
-    OrderFilled { filled_shares: f64, cost: f64 },
+    OrderFilled { filled_shares: f64, cost: f64, signal_latency_ms: f64, process_latency_ms: f64 },
     OrderRejected,
     /// Response to the `Action::PlaceLimitSell` issued right after an entry fill.
-    LimitSellPlaced { order_id: Option<String>, status: SellStatus, error: Option<String> },
-    UnwindFilled { sold_shares: f64, exit_price: f64 },
+    LimitSellPlaced { order_id: Option<String>, status: SellStatus, error: Option<String>, signal_latency_ms: f64, process_latency_ms: f64 },
+    UnwindFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
     UnwindFailed { error: Option<String> },
-    StopSellFilled { sold_shares: f64, exit_price: f64 },
+    StopSellFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
     StopSellFailed { error: Option<String> },
     /// Async market-resolution confirmation (Gamma/CLOB), arriving after cycle end.
     ApiResult { won: bool },
@@ -148,9 +146,16 @@ pub enum CloseReason {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    PlaceBuy { side: Side, price: f64, size_usdc: f64 },
+    /// `signal_ts` is the triggering tick's own timestamp — the driver uses it
+    /// to compute the "Order placed" Telegram message's signal/process latency.
+    PlaceBuy { side: Side, price: f64, size_usdc: f64, signal_ts: f64 },
     PlaceLimitSell { shares: f64, price: f64 },
-    ClosePosition { shares: f64, reason: CloseReason },
+    /// `limit_price`: `Some(tp_price)` for a take-profit close (bounded — see
+    /// `execution::close_position_at_price`), `None` for a stop-loss close
+    /// (unbounded — a stop-loss must close regardless of price). `signal_ts`
+    /// is the triggering tick's own timestamp, for the "order executed"
+    /// Telegram message's latency breakdown.
+    ClosePosition { shares: f64, reason: CloseReason, limit_price: Option<f64>, signal_ts: f64 },
     CancelLimitSell { order_id: String },
     /// Write `PersistedState` to the crash-recovery file — call after every transition.
     Persist,
@@ -441,12 +446,16 @@ impl Worker {
             Event::CycleClose => self.on_cycle_close(),
             Event::BinanceTick(t) => self.on_binance(t),
             Event::PolyTick(t) => self.on_poly(t),
-            Event::OrderFilled { filled_shares, cost } => self.on_order_filled(filled_shares, cost),
+            Event::OrderFilled { filled_shares, cost, signal_latency_ms, process_latency_ms } =>
+                self.on_order_filled(filled_shares, cost, signal_latency_ms, process_latency_ms),
             Event::OrderRejected => self.on_order_rejected(),
-            Event::LimitSellPlaced { order_id, status, error } => self.on_limit_sell_placed(order_id, status, error),
-            Event::UnwindFilled { sold_shares, exit_price } => self.on_unwind_filled(sold_shares, exit_price),
+            Event::LimitSellPlaced { order_id, status, error, signal_latency_ms, process_latency_ms } =>
+                self.on_limit_sell_placed(order_id, status, error, signal_latency_ms, process_latency_ms),
+            Event::UnwindFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
+                self.on_unwind_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
             Event::UnwindFailed { error } => self.on_unwind_failed(error),
-            Event::StopSellFilled { sold_shares, exit_price } => self.on_stop_sell_filled(sold_shares, exit_price),
+            Event::StopSellFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
+                self.on_stop_sell_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
             Event::StopSellFailed { error } => self.on_stop_sell_failed(error),
             Event::ApiResult { won } => self.on_api_result(won),
             Event::Control(c) => self.on_control(c),
@@ -518,6 +527,9 @@ impl Worker {
             pnl,
             exit_attempts: h.exit_attempts,
             exit_last_error: h.exit_last_error.clone(),
+            entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
+            // No exit order was placed — the position resolved by natural market close.
+            exit_signal_latency_ms: 0.0, exit_process_latency_ms: 0.0,
         };
         self.halt.record_trade(&record, self.strategy_name);
         // Held WIN/LOSS spawns Confirming — an ApiResult mismatch can still flip it.
@@ -563,7 +575,7 @@ impl Worker {
         self.state = WorkerState::Entering;
         // Stash the intent's side/entry_type/token_price for when the fill lands.
         self.pending_entry = Some((intent.side, intent.entry_type, intent.token_price()));
-        vec![Action::PlaceBuy { side: intent.side, price: intent.token_price(), size_usdc: self.trade_size }, Action::Persist]
+        vec![Action::PlaceBuy { side: intent.side, price: intent.token_price(), size_usdc: self.trade_size, signal_ts: now }, Action::Persist]
     }
 
     fn on_poly(&mut self, tick: PolyTick) -> Vec<Action> {
@@ -589,24 +601,27 @@ impl Worker {
             if let ExitArm::GtcResting { order_id } = &h.exit_arm {
                 actions.push(Action::CancelLimitSell { order_id: order_id.clone() });
             }
-            actions.push(Action::ClosePosition { shares: h.shares, reason: CloseReason::StopLoss });
+            actions.push(Action::ClosePosition { shares: h.shares, reason: CloseReason::StopLoss, limit_price: None, signal_ts: tick.ts });
             actions.push(Action::Persist);
             return actions;
         }
 
         // Take-profit: only the PriceMonitor arm reacts to PolyTick directly —
-        // a GtcResting arm's fill arrives via UnwindFilled instead.
+        // a GtcResting arm's fill arrives via UnwindFilled instead. Bounded at
+        // tp_price itself (`limit_price: Some(tp_price)`) — the minimum
+        // acceptable sell price is automatically the take-profit target, no
+        // separate config needed (see trader/doc/incident_sol_unwind_but_loss_2026-07-06.md).
         if let ExitArm::PriceMonitor { tp_price } = h.exit_arm {
             if exit_price >= tp_price && h.shares >= MIN_SELLABLE_SHARES {
                 self.state = WorkerState::Unwinding(h.clone());
-                return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit }, Action::Persist];
+                return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit, limit_price: Some(tp_price), signal_ts: tick.ts }, Action::Persist];
             }
         }
 
         vec![]
     }
 
-    fn on_order_filled(&mut self, filled_shares: f64, cost: f64) -> Vec<Action> {
+    fn on_order_filled(&mut self, filled_shares: f64, cost: f64, entry_signal_latency_ms: f64, entry_process_latency_ms: f64) -> Vec<Action> {
         if !matches!(self.state, WorkerState::Entering) {
             return vec![];
         }
@@ -617,7 +632,11 @@ impl Worker {
         }
 
         let tp_price = cost + self.unwind_pnl;
-        let (exit_arm, mut actions) = if filled_shares >= 5.0 {
+        // GTC is only legal at/above Polymarket's resting-order share minimum
+        // (execution::choose_exit_order_kind — see trader/README.md); below
+        // it, PriceMonitor's bounded FAK (execution::close_position_at_price)
+        // is the only legal exit mechanism, not a fallback of convenience.
+        let (exit_arm, mut actions) = if choose_exit_order_kind(filled_shares) == OrderKind::Gtc {
             // Attempt a resting GTC; the actual order_id/status comes back via
             // LimitSellPlaced. Use PriceMonitor as the provisional arm so a
             // stop-loss can still fire correctly if that response is slow.
@@ -630,6 +649,7 @@ impl Worker {
             side, entry_type, token_price: cost, entry_ts: self.last_binance_ts(), shares: filled_shares, exit_arm,
             exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
             fees: taker_fee(filled_shares, cost),
+            entry_signal_latency_ms, entry_process_latency_ms,
         };
         self.state = WorkerState::Holding(holding);
         actions.push(Action::Persist);
@@ -644,7 +664,7 @@ impl Worker {
         vec![Action::Persist]
     }
 
-    fn on_limit_sell_placed(&mut self, order_id: Option<String>, status: SellStatus, error: Option<String>) -> Vec<Action> {
+    fn on_limit_sell_placed(&mut self, order_id: Option<String>, status: SellStatus, error: Option<String>, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
         let WorkerState::Holding(h) = &mut self.state else { return vec![] };
         match status {
             SellStatus::Live => {
@@ -664,6 +684,8 @@ impl Worker {
                     strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
                     token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
                     exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
+                    entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
+                    exit_signal_latency_ms: signal_latency_ms, exit_process_latency_ms: process_latency_ms,
                 };
                 self.halt.record_trade(&record, self.strategy_name);
                 self.state = WorkerState::EnrichOnly(record.clone());
@@ -680,10 +702,10 @@ impl Worker {
         }
     }
 
-    fn on_unwind_filled(&mut self, sold_shares: f64, exit_price: f64) -> Vec<Action> {
+    fn on_unwind_filled(&mut self, sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
         let WorkerState::Unwinding(h) = &self.state else { return vec![] };
         let h = h.clone();
-        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::Unwind)
+        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::Unwind, signal_latency_ms, process_latency_ms)
     }
 
     /// Shared tail of `on_unwind_filled`/`on_stop_sell_filled`: bank this fill's
@@ -700,6 +722,8 @@ impl Worker {
         sold_shares: f64,
         exit_price: f64,
         outcome: Outcome,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
     ) -> Vec<Action> {
         let sell_fee = taker_fee(sold_shares, exit_price);
         let realized_pnl = h.realized_pnl + sold_shares * (exit_price - h.token_price);
@@ -721,6 +745,8 @@ impl Worker {
             strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
             token_price: h.token_price, exit_price, outcome, pnl,
             exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
+            entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
+            exit_signal_latency_ms: signal_latency_ms, exit_process_latency_ms: process_latency_ms,
         };
         self.halt.record_trade(&record, self.strategy_name);
         self.state = WorkerState::EnrichOnly(record.clone());
@@ -728,24 +754,30 @@ impl Worker {
     }
 
     fn on_unwind_failed(&mut self, error: Option<String>) -> Vec<Action> {
-        // A failed sell is not an exit — reclassify as held, resolved at cycle end.
-        // exit_arm becomes TakeProfitAbandoned (one-shot latch), NOT another
-        // PriceMonitor{tp_price} — leaving it re-armed would let the very next
-        // PolyTick (while price stays above tp_price) immediately re-fire another
-        // close attempt with no backoff, see the ExitArm::TakeProfitAbandoned doc
-        // comment. Stop-loss remains fully live regardless (on_poly's sl_hit check
-        // doesn't gate on exit_arm at all).
+        // A failed sell is not an exit — reclassify as held, re-armed at the
+        // same tp_price for the next PolyTick to try again. This used to latch
+        // into a one-shot "abandoned" state instead (never retrying) because
+        // the old exit path was an *unbounded* market order: retrying every
+        // tick while price stayed above tp_price meant hammering the CLOB with
+        // no backoff, 284 attempts in ~9s in the incident that motivated that
+        // design (trader/doc/incident_doge_2026-07-03.md). Now that the exit is
+        // execution::close_position_at_price (a single attempt, bounded at
+        // tp_price — see trader/doc/incident_sol_unwind_but_loss_2026-07-06.md),
+        // re-arming is safe: each retry is gated on a real PolyTick (natural
+        // backoff, not an internal loop) and can never fill worse than
+        // tp_price. Stop-loss remains fully live regardless (on_poly's sl_hit
+        // check doesn't gate on exit_arm at all).
         if let WorkerState::Unwinding(h) = &self.state {
             let mut h = h.clone();
             h.exit_attempts += 1;
             h.exit_last_error = error;
-            h.exit_arm = ExitArm::TakeProfitAbandoned;
+            h.exit_arm = ExitArm::PriceMonitor { tp_price: h.token_price + self.unwind_pnl };
             self.state = WorkerState::Holding(h);
         }
         vec![Action::Persist]
     }
 
-    fn on_stop_sell_filled(&mut self, sold_shares: f64, exit_price: f64) -> Vec<Action> {
+    fn on_stop_sell_filled(&mut self, sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
         let WorkerState::StopExiting(h) = &self.state else { return vec![] };
         let h = h.clone();
         // Absolute-SL-style pnl (proceeds − cost basis of whatever's still
@@ -753,7 +785,7 @@ impl Worker {
         // fill) — PnL-SL is computed at trigger time in on_poly in a live
         // system, but here we use the realized exit price uniformly,
         // matching the sim/backtest STOPLOSS formula.
-        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::StopLoss)
+        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::StopLoss, signal_latency_ms, process_latency_ms)
     }
 
     fn on_stop_sell_failed(&mut self, error: Option<String>) -> Vec<Action> {
@@ -887,7 +919,7 @@ mod tests {
         let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // dp < 0 -> fires entry
         assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]), "expected entry to fire: {actions:?}");
         assert!(matches!(w.state, WorkerState::Entering));
-        w.step(Event::OrderFilled { filled_shares, cost: 0.70 });
+        w.step(Event::OrderFilled { filled_shares, cost: 0.70, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
     }
 
     #[test]
@@ -899,7 +931,7 @@ mod tests {
         w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // delta_pct not yet known, no fire
         let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // dp < 0 -> fires
         assert_eq!(actions, vec![
-            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0 },
+            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0, signal_ts: 1250.0 },
             Action::Persist,
         ]);
         assert!(matches!(w.state, WorkerState::Entering));
@@ -920,7 +952,7 @@ mod tests {
         // No further BinanceTick — the poly recovery tick alone must fire the entry.
         let actions = w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
         assert_eq!(actions, vec![
-            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0 },
+            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0, signal_ts: 1240.0 },
             Action::Persist,
         ]);
         assert!(matches!(w.state, WorkerState::Entering));
@@ -970,7 +1002,7 @@ mod tests {
             w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
             w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
             w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
-            w.step(Event::OrderFilled { filled_shares: 10.0, cost: 0.70 })
+            w.step(Event::OrderFilled { filled_shares: 10.0, cost: 0.70, signal_latency_ms: 0.0, process_latency_ms: 0.0 })
         };
         assert!(actions.iter().any(|a| matches!(a, Action::PlaceLimitSell { shares, .. } if *shares == 10.0)),
             "expected a PlaceLimitSell action for a >=5 share fill: {actions:?}");
@@ -981,7 +1013,7 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: Some("order-123".to_string()), status: SellStatus::Live, error: None });
+        w.step(Event::LimitSellPlaced { order_id: Some("order-123".to_string()), status: SellStatus::Live, error: None, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
         match &w.state {
             WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::GtcResting { order_id: "order-123".to_string() }),
             _ => panic!("expected Holding"),
@@ -993,7 +1025,7 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: None, status: SellStatus::Failed, error: Some("test error".to_string()) });
+        w.step(Event::LimitSellPlaced { order_id: None, status: SellStatus::Failed, error: Some("test error".to_string()), signal_latency_ms: 0.0, process_latency_ms: 0.0 });
         match &w.state {
             WorkerState::Holding(h) => assert!(matches!(h.exit_arm, ExitArm::PriceMonitor { .. })),
             _ => panic!("expected Holding"),
@@ -1124,7 +1156,7 @@ mod tests {
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // entry 0.70 + unwind 0.03
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
-        let actions = w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73 });
+        let actions = w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
         match &w.state {
             WorkerState::Holding(h) => assert_eq!(h.shares, 4.0, "residual = 10 - 6"),
             _ => panic!("expected residual Holding"),
@@ -1138,7 +1170,7 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 }));
-        let actions = w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73 });
+        let actions = w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
 
         let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None });
         let record = record.expect("expected a LogTrade action");
@@ -1169,12 +1201,12 @@ mod tests {
         w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
         w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
         w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
-        w.step(Event::OrderFilled { filled_shares: 1.2048, cost: 0.83 }); // tp_price = 0.83 + 0.03 = 0.86
+        w.step(Event::OrderFilled { filled_shares: 1.2048, cost: 0.83, signal_latency_ms: 0.0, process_latency_ms: 0.0 }); // tp_price = 0.83 + 0.03 = 0.86
 
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.12, dn: 0.88 })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
-        let actions = w.step(Event::UnwindFilled { sold_shares: 1.20, exit_price: 0.88 });
+        let actions = w.step(Event::UnwindFilled { sold_shares: 1.20, exit_price: 0.88, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
         let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None });
         let record = record.expect("dust leftover (0.0048 < MIN_SELLABLE_SHARES) must finalize now, not stay Holding");
         assert_eq!(record.outcome, Outcome::Unwind);
@@ -1207,7 +1239,7 @@ mod tests {
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
         // Partial fill: 6 of 10 shares sold at 0.73 (the tp price).
-        w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73 });
+        w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
         match &w.state {
             WorkerState::Holding(h) => {
                 assert_eq!(h.shares, 4.0);
@@ -1255,15 +1287,17 @@ mod tests {
         assert_eq!(record.exit_last_error.as_deref(), Some("balance: 0"));
     }
 
-    /// Reproduces the 2026-07-03 17:33 DOGE incident (trader/doc/incident_doge_2026-07-03.md):
-    /// a failed take-profit unwind used to leave `exit_arm` re-armed as
-    /// `PriceMonitor { tp_price }`, so the very next `PolyTick` (price still above
-    /// tp_price) immediately re-fired another `ClosePosition` — 284 attempts in ~9s
-    /// with no backoff in that incident. `on_unwind_failed` must latch to
-    /// `TakeProfitAbandoned` instead, so a subsequent PolyTick above tp_price does
-    /// NOT re-fire a close, while stop-loss stays fully armed.
+    /// Follow-up to the 2026-07-03 17:33 DOGE incident (trader/doc/incident_doge_2026-07-03.md)
+    /// and the 2026-07-06 SOL incident (trader/doc/incident_sol_unwind_but_loss_2026-07-06.md):
+    /// a failed take-profit close now re-arms `PriceMonitor { tp_price }` (not a
+    /// one-shot abandon) and *does* retry on the next qualifying `PolyTick` —
+    /// this is safe today because the close itself is bounded at `tp_price`
+    /// (`execution::close_position_at_price`), so a retry can never fill worse
+    /// than the take-profit target, and each attempt is gated on a real tick
+    /// (not an internal loop), which is itself the backoff that avoided the
+    /// original 284-attempts-in-9s hammering.
     #[test]
-    fn failed_unwind_does_not_retrigger_close_on_next_poly_tick() {
+    fn failed_unwind_retries_close_on_next_qualifying_poly_tick() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
@@ -1272,27 +1306,18 @@ mod tests {
 
         w.step(Event::UnwindFailed { error: Some("no market price".to_string()) });
         match &w.state {
-            WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::TakeProfitAbandoned),
-            _ => panic!("expected Holding with exit_arm abandoned"),
+            WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::PriceMonitor { tp_price: 0.73 }),
+            _ => panic!("expected Holding re-armed at tp_price"),
         }
 
-        // Price stays above tp (0.73) on every subsequent tick — the old bug would
-        // re-fire ClosePosition{TakeProfit} on each one.
-        for ts in [1261.0, 1262.0, 1263.0] {
-            let actions = w.step(Event::PolyTick(PolyTick { ts, up: 0.20, dn: 0.80 }));
-            assert!(
-                !actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::TakeProfit, .. })),
-                "must not re-fire a take-profit close after the first attempt failed"
-            );
-            assert!(matches!(w.state, WorkerState::Holding(_)), "stays Holding, not re-entering Unwinding");
-        }
-
-        // Stop-loss must still be fully armed despite the abandoned take-profit.
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1264.0, up: 0.99, dn: 0.01 })); // dn crashes -> sl_pnl or sl_rev
+        // Price stays above tp (0.73) on the next tick -> retries the close,
+        // bounded at the same tp_price (not an unbounded worse fill).
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1261.0, up: 0.20, dn: 0.80 }));
         assert!(
-            actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::StopLoss, .. })),
-            "stop-loss must still fire even though take-profit was abandoned"
+            actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::TakeProfit, limit_price: Some(tp), .. } if (*tp - 0.73).abs() < 1e-9)),
+            "must retry the take-profit close, bounded at tp_price, on the next qualifying tick: {actions:?}"
         );
+        assert!(matches!(w.state, WorkerState::Unwinding(_)));
     }
 
     #[test]
@@ -1300,14 +1325,14 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: Some("order-1".to_string()), status: SellStatus::Live, error: None });
+        w.step(Event::LimitSellPlaced { order_id: Some("order-1".to_string()), status: SellStatus::Live, error: None, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
 
         // dn drops below entry(0.70) - sl_pnl(0.20) = 0.50 (use 0.49 to clear the
         // f64 boundary cleanly: 0.70 - 0.20 == 0.4999999999999999 in f64).
         let actions = w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.45, dn: 0.49 }));
         assert_eq!(actions, vec![
             Action::CancelLimitSell { order_id: "order-1".to_string() },
-            Action::ClosePosition { shares: 10.0, reason: CloseReason::StopLoss },
+            Action::ClosePosition { shares: 10.0, reason: CloseReason::StopLoss, limit_price: None, signal_ts: 1260.0 },
             Action::Persist,
         ]);
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
@@ -1367,7 +1392,7 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 }));
-        w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73 }); // -> EnrichOnly(Unwind)
+        w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 }); // -> EnrichOnly(Unwind)
 
         let actions = w.step(Event::ApiResult { won: true });
         assert!(!actions.iter().any(|a| matches!(a, Action::LogTrade(_))), "EnrichOnly must never re-log a trade");
@@ -1384,7 +1409,7 @@ mod tests {
         // DOWN position; poly tick crosses the stop-loss floor -> StopExiting.
         w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.55, dn: 0.45 }));
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
-        w.step(Event::StopSellFilled { sold_shares: 10.0, exit_price: 0.45 }); // -> EnrichOnly(StopLoss)
+        w.step(Event::StopSellFilled { sold_shares: 10.0, exit_price: 0.45, signal_latency_ms: 0.0, process_latency_ms: 0.0 }); // -> EnrichOnly(StopLoss)
 
         // `won` is already relative to the record's own side (matches the Confirming
         // branch's convention) — `true` here means the position's side actually won,
@@ -1407,6 +1432,7 @@ mod tests {
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "gone-order".to_string() },
             exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
+            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
 
@@ -1425,6 +1451,7 @@ mod tests {
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::GtcResting { order_id: "still-live".to_string() },
             exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
+            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &["still-live".to_string()], 10.0);
@@ -1441,6 +1468,7 @@ mod tests {
             entry_ts: 1250.0, shares: 10.0,
             exit_arm: ExitArm::PriceMonitor { tp_price: 0.73 },
             exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
+            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &[], 0.0);

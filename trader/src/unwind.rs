@@ -72,8 +72,12 @@ impl UnwindWatcher {
     /// address the live CLOB execution engine derives (`derive_api_key`) —
     /// this reuses them rather than re-deriving.
     ///
-    /// NOT invoked anywhere yet — requires real Polymarket API credentials
-    /// and is part of the same B2 go-ahead gate as live order placement.
+    /// Every message is logged with our own wall-clock receipt timestamp
+    /// before dispatch, regardless of whether anything is `watch()`-ing that
+    /// order — a passive, always-on real-time record of exchange-reported
+    /// fills for latency/slippage forensics (see
+    /// `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md` §6), independent
+    /// of whatever functional use `dispatch()`'s per-order callbacks are put to.
     pub async fn run(&self, ws_endpoint: &str, credentials: Credentials, address: Address, markets: Vec<B256>) -> Result<()> {
         loop {
             let client = WsClient::new(ws_endpoint, WsConfig::default())?;
@@ -82,6 +86,11 @@ impl UnwindWatcher {
                 Ok(stream) => {
                     let mut s = Box::pin(stream);
                     while let Some(Ok(msg)) = s.next().await {
+                        let recv_ts = crate::marketdata::now_secs_f64();
+                        println!(
+                            "[unwind] fill event recv_ts={recv_ts:.3} status={:?} taker_order_id={:?} side={:?} price={} size={} matchtime={:?}",
+                            msg.status, msg.taker_order_id, msg.side, msg.price, msg.size, msg.matchtime,
+                        );
                         self.dispatch(&msg);
                     }
                     eprintln!("[unwind] USER trade stream closed, reconnecting…");
