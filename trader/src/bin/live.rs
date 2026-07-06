@@ -256,6 +256,20 @@ fn fmt_latency(ms: Option<f64>) -> String {
     }
 }
 
+/// Tag appended after a feed's latency reading on the "Order placed" message:
+/// `"trigger"` for whichever feed's tick actually fired the entry, otherwise
+/// how long before that trigger tick's own timestamp (`signal_ts`) the *other*
+/// feed was last heard from — e.g. entry fires off a Binance tick received at
+/// `t`, the last Poly tick came in at `t - 200ms` -> `"200ms ago"`. `None`
+/// (no tick yet on that feed this run) prints `"n/a"`, matching `fmt_latency`.
+/// See trader/doc/incident_missing_clob_latency_2026-07-06.md.
+fn fmt_ago(last_tick_ts: Option<f64>, signal_ts: f64) -> String {
+    match last_tick_ts {
+        Some(t) => format!("{:.0}ms ago", (signal_ts - t) * 1000.0),
+        None => "n/a".to_string(),
+    }
+}
+
 /// Everything one (asset, strategy) pair's cycle needs, mutated in place as
 /// ticks/events arrive. `worker` lives inside so `process_actions`/`execute`
 /// only need one `&mut` borrow. An asset with multiple configured strategies
@@ -303,6 +317,17 @@ struct AssetSlot {
     /// reading it back in `execute()` is exact, not approximate.
     last_binance_server_ts: Option<f64>,
     last_poly_server_ts: Option<f64>,
+    /// The most recently received tick's own *local* timestamp (price_feed's
+    /// receipt time, `BinanceTick`/`PolyTick::ts` — same clock domain as
+    /// `Action::PlaceBuy`'s `signal_ts`) for each feed — distinct from the
+    /// `_server_ts` fields above, which are the exchange's own event time.
+    /// Used only to compute how stale the *non-triggering* feed's last known
+    /// reading was relative to the tick that actually fired the entry (see
+    /// `fmt_ago`) — the `_server_ts` latency numbers alone don't tell you
+    /// that, since they're always relative to "now" (`received_ts`), not to
+    /// the trigger tick's own moment.
+    last_binance_ts: Option<f64>,
+    last_poly_ts: Option<f64>,
 }
 
 /// Shared context (account connection + Telegram) threaded through the
@@ -442,18 +467,27 @@ impl Driver<'_> {
                 let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
                 // Real exchange latency: receipt time minus the *exchange's own*
-                // event timestamp for the tick that triggered this entry — not
-                // `signal_ts` above, which is price_feed's local receipt time and
-                // only measures the (tiny, same-box) NATS+processing hop, never
-                // the actual CLOB/Binance network leg. `feed` says which feed
-                // triggered this entry (`Worker::try_enter` fires off either),
-                // so the label always matches the value's real source.
-                let (exchange_label, exchange_latency_ms) = match feed {
-                    Feed::Clob => ("clob_latency", slot.last_poly_server_ts.map(|s| (received_ts - s) * 1000.0)),
-                    Feed::Binance => ("binance_latency", slot.last_binance_server_ts.map(|s| (received_ts - s) * 1000.0)),
+                // event timestamp for each feed's last known tick — not `signal_ts`
+                // above, which is price_feed's local receipt time and only measures
+                // the (tiny, same-box) NATS+processing hop, never the actual
+                // CLOB/Binance network leg. Both are always computed now (previously
+                // only the triggering feed's was, silently dropping the other one —
+                // see trader/doc/incident_missing_clob_latency_2026-07-06.md); `feed`
+                // only decides which one gets the "(trigger)" tag vs. an "(Nms ago)"
+                // staleness note for whichever tick *didn't* fire this entry.
+                let clob_latency_ms = slot.last_poly_server_ts.map(|s| (received_ts - s) * 1000.0);
+                let binance_latency_ms = slot.last_binance_server_ts.map(|s| (received_ts - s) * 1000.0);
+                let clob_tag = match feed {
+                    Feed::Clob => "trigger".to_string(),
+                    Feed::Binance => fmt_ago(slot.last_poly_ts, *signal_ts),
                 };
-                let exchange_latency_str = format!("{exchange_label}={}", fmt_latency(exchange_latency_ms));
-                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({exchange_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
+                let binance_tag = match feed {
+                    Feed::Binance => "trigger".to_string(),
+                    Feed::Clob => fmt_ago(slot.last_binance_ts, *signal_ts),
+                };
+                let clob_latency_str = format!("clob_latency={} ({clob_tag})", fmt_latency(clob_latency_ms));
+                let binance_latency_str = format!("binance_latency={} ({binance_tag})", fmt_latency(binance_latency_ms));
+                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.worker.asset, result.placed, result.filled_shares, result.cost, result.error, result.attempts);
 
                 let dt = hkt_now().format("%H:%M:%S");
@@ -461,7 +495,7 @@ impl Driver<'_> {
                 let delta_pct = slot.worker.delta_pct() * 100.0;
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {exchange_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
                     Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost, signal_latency_ms, process_latency_ms })
@@ -827,6 +861,8 @@ async fn main() -> Result<()> {
                 poly_sub: None,
                 last_binance_server_ts: None,
                 last_poly_server_ts: None,
+                last_binance_ts: None,
+                last_poly_ts: None,
             });
         }
     }
@@ -934,6 +970,7 @@ async fn main() -> Result<()> {
                 for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
                     slot.last_binance = tick.price;
                     slot.last_binance_server_ts = server_ts;
+                    slot.last_binance_ts = Some(tick.ts);
                     // `Worker`'s own state machine already can't fire a second
                     // entry within one cycle (on_binance only acts from
                     // Watching, and entering leaves Watching until the next
@@ -953,6 +990,7 @@ async fn main() -> Result<()> {
                     slot.last_poly_up = tick.up;
                     slot.last_poly_dn = tick.dn;
                     slot.last_poly_server_ts = server_ts;
+                    slot.last_poly_ts = Some(tick.ts);
                     if slot.current_slug.is_some() {
                         let actions = slot.worker.step(Event::PolyTick(tick));
                         driver.process_actions(slot, actions, Feed::Clob).await;
@@ -1223,5 +1261,21 @@ mod exchange_latency_tests {
         assert_eq!(fmt_latency(Some(12.4)), "12ms");
         assert_eq!(fmt_latency(Some(-3.0)), "-3ms");
         assert_eq!(fmt_latency(None), "n/a");
+    }
+
+    #[test]
+    fn fmt_ago_reports_gap_to_trigger_tick() {
+        // Binance trigger at t=100.200, last Poly tick was at t=100.000 -> 200ms ago.
+        assert_eq!(fmt_ago(Some(100.000), 100.200), "200ms ago");
+    }
+
+    #[test]
+    fn fmt_ago_zero_when_both_feeds_tick_simultaneously() {
+        assert_eq!(fmt_ago(Some(100.200), 100.200), "0ms ago");
+    }
+
+    #[test]
+    fn fmt_ago_none_when_feed_never_ticked() {
+        assert_eq!(fmt_ago(None, 100.200), "n/a");
     }
 }
