@@ -479,6 +479,54 @@ code). Summary:
   renamed the entry/exit order logs' `attempts=1` to `n_attempts=1` — the counter was already
   correctly 1-indexed (`attempts=1` = succeeded on the first try, zero retries), just an
   ambiguous-looking label.
+- **`clob_latency`/`binance_latency` redefined as real per-tick network latency, shown
+  unconditionally on entry, with a staleness tag for whichever feed didn't trigger
+  (2026-07-07)** — see `trader/doc/incident_missing_clob_latency_2026-07-06.md`. Two problems
+  with the previous entry-side formula: (1) only the *triggering* feed's latency was computed at
+  all — `Worker::try_enter` can fire off either a `BinanceTick` or a `PolyTick` (whichever
+  completes the entry condition last), and the other feed's reading was silently absent from the
+  message, not even shown as `n/a`; (2) the number itself (`received_ts − server_ts`, where
+  `received_ts` was *order-placement* wall time) conflated genuine network latency with however
+  long that tick had been sitting stale since — a Binance tick 3s old at trigger time read as
+  "3056ms of Binance latency" when the real one-hop delay was ~117ms and the rest was pure
+  staleness. Current formulas, both computed unconditionally every entry:
+  - **`clob_latency`/`binance_latency`** (`exchange_latency_ms`, `bin/live.rs`) = that feed's last
+    tick's own local receipt time (`PolyTick`/`BinanceTick::ts`, cached per-feed on `AssetSlot` as
+    `last_poly_ts`/`last_binance_ts`) **minus** the exchange's own event timestamp for that same
+    tick (`last_poly_server_ts`/`last_binance_server_ts`) — a fixed, genuine one-hop number,
+    independent of how long ago that tick arrived relative to *now*.
+  - **Tag in parens**: whichever feed's tick actually fired `try_enter` gets `(trigger)`; the
+    other gets `(Nms ago)` = *now* (`received_ts`, order-placement wall time) minus that feed's
+    last local tick timestamp — how stale that cached reading is at the moment the order was
+    placed. E.g. `clob_latency=6ms (trigger) | binance_latency=117ms (2939ms ago)` reads as: the
+    CLOB tick that fired this entry was itself fresh (6ms real latency), and separately, Binance
+    hadn't sent a new tick in ~2.9s, with that last tick's own hop latency having been ~117ms when
+    it did arrive.
+  - Exit messages (`ClosePosition`, always Poly/CLOB-triggered) use the same `exchange_latency_ms`
+    formula for `clob_latency` — no tag needed, only one feed is ever relevant there.
+- **`process_latency` confirmed as a pure local round-trip, not mixable with a server timestamp
+  (2026-07-07)** — checked whether Polymarket's order-placement response could supply a
+  server-side confirmation time instead of `confirmed_ts = now_secs_f64()` (local, captured right
+  after `.build_sign_and_post().await` returns). It can't, from this call: the vendored SDK's
+  `PostOrderResponse` (what `LiveExecutionEngine::place`/`close_position*` actually receive) has
+  no timestamp field at all — only `order_id`/`status`/`making_amount`/`taking_amount`/`success`/
+  `transaction_hashes`/`trade_ids`. A server-side `match_time` only exists on the separate
+  `TradeResponse` type (the `/trades` endpoint, or the USER-channel fill notifications
+  `UnwindWatcher` already subscribes to independently) — reaching it here would need either a
+  second API round-trip after the order already completed, or correlating against that separate
+  async channel, neither of which is wired into this synchronous call. This is also the
+  conceptually correct choice regardless of availability: `process_latency = confirmed_ts −
+  received_ts` is a round-trip *interval*, and both ends should come from the same clock (local)
+  — mixing in a foreign server timestamp would introduce clock-skew error into what should be a
+  clean duration measurement, unlike `clob_latency`/`binance_latency` above, which are legitimately
+  one-way comparisons across the two clocks (and already carry that same caveat implicitly).
+- **`trade_reconcile.py`'s Trade History table now shows signal and process latency separately,
+  entry and exit (2026-07-07)** — previously two combined columns (`Entry Latency (ms)` = entry
+  signal + entry process summed, `Exit Latency (ms)` similarly), which hid which half — tick/network
+  delay vs. our own order round-trip — actually dominated a slow reading. Now four columns:
+  `Entry Signal (ms)`, `Entry Process (ms)`, `Exit Signal (ms)`, `Exit Process (ms)`, reading
+  straight from the CSV's own `entry_signal_latency_ms`/`entry_process_latency_ms`/
+  `exit_signal_latency_ms`/`exit_process_latency_ms` columns with no summing.
 
 ---
 

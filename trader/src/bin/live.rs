@@ -245,10 +245,10 @@ enum Feed {
     Binance,
 }
 
-/// Format an exchange-latency reading (receipt-time − the exchange's own
-/// event timestamp) for the console/Telegram order logs. `None` means the
-/// exchange didn't supply a timestamp for this tick (e.g. Binance's `E`
-/// field missing) — printed as `n/a` rather than a bogus number.
+/// Format an exchange-latency reading for the console/Telegram order logs.
+/// `None` means the exchange didn't supply a timestamp for this tick (e.g.
+/// Binance's `E` field missing), or no tick has arrived on that feed yet —
+/// printed as `n/a` rather than a bogus number.
 fn fmt_latency(ms: Option<f64>) -> String {
     match ms {
         Some(v) => format!("{v:.0}ms"),
@@ -256,16 +256,31 @@ fn fmt_latency(ms: Option<f64>) -> String {
     }
 }
 
+/// Real, per-tick network latency for a feed's most recently seen tick: its
+/// own local receipt time (`BinanceTick`/`PolyTick::ts`, captured the instant
+/// that tick arrived) minus the exchange's own event timestamp for that same
+/// tick. Deliberately *not* relative to "now" (order-placement time) — that
+/// would conflate genuine one-hop network latency with how long the tick has
+/// been sitting stale since (see `fmt_ago` for that, separately). `None` if
+/// either timestamp isn't available.
+fn exchange_latency_ms(local_ts: Option<f64>, server_ts: Option<f64>) -> Option<f64> {
+    match (local_ts, server_ts) {
+        (Some(l), Some(s)) => Some((l - s) * 1000.0),
+        _ => None,
+    }
+}
+
 /// Tag appended after a feed's latency reading on the "Order placed" message:
 /// `"trigger"` for whichever feed's tick actually fired the entry, otherwise
-/// how long before that trigger tick's own timestamp (`signal_ts`) the *other*
-/// feed was last heard from — e.g. entry fires off a Binance tick received at
-/// `t`, the last Poly tick came in at `t - 200ms` -> `"200ms ago"`. `None`
-/// (no tick yet on that feed this run) prints `"n/a"`, matching `fmt_latency`.
+/// how long ago (relative to *now* — `now_ts`, the order-placement wall
+/// time) the *other* feed's last tick was locally received — e.g. entry
+/// fires off a Binance tick, the last Poly tick was received 200ms before
+/// this order was placed -> `"200ms ago"`. `None` (no tick yet on that feed
+/// this run) prints `"n/a"`, matching `fmt_latency`.
 /// See trader/doc/incident_missing_clob_latency_2026-07-06.md.
-fn fmt_ago(last_tick_ts: Option<f64>, signal_ts: f64) -> String {
+fn fmt_ago(last_tick_ts: Option<f64>, now_ts: f64) -> String {
     match last_tick_ts {
-        Some(t) => format!("{:.0}ms ago", (signal_ts - t) * 1000.0),
+        Some(t) => format!("{:.0}ms ago", (now_ts - t) * 1000.0),
         None => "n/a".to_string(),
     }
 }
@@ -466,24 +481,24 @@ impl Driver<'_> {
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
-                // Real exchange latency: receipt time minus the *exchange's own*
-                // event timestamp for each feed's last known tick — not `signal_ts`
-                // above, which is price_feed's local receipt time and only measures
-                // the (tiny, same-box) NATS+processing hop, never the actual
-                // CLOB/Binance network leg. Both are always computed now (previously
+                // Real, per-tick exchange network latency for each feed's last known
+                // tick (see `exchange_latency_ms`) — always computed now (previously
                 // only the triggering feed's was, silently dropping the other one —
-                // see trader/doc/incident_missing_clob_latency_2026-07-06.md); `feed`
-                // only decides which one gets the "(trigger)" tag vs. an "(Nms ago)"
-                // staleness note for whichever tick *didn't* fire this entry.
-                let clob_latency_ms = slot.last_poly_server_ts.map(|s| (received_ts - s) * 1000.0);
-                let binance_latency_ms = slot.last_binance_server_ts.map(|s| (received_ts - s) * 1000.0);
+                // see trader/doc/incident_missing_clob_latency_2026-07-06.md), and
+                // always the genuine one-hop delay regardless of how stale that tick
+                // now is. `feed` only decides which one gets the "(trigger)" tag vs.
+                // an "(Nms ago)" staleness note (relative to *now*, `received_ts` —
+                // not `signal_ts`, which is the triggering tick's own timestamp) for
+                // whichever feed's tick *didn't* fire this entry.
+                let clob_latency_ms = exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
+                let binance_latency_ms = exchange_latency_ms(slot.last_binance_ts, slot.last_binance_server_ts);
                 let clob_tag = match feed {
                     Feed::Clob => "trigger".to_string(),
-                    Feed::Binance => fmt_ago(slot.last_poly_ts, *signal_ts),
+                    Feed::Binance => fmt_ago(slot.last_poly_ts, received_ts),
                 };
                 let binance_tag = match feed {
                     Feed::Binance => "trigger".to_string(),
-                    Feed::Clob => fmt_ago(slot.last_binance_ts, *signal_ts),
+                    Feed::Clob => fmt_ago(slot.last_binance_ts, received_ts),
                 };
                 let clob_latency_str = format!("clob_latency={} ({clob_tag})", fmt_latency(clob_latency_ms));
                 let binance_latency_str = format!("binance_latency={} ({binance_tag})", fmt_latency(binance_latency_ms));
@@ -564,8 +579,9 @@ impl Driver<'_> {
                 let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
                 // Exits are always Poly/CLOB-triggered (only `on_poly` ever
                 // produces a ClosePosition — see worker.rs), so this is always
-                // the CLOB exchange latency, unlike the entry side above.
-                let clob_latency_ms = slot.last_poly_server_ts.map(|s| (received_ts - s) * 1000.0);
+                // the CLOB exchange latency, unlike the entry side above — no
+                // "(trigger)"/"(Nms ago)" tag needed here, only one feed applies.
+                let clob_latency_ms = exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
                 let clob_latency_str = format!("clob_latency={}", fmt_latency(clob_latency_ms));
                 println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.worker.asset, result.status, result.shares_sold, result.filled_usdc, result.error, result.attempts);
@@ -1264,8 +1280,19 @@ mod exchange_latency_tests {
     }
 
     #[test]
-    fn fmt_ago_reports_gap_to_trigger_tick() {
-        // Binance trigger at t=100.200, last Poly tick was at t=100.000 -> 200ms ago.
+    fn exchange_latency_ms_is_local_receipt_minus_server_ts() {
+        // Tick locally received at 100.117, exchange's own event ts was 100.000
+        // -> 117ms real network latency, independent of "now"/staleness.
+        let got = exchange_latency_ms(Some(100.117), Some(100.000)).unwrap();
+        assert!((got - 117.0).abs() < 1e-6, "got {got}");
+        assert_eq!(exchange_latency_ms(None, Some(100.000)), None);
+        assert_eq!(exchange_latency_ms(Some(100.117), None), None);
+    }
+
+    #[test]
+    fn fmt_ago_reports_gap_to_now() {
+        // Order placed ("now") at t=100.200, last tick on the other feed was
+        // locally received at t=100.000 -> that reading is 200ms stale right now.
         assert_eq!(fmt_ago(Some(100.000), 100.200), "200ms ago");
     }
 

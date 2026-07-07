@@ -335,16 +335,19 @@ def compute_performance_stats(rows: list) -> dict:
 
     trade_history = []
     for r in rows:
-        entry_latency_ms = _safe_float(r.get("entry_signal_latency_ms")) + _safe_float(r.get("entry_process_latency_ms"))
-        exit_latency_ms = _safe_float(r.get("exit_signal_latency_ms")) + _safe_float(r.get("exit_process_latency_ms"))
         trade_history.append({
             "time": datetime.fromtimestamp(_safe_float(r["logged_at"]), tz=HKT).strftime("%Y-%m-%d %H:%M:%S"),
             "asset": r["asset"], "strategy": r["strategy"], "side": r["side"],
             "outcome": r["outcome"], "token_price": _safe_float(r.get("token_price")),
             "exit_price": _safe_float(r.get("exit_price")), "pnl": _safe_float(r.get("pnl")),
-            # Combined signal+process latency per leg (ms); full breakdown lives
-            # in the raw CSV (entry_signal_latency_ms etc.) for deep-dives.
-            "entry_latency_ms": entry_latency_ms, "exit_latency_ms": exit_latency_ms,
+            # Signal (tick-timestamp -> driver-receipt) and process (driver-receipt
+            # -> order-confirmed) latency, entry and exit legs shown separately —
+            # previously summed into one combined figure per leg, which hid which
+            # half (network/tick delay vs. our own order round-trip) dominated.
+            "entry_signal_latency_ms": _safe_float(r.get("entry_signal_latency_ms")),
+            "entry_process_latency_ms": _safe_float(r.get("entry_process_latency_ms")),
+            "exit_signal_latency_ms": _safe_float(r.get("exit_signal_latency_ms")),
+            "exit_process_latency_ms": _safe_float(r.get("exit_process_latency_ms")),
         })
     trade_history.sort(key=lambda t: t["time"])
 
@@ -624,17 +627,19 @@ def write_markdown_summary(
     if trade_history:
         lines.extend([
             "### Trade History", "",
-            "| Time | Asset | Strategy | Side | Outcome | Entry Price | Exit Price | PnL | Entry Latency (ms) | Exit Latency (ms) |",
-            "|---|---|---|---|---|---|---|---|---|---|",
+            "| Time | Asset | Strategy | Side | Outcome | Entry Price | Exit Price | PnL | "
+            "Entry Signal (ms) | Entry Process (ms) | Exit Signal (ms) | Exit Process (ms) |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ])
         for t in trade_history:
             lines.append(
                 f"| {t['time']} | {t['asset']} | {t['strategy']} | {t['side']} | {t['outcome']} | "
                 f"{t['token_price']:.4f} | {t['exit_price']:.4f} | {t['pnl']:+.4f} | "
-                f"{t['entry_latency_ms']:.0f} | {t['exit_latency_ms']:.0f} |"
+                f"{t['entry_signal_latency_ms']:.0f} | {t['entry_process_latency_ms']:.0f} | "
+                f"{t['exit_signal_latency_ms']:.0f} | {t['exit_process_latency_ms']:.0f} |"
             )
         total_pnl = sum(t["pnl"] for t in trade_history)
-        lines.append(f"| **Total** | | | | | | | **{total_pnl:+.4f}** | | |")
+        lines.append(f"| **Total** | | | | | | | **{total_pnl:+.4f}** | | | | |")
         lines.append("")
 
     sl_unwind_rows = ps.get("sl_unwind_rows", [])
