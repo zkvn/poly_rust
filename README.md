@@ -77,6 +77,14 @@ through `_23.parquet`). Not data loss, nothing to recover. July 1st (commit `87f
 PLAIN-encoding decode gap and recovered all 42 poly/book + 5 binance files) was the only genuine
 corruption incident found.
 
+**`ParquetBuf.schema` field removed (2026-07-07, dead code):** the compiler flagged
+`ParquetBuf`'s `schema: Schema` field as never read. Confirmed dead, not just unread by accident —
+its only purpose was constructing the `ArrowWriter` in `ParquetBuf::open`, which bakes the schema
+into the writer itself; nothing later in `ParquetBuf` or its callers ever read `self.schema` back
+(`BinanceWriters`/`AssetWriters` keep their own separate `schema: Schema` field for reopening a
+writer at the next hour boundary — that one *is* read, and was kept). Removed the field and passed
+`schema` by value into `ArrowWriter::try_new` instead of cloning it.
+
 ### Sync to local
 
 A cron on the local Linux machine pulls all `raw*/` folders from the Oracle box daily at 18:00 HKT:
@@ -936,6 +944,34 @@ cron path.
 commit itself to the same paths it just added — `git commit` with no pathspec commits the entire
 index, which is almost never what a narrowly-scoped auto-commit script actually wants, and the gap
 only shows up the moment something else happens to be staged at the same time.
+
+### ETH stop-loss needed 31 attempts to close in the last 20s of a cycle (2026-07-07, not a bug)
+
+Recon flagged `exit_attempts: 31` on an ETH `high_prob` stop-loss that filled at 0.47 against a
+0.82 trigger. Root cause: the position was entered ~20s before candle close, and ETH crossed the
+strike in that final stretch, cratering the DOWN token from 0.665 toward zero — a window where
+resting liquidity vanishes as market-makers pull quotes ahead of resolution, so each FAK sell (one
+per real tick, each with its own 5x immediate inner retry on "no orders found to match") kept
+getting killed until a buyer finally appeared. Confirmed as the stop-loss retry design (unbounded,
+must-close, one outer attempt per tick) working as intended under genuinely thin liquidity, not a
+regression — full timeline and math in `trader/doc/incident_31_retry_sl_2026-07-07.md`.
+
+### `reversal` stop-loss (`sl_pnl_rev = 0.80`) unreachable or too-loose by design (2026-07-07, audited, not fixed)
+
+Two `reversal` trades (SOL entry 0.75, DOGE entry 0.94) lost almost their full stake — one with the
+stop-loss never firing at all, the other firing only ~1 second before cycle close. Root cause is
+config, not code: `sl_hit`'s threshold is `entry_price − sl_pnl_rev`, and at the shared default
+`sl_pnl_rev = 0.80` that's *negative* (unreachable) for any entry below 0.80, and barely above zero
+for entries just above it — so by the time it's reachable at all, the position has already lost
+most of its value in these fast-resolving 5-minute markets. A repo-wide check found 3 historical
+`reversal` trades total with a structurally-unreachable threshold (2 survived by luck before this
+one didn't). Full tick-by-tick CLOB + order-book evidence and a sensitivity table showing what a
+tighter threshold would have done: `trader/doc/audit_sl_no_trigger_2026-07-07.md`. No config change
+made — this is a calibration decision, not applied without direction. **Follow-up traced the root
+cause upstream**: every *unconstrained* backtest sweep in `../btc_5mins/studies/bt2` actually picks
+`sl_pnl = 0.00` (no stop-loss) as PnL-optimal — `0.80` only exists because the walk-forward study
+that produced it explicitly excluded `sl_pnl = 0` and then walked to that search's grid maximum
+(`../btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md`).
 
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 

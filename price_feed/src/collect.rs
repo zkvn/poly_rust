@@ -260,13 +260,15 @@ fn book_schema() -> Schema {
 
 struct ParquetBuf {
     path: PathBuf,
-    schema: Schema,
     writer: ArrowWriter<fs::File>,
     rows_since_flush: usize,
     last_flush: std::time::Instant,
 }
 
 impl ParquetBuf {
+    // `schema` is only needed to build the `ArrowWriter` below — it's baked into
+    // `writer` from here on, so it isn't kept as a struct field (see
+    // `README.md`'s "ParquetBuf.schema field removed" note).
     fn open(path: PathBuf, schema: Schema) -> Result<Self> {
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
@@ -277,11 +279,9 @@ impl ParquetBuf {
             .truncate(true)
             .open(&path)
             .with_context(|| format!("open {path:?}"))?;
-        let writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))
-            .context("ArrowWriter")?;
+        let writer = ArrowWriter::try_new(file, Arc::new(schema), Some(props)).context("ArrowWriter")?;
         Ok(Self {
             path,
-            schema,
             writer,
             rows_since_flush: 0,
             last_flush: std::time::Instant::now(),
