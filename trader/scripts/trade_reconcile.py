@@ -711,7 +711,13 @@ def git_commit_push(file_paths: list, message: str) -> None:
     try:
         rel_paths = [str(Path(p).resolve().relative_to(REPO_ROOT.parent)) for p in file_paths]
         subprocess.run(["git", "-C", str(REPO_ROOT.parent), "add", *rel_paths], check=True)
-        subprocess.run(["git", "-C", str(REPO_ROOT.parent), "commit", "-m", message], check=True)
+        # `-- rel_paths` scopes the commit to exactly these paths' staged changes,
+        # regardless of anything else that happens to be staged in the index at
+        # this moment (e.g. a concurrent interactive `git add`) — plain `git
+        # commit -m message` commits the *whole* index, which previously let an
+        # unrelated manual commit-in-progress get silently swept into a
+        # "recon: ..." commit under this message (observed 2026-07-07).
+        subprocess.run(["git", "-C", str(REPO_ROOT.parent), "commit", "-m", message, "--", *rel_paths], check=True)
         subprocess.run(["git", "-C", str(REPO_ROOT.parent), "push"], check=True)
         console.print(f"[green]✓ Committed & pushed → {message}[/green]")
     except subprocess.CalledProcessError as e:
