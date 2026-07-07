@@ -911,6 +911,32 @@ is a genuine behavioral difference from before, not merely "same retries, now wi
 Stop-loss (`close_position()`) got neither change — still unbounded, still the internal 5x retry
 loop, per direction (a stop-loss must close regardless of price or retry cadence).
 
+### Recon auto-commit swept up unrelated staged changes under a misleading message (2026-07-07, fixed)
+
+`scripts/trade_reconcile.py` (the daily reconciliation report, cron-scheduled every 2 hours via
+`scripts/bash/run_daily_recon.bash`) auto-commits and pushes its own regenerated markdown report
+via `git_commit_push()`. That function `git add`-ed just the one report path, but then ran
+`git commit -m message` with **no pathspec** — which commits the *whole* index, not only the file
+just added. A manual `git add` of unrelated in-progress work (staging four separate files for an
+unrelated fix, right as this cron job's own scheduled run landed) got silently swept into the same
+commit, which then pushed to `origin/main` under the auto-generated message
+`recon: 2026-07-06 — 1/1 matched (100%)` — content was correct (nothing lost or corrupted), but
+the message badly undersold what the commit actually contained, and the race could just as easily
+have interrupted a commit mid-`git add`, landing a half-staged change.
+
+**Fix:** `git_commit_push()` now runs `git commit -m message -- <rel_paths>` — the trailing
+pathspec restricts the commit to exactly the paths this function was given, regardless of
+anything else staged in the index at that moment. Verified in an isolated throwaway repo: an
+unrelated staged file is left untouched (still staged, not committed) rather than swept in, and
+the "no changes to this specific path" case still fails exactly as before (non-zero exit, caught
+by the existing `except subprocess.CalledProcessError`) — no new failure mode for the unattended
+cron path.
+
+**Lesson:** any automation that does its own `git add` + `git commit` should always scope the
+commit itself to the same paths it just added — `git commit` with no pathspec commits the entire
+index, which is almost never what a narrowly-scoped auto-commit script actually wants, and the gap
+only shows up the moment something else happens to be staged at the same time.
+
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 
 Polymarket enforces two independent, differently-denominated minimum order sizes (no single
