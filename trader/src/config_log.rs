@@ -189,7 +189,11 @@ mod tests {
         assert_eq!(*e.halt_rev.get("BTC").unwrap_or(&e.halt_rev["default"]), 2);
         assert!(e.hkt.ends_with(" HKT"));
         assert!(e.assets.contains("BTC"));
-        assert!(e.trade_assets.contains("BTC"));
+        // trade_assets scoped to ETH only (2026-07-07) — see
+        // trader/doc/audit_sl_no_trigger_2026-07-07.md; `assets` (monitored/configured)
+        // still covers all 6, `trade_assets` (actually traded) does not.
+        assert!(e.trade_assets.contains("ETH"));
+        assert!(!e.trade_assets.contains("BTC"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

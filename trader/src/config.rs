@@ -191,7 +191,9 @@ mod tests {
         assert_eq!(p.halt_rev, 2);
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.03).abs() < 1e-9);
-        assert!((p.sl_pnl_rev - 0.50).abs() < 1e-9);
+        // sl_pnl_rev tightened to a flat 0.25 for all assets (2026-07-07, no more
+        // per-asset override) — see trader/doc/audit_sl_no_trigger_2026-07-07.md.
+        assert!((p.sl_pnl_rev - 0.25).abs() < 1e-9);
         assert!((p.unwind_pnl_hp - 0.05).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.25).abs() < 1e-9);
     }

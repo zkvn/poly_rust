@@ -1,10 +1,10 @@
 # meta
-ts = "2026-07-05T00:00:00+08:00"
-source = "reversal strategy recalibration — Highest Win Rate table, Final Calibration (Cal 2026-05-26 -> 2026-07-02), studies/bt2/results_bt2_weekly/report_5m_20260704_004615.md; enables SOL/BNB/XRP as trade_assets (all 6 assets now trade, matching the Highest Win Rate table's per-asset coverage)"
+ts = "2026-07-07T00:00:00+08:00"
+source = "reversal strategy recalibration — Highest Win Rate table, Final Calibration (Cal 2026-05-26 -> 2026-07-02), studies/bt2/results_bt2_weekly/report_5m_20260704_004615.md; scoped trade_assets down to ETH only and sl_pnl_rev/sl_pnl_hp both tightened to 0.25 following trader/doc/audit_sl_no_trigger_2026-07-07.md's SOL/DOGE near-total-loss findings and btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md's grid-boundary-artifact writeup"
 
-# All 6 assets trade now — the Highest Win Rate calibration covers all of them.
+# Scoped to ETH only (2026-07-07) — see trader/doc/audit_sl_no_trigger_2026-07-07.md.
 assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
-trade_assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["ETH"]
 
 # Max buy price
 max_buy_price = 0.95
@@ -90,8 +90,7 @@ default = 0
 default = 0.03
 
 [sl_pnl_rev]
-default = 0.80
-BTC = 0.50
+default = 0.25
 
 [price_high_rev]
 default = 0.9
