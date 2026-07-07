@@ -7,7 +7,14 @@ Deploy:
   2. rsync price_feed  → Oracle price_feed/target/release/
   3. rsync live        → Oracle trader/target/release/
   4. Restart poly-collector systemd service (price_feed).
-  5. Restart trader-live systemd service (trader) — `systemctl restart`,
+  5. Sync strategy config (trader/config/ + btc_5mins/config symlink) to
+     Oracle — always, whenever the trader is being (re)deployed, not just on
+     an explicit --config-only run. The running binary re-reads its
+     strategy_*.toml from Oracle's own copy on every startup; skipping this
+     step left a --trader-only deploy silently running against a stale
+     config indefinitely (see
+     trader/doc/incident_stale_oracle_config_2026-07-07.md).
+  6. Restart trader-live systemd service (trader) — `systemctl restart`,
      which stops the old process and starts the new one atomically under
      systemd's own supervision.
 
@@ -30,11 +37,15 @@ Usage:
     python scripts/deploy_oracle.py --config-only       # sync strategy config + restart trader only
 
 --config-only is for a config-only change (new/edited strategy_*.toml, no code
-change): rsyncs this repo's trader/config/ (the real, git-tracked copy — see
-README "Strategy config") to Oracle, creates/updates the matching symlink in
-Oracle's btc_5mins/config/ directly (no git pull of btc_5mins — see
-sync_config), then restarts trader-live.service so it re-globs and loads the
-new file. No build, no binary rsync.
+change) when you don't also want to redeploy the binary: rsyncs this repo's
+trader/config/ (the real, git-tracked copy — see README "Strategy config") to
+Oracle, creates/updates the matching symlink in Oracle's btc_5mins/config/
+directly (no git pull of btc_5mins — see sync_config), then restarts
+trader-live.service so it re-globs and loads the new file. No build, no binary
+rsync. Every other mode that deploys the trader (default, --trader-only) does
+this same config sync too, unconditionally, before restarting — --config-only
+is just the "config changed, binary didn't" fast path, not a separate
+requirement you have to remember to run.
 """
 
 from __future__ import annotations
@@ -370,10 +381,24 @@ def main() -> None:
 
     # ── 3. trader ─────────────────────────────────────────────────────────────
     if do_trader:
-        print("\n[trader] deploying...")
-        if not deploy_trader(client, args.dry_run):
-            print("  trader deploy failed.")
+        # Always sync config before (re)starting the trader — not just on an
+        # explicit --config-only run. deploy_trader() below only rsyncs the
+        # binary and regenerates the systemd unit's --asset flags (computed
+        # from *this machine's* trader/config/); the running binary re-reads
+        # its actual strategy_*.toml from Oracle's own copy on every startup
+        # via load_latest(), which this step is what actually keeps current.
+        # Skipping it left Oracle silently serving a stale config after a
+        # --trader-only deploy — see
+        # trader/doc/incident_stale_oracle_config_2026-07-07.md.
+        print("\n[config] syncing strategy config...")
+        if not sync_config(client, args.dry_run):
+            print("  config sync failed.")
             ok = False
+        else:
+            print("\n[trader] deploying...")
+            if not deploy_trader(client, args.dry_run):
+                print("  trader deploy failed.")
+                ok = False
 
     client.close()
     print("\nDone." if ok else "\nDone (with errors).")

@@ -14,6 +14,10 @@
 #      only if still alive) and kills its tmux session.
 #   4. Starts the new binary in a fresh tmux session ('trader'), reading
 #      --asset flags from btc_5mins/config's latest strategy_*.toml.
+#   Also always syncs trader/config/ (the actual strategy_*.toml, not just the
+#   --asset flags) to Oracle before restarting — see
+#   trader/doc/incident_stale_oracle_config_2026-07-07.md for why this can't
+#   be skipped.
 #
 # Usage:
 #   ./scripts/deploy_trader.sh              # build + deploy + restart trader

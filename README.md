@@ -1049,6 +1049,22 @@ crate (same toolchain-drift shape, confirmed unrelated to any feature work) — 
 since `cargo fmt --all` would rewrite most lines of every touched file, obscuring any real change
 in the same commit. Left for a dedicated formatting-only pass if wanted.
 
+### `--trader-only` deploy silently left Oracle running a stale strategy config (2026-07-07, fixed, critical)
+
+Telegram `/status` showed `sl_pnl=0.8000` for ETH reversal right after a deploy meant to set it to
+`0.25` — `trade_assets` narrowing to ETH *did* take effect, `sl_pnl_rev` didn't. Root cause:
+`deploy_oracle.py`'s `--trader-only`/default path (`scripts/deploy_trader.sh` always uses
+`--trader-only`) rsyncs the binary and bakes `--asset` flags into the systemd unit from *this
+machine's* local config, but never rsyncs `trader/config/` itself to Oracle — only `sync_config()`
+(previously wired to the separate `--config-only` mode) does that, and the running binary re-reads
+its `strategy_*.toml` from Oracle's own copy on every restart. `trade_assets` reached the process
+via the CLI-flag channel (always current); `sl_pnl_rev` only exists inside the TOML (silently
+stale). **Fix:** every trader-deploying mode now calls `sync_config()` unconditionally before
+restarting the service, and aborts without restarting if it fails. New test file
+`scripts/test_deploy_oracle.py` (stdlib `unittest`/`mock`, no new dependency — first Python tests in
+this repo) pins the fixed step ordering across all four deploy modes. Full writeup:
+`trader/doc/incident_stale_oracle_config_2026-07-07.md`.
+
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 
 Polymarket enforces two independent, differently-denominated minimum order sizes (no single
