@@ -612,7 +612,8 @@ impl Driver<'_> {
                 println!("[ORDER] {} CANCEL {order_id} -> {ok}", slot.worker.asset);
                 None
             }
-            Action::Persist | Action::LogTrade(_) | Action::LogTradeCorrection { .. } | Action::StopLossVerdict { .. } => None, // handled by process_actions directly
+            Action::Persist | Action::LogTrade(_) | Action::LogTradeCorrection { .. } | Action::StopLossVerdict { .. }
+            | Action::HaltEngaged | Action::HaltReset => None, // handled by process_actions directly
         }
     }
 
@@ -705,6 +706,22 @@ impl Driver<'_> {
                         };
                         self.notify(&format!(
                             "{icon} <b>{} STOP {verdict}</b> | {} | {}\n{note}",
+                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
+                        )).await;
+                    }
+                    // Loss-streak halt (halt_rev/halt_prob) — distinct from manual /halt
+                    // and the balance drawdown halt, which already notify at their own
+                    // call sites (Command::Halt, DrawdownHalt).
+                    Action::HaltEngaged => {
+                        let halt_n = if slot.worker.strategy_name == "high_prob" { slot.params.halt_prob } else { slot.params.halt_rev };
+                        self.notify(&format!(
+                            "🟡 <b>{} HALTED</b> | {} | {}\n{halt_n} consecutive losses — new entries suppressed until the next daily reset (or /resume).",
+                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
+                        )).await;
+                    }
+                    Action::HaltReset => {
+                        self.notify(&format!(
+                            "🟢 <b>{} HALT RESET</b> | {} | {}\nDaily loss-streak reset — new entries re-armed.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }

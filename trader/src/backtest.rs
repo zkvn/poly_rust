@@ -298,22 +298,38 @@ impl HaltTracker {
         Self { max, reset_hour, losses: 0, last_session: None }
     }
 
-    pub(crate) fn reset_if_new_session(&mut self, slug_ts: f64) {
+    /// Returns whether this call just cleared an *active* halt — i.e. the
+    /// session rolled over *and* the streak was actually halted beforehand —
+    /// not merely whether the session changed. Callers that want a Telegram
+    /// notification only when the reset actually mattered (`worker.rs`) rely
+    /// on this; `backtest.rs::run_backtest`'s own call site ignores it.
+    pub(crate) fn reset_if_new_session(&mut self, slug_ts: f64) -> bool {
         let session = hkt_session(slug_ts, self.reset_hour);
         if Some(session) != self.last_session {
+            let was_halted = self.is_halted();
             self.losses = 0;
             self.last_session = Some(session);
+            return was_halted;
         }
+        false
     }
 
     pub(crate) fn is_halted(&self) -> bool {
         self.max > 0 && self.losses >= self.max
     }
 
-    pub(crate) fn record_trade(&mut self, rec: &TradeRecord, strategy_name: &str) {
+    /// Returns whether this trade is the one that just tripped the halt —
+    /// i.e. the streak transitioned from not-halted to halted on this exact
+    /// call, not merely "this trade was a loss." A losing trade that lands
+    /// while already halted (an open position resolving after halt engaged
+    /// mid-cycle) must not re-signal.
+    pub(crate) fn record_trade(&mut self, rec: &TradeRecord, strategy_name: &str) -> bool {
         if rec.strategy == strategy_name && rec.outcome.is_loss_for_halt() {
+            let was_halted = self.is_halted();
             self.losses += 1;
+            return !was_halted && self.is_halted();
         }
+        false
     }
 }
 
@@ -531,6 +547,95 @@ mod tests {
         let ts2 = hkt_offset.with_ymd_and_hms(2026, 6, 20, 3, 0, 0).unwrap().timestamp() as f64;
         let s2 = hkt_session(ts2, 2);
         assert_eq!(s2, NaiveDate::from_ymd_opt(2026, 6, 20).unwrap());
+    }
+
+    /// Minimal `TradeRecord` for `HaltTracker` tests — only `strategy` and
+    /// `outcome` matter to `record_trade`, the rest are dummy values.
+    fn halt_test_record(strategy: &'static str, outcome: crate::types::Outcome) -> TradeRecord {
+        TradeRecord {
+            slug: "test-slug".to_string(),
+            cycle_start: 0.0,
+            strategy,
+            side: crate::types::Side::Down,
+            entry_ts: 0.0,
+            token_price: 0.5,
+            exit_price: 0.5,
+            outcome,
+            pnl: 0.0,
+            exit_attempts: 0,
+            exit_last_error: None,
+            entry_signal_latency_ms: 0.0,
+            entry_process_latency_ms: 0.0,
+            exit_signal_latency_ms: 0.0,
+            exit_process_latency_ms: 0.0,
+        }
+    }
+
+    /// `record_trade` must return `true` on exactly the loss that crosses the
+    /// threshold — not on losses before it, and not on further losses once
+    /// already halted (an already-open position resolving as a loss after the
+    /// halt engaged must not re-signal `Action::HaltEngaged` on every worker
+    /// call site that shares this tracker).
+    #[test]
+    fn halt_tracker_record_trade_signals_only_on_the_crossing_loss() {
+        let mut h = HaltTracker::new(2, 2);
+        let loss = halt_test_record("reversal", crate::types::Outcome::Loss);
+
+        assert!(!h.record_trade(&loss, "reversal"), "1st loss must not cross halt_max=2 yet");
+        assert!(!h.is_halted());
+
+        assert!(h.record_trade(&loss, "reversal"), "2nd loss must cross halt_max=2");
+        assert!(h.is_halted());
+
+        assert!(!h.record_trade(&loss, "reversal"), "3rd loss while already halted must not re-signal");
+        assert!(h.is_halted());
+    }
+
+    /// Non-loss outcomes and trades from a different strategy must never
+    /// count toward the streak or signal a halt.
+    #[test]
+    fn halt_tracker_record_trade_ignores_non_loss_and_other_strategy() {
+        let mut h = HaltTracker::new(1, 2); // max=1: a single qualifying loss halts immediately
+
+        assert!(!h.record_trade(&halt_test_record("reversal", crate::types::Outcome::Win), "reversal"));
+        assert!(!h.record_trade(&halt_test_record("reversal", crate::types::Outcome::Unwind), "reversal"));
+        assert!(!h.is_halted(), "wins/unwinds must never halt");
+
+        assert!(!h.record_trade(&halt_test_record("high_prob", crate::types::Outcome::Loss), "reversal"),
+            "a loss from a different strategy must be ignored by this tracker");
+        assert!(!h.is_halted());
+
+        assert!(h.record_trade(&halt_test_record("reversal", crate::types::Outcome::Loss), "reversal"));
+        assert!(h.is_halted());
+    }
+
+    /// `reset_if_new_session` must only report `true` when it actually clears
+    /// an *active* halt — not on every session rollover regardless of state
+    /// (that would spam a Telegram notification every day at
+    /// `halt_reset_hour_rev`/`halt_reset_hour_hp` even when nothing happened).
+    #[test]
+    fn halt_tracker_reset_signals_only_when_clearing_an_active_halt() {
+        let mut h = HaltTracker::new(1, 2);
+
+        // First session rollover ever, nothing halted -> silent.
+        assert!(!h.reset_if_new_session(1_000.0));
+        assert!(!h.is_halted());
+
+        // Trip the halt.
+        let loss = halt_test_record("reversal", crate::types::Outcome::Loss);
+        assert!(h.record_trade(&loss, "reversal"));
+        assert!(h.is_halted());
+
+        // Same session (no rollover) -> no-op, no signal, halt persists.
+        assert!(!h.reset_if_new_session(1_100.0));
+        assert!(h.is_halted());
+
+        // New session, halt was active -> clears it, signals true.
+        assert!(h.reset_if_new_session(1_000.0 + 100_000.0));
+        assert!(!h.is_halted());
+
+        // Another new session, nothing left to clear -> silent again.
+        assert!(!h.reset_if_new_session(1_000.0 + 200_000.0));
     }
 
     #[test]

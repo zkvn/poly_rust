@@ -166,6 +166,14 @@ pub enum Action {
     /// `ApiResult` resolved a StopLoss `EnrichOnly` record — counterfactual verdict
     /// only, never touches pnl/result/halt (unlike `LogTradeCorrection`).
     StopLossVerdict { record: TradeRecord, would_have_won: bool },
+    /// The loss-streak halt (`halt_rev`/`halt_prob`, distinct from manual `/halt`
+    /// and the balance drawdown halt) just tripped on this worker's strategy —
+    /// emitted once, on the exact trade that crossed the threshold.
+    HaltEngaged,
+    /// The loss-streak halt's daily reset (`halt_reset_hour_rev`/`halt_reset_hour_hp`)
+    /// just cleared an *active* halt on this worker's strategy — not emitted on a
+    /// session rollover that had nothing to clear.
+    HaltReset,
 }
 
 // ── Persisted state (crash recovery) ──────────────────────────────────────────
@@ -488,8 +496,11 @@ impl Worker {
         // Loss-streak halt's own daily reset — independent of, and never
         // touched by, entry_suppressed (halt/resume, drawdown). Matches
         // backtest.rs::run_backtest's per-cycle `reset_if_new_session` call.
-        self.halt.reset_if_new_session(ctx.start_ts);
-        vec![Action::Persist]
+        let mut actions = vec![Action::Persist];
+        if self.halt.reset_if_new_session(ctx.start_ts) {
+            actions.push(Action::HaltReset);
+        }
+        actions
     }
 
     fn on_cycle_close(&mut self) -> Vec<Action> {
@@ -531,10 +542,14 @@ impl Worker {
             // No exit order was placed — the position resolved by natural market close.
             exit_signal_latency_ms: 0.0, exit_process_latency_ms: 0.0,
         };
-        self.halt.record_trade(&record, self.strategy_name);
+        let halt_engaged = self.halt.record_trade(&record, self.strategy_name);
         // Held WIN/LOSS spawns Confirming — an ApiResult mismatch can still flip it.
         self.state = WorkerState::Confirming(record.clone());
-        vec![Action::LogTrade(record), Action::Persist]
+        let mut actions = vec![Action::LogTrade(record), Action::Persist];
+        if halt_engaged {
+            actions.push(Action::HaltEngaged);
+        }
+        actions
     }
 
     fn on_binance(&mut self, tick: BinanceTick) -> Vec<Action> {
@@ -748,9 +763,13 @@ impl Worker {
             entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
             exit_signal_latency_ms: signal_latency_ms, exit_process_latency_ms: process_latency_ms,
         };
-        self.halt.record_trade(&record, self.strategy_name);
+        let halt_engaged = self.halt.record_trade(&record, self.strategy_name);
         self.state = WorkerState::EnrichOnly(record.clone());
-        vec![Action::LogTrade(record), Action::Persist]
+        let mut actions = vec![Action::LogTrade(record), Action::Persist];
+        if halt_engaged {
+            actions.push(Action::HaltEngaged);
+        }
+        actions
     }
 
     fn on_unwind_failed(&mut self, error: Option<String>) -> Vec<Action> {
@@ -1054,6 +1073,7 @@ mod tests {
         let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
         assert_eq!(record.outcome, Outcome::Loss);
         assert!(!w.is_halted(), "1 loss must not halt yet (halt_rev=2)");
+        assert!(!actions.contains(&Action::HaltEngaged), "1st loss must not emit HaltEngaged yet: {actions:?}");
 
         // Loss 2, same session (enter_down_position reopens the same
         // ctx(1_000.0) cycle) -> hits halt_rev's threshold of 2.
@@ -1063,11 +1083,13 @@ mod tests {
         let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
         assert_eq!(record.outcome, Outcome::Loss);
         assert!(w.is_halted(), "2nd loss must trip halt_rev=2");
+        assert!(actions.contains(&Action::HaltEngaged), "2nd loss must emit HaltEngaged: {actions:?}");
 
         // A new cycle in the *same* session must not clear it, and entries
         // must actually be suppressed now (not just is_halted() reporting true).
-        w.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
+        let actions = w.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
         assert!(w.is_halted(), "halt must survive a same-session cycle boundary");
+        assert!(!actions.contains(&Action::HaltReset), "same-session cycle open must not emit HaltReset: {actions:?}");
         w.step(Event::PolyTick(PolyTick { ts: 1680.0, up: 0.85, dn: 0.15 }));
         w.step(Event::BinanceTick(BinanceTick { ts: 1700.0, price: 59_900.0 }));
         w.step(Event::PolyTick(PolyTick { ts: 1740.0, up: 0.30, dn: 0.70 }));
@@ -1077,13 +1099,30 @@ mod tests {
         // A cycle opening in the *next* HKT session (start_ts +100_000s, well
         // over a day later, guaranteed to cross halt_reset_hour_rev's boundary
         // regardless of time-of-day) must clear the halt.
-        w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
+        let actions = w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
         assert!(!w.is_halted(), "halt must clear once a new HKT session opens");
+        assert!(actions.contains(&Action::HaltReset), "session rollover clearing an active halt must emit HaltReset: {actions:?}");
         w.step(Event::PolyTick(PolyTick { ts: 101_180.0, up: 0.85, dn: 0.15 }));
         w.step(Event::PolyTick(PolyTick { ts: 101_240.0, up: 0.30, dn: 0.70 })); // delta_pct not yet known this cycle, no fire
         let actions = w.step(Event::BinanceTick(BinanceTick { ts: 101_250.0, price: 59_900.0 })); // dp < 0 -> fires
         assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]),
             "entry must fire again once the halt has cleared for the new session: {actions:?}");
+    }
+
+    /// A cycle opening in a fresh HKT session must not emit `Action::HaltReset`
+    /// when the loss-streak halt was never active to begin with — this would
+    /// otherwise fire a "halt reset" Telegram notification every single day at
+    /// `halt_reset_hour_rev` regardless of whether anything actually happened.
+    #[test]
+    fn halt_reset_on_session_rollover_with_no_active_halt_is_silent() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        assert!(!w.is_halted());
+
+        let actions = w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
+        assert!(!w.is_halted());
+        assert!(!actions.contains(&Action::HaltReset),
+            "session rollover with nothing to clear must stay silent: {actions:?}");
     }
 
     #[test]

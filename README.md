@@ -973,6 +973,34 @@ cause upstream**: every *unconstrained* backtest sweep in `../btc_5mins/studies/
 that produced it explicitly excluded `sl_pnl = 0` and then walked to that search's grid maximum
 (`../btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md`).
 
+### Loss-streak halt now sends Telegram notifications on engage and reset (2026-07-07, added)
+
+The consecutive-loss halt (`halt_rev`/`halt_prob` — distinct from manual `/halt` and the balance
+drawdown halt, both of which already notified) previously changed state completely silently; the
+only way to notice was polling `/status`'s 🟡/🟢 indicator. Two new `Action` variants close the gap:
+
+- **`Action::HaltEngaged`** — fired from the exact trade (`on_cycle_close` or
+  `finalize_or_hold_residual`'s stop-loss/unwind-fill paths) whose loss crosses `halt_rev`/
+  `halt_prob`'s threshold. `HaltTracker::record_trade` (`backtest.rs`) now returns `bool` — `true`
+  only on the transition from not-halted to halted, so an already-open position resolving as a loss
+  *after* the halt has already engaged doesn't re-fire it.
+- **`Action::HaltReset`** — fired from `on_cycle_open` when the daily HKT session rollover
+  (`halt_reset_hour_rev`/`halt_reset_hour_hp`) actually clears an *active* halt.
+  `HaltTracker::reset_if_new_session` now returns `bool` for the same reason — a session rollover
+  with nothing to clear (the common case, most days) stays silent rather than sending a notification
+  every single day at 02:00/08:00 HKT regardless of whether anything happened.
+
+Both plumb through `Worker::step`'s existing `Vec<Action>` return the same way every other
+Telegram-worthy state change does, and `bin/live.rs`'s `process_actions` gets two new dedicated
+match arms (alongside the existing `StopLossVerdict`/`LogTradeCorrection` ones) building the
+messages — no new architecture, same pattern as the existing stop-loss-triggered notification.
+`backtest.rs::run_backtest`'s own calls to both methods discard the new return value — zero
+behavior change to backtest/sweeps. New tests: `halt_tracker_record_trade_signals_only_on_the_crossing_loss`,
+`halt_tracker_record_trade_ignores_non_loss_and_other_strategy`,
+`halt_tracker_reset_signals_only_when_clearing_an_active_halt` (`backtest.rs`), plus
+`halt_reset_on_session_rollover_with_no_active_halt_is_silent` and extended assertions on
+`halt_by_loss_streak_suppresses_entry_and_resets_next_session` (`worker.rs`).
+
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 
 Polymarket enforces two independent, differently-denominated minimum order sizes (no single
