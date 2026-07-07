@@ -106,12 +106,9 @@ impl RedemptionTracker {
             if p.condition_id.is_empty() || self.attempted.contains(&p.condition_id) {
                 continue;
             }
-            match executor.redeem(p).await {
-                Ok(true) => {
-                    self.attempted.insert(p.condition_id.clone());
-                    redeemed += 1;
-                }
-                Ok(false) | Err(_) => {}
+            if let Ok(true) = executor.redeem(p).await {
+                self.attempted.insert(p.condition_id.clone());
+                redeemed += 1;
             }
         }
         redeemed

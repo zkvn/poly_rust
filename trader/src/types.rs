@@ -1,4 +1,4 @@
-/// Shared tick types, cycle context, trade intent, and trade result.
+//! Shared tick types, cycle context, trade intent, and trade result.
 
 use serde::{Deserialize, Serialize};
 

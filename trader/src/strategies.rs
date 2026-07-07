@@ -1,8 +1,8 @@
-/// Strategy layer — ReversalStrategy and HighProbStrategy.
-///
-/// Strategies are pure objects over signal handles. `evaluate` is called after
-/// each BinanceTick (same as Python backtest). Gates (spread, delta_pct,
-/// staleness, max_price, halt) live in `gates.rs`, not here.
+//! Strategy layer — ReversalStrategy and HighProbStrategy.
+//!
+//! Strategies are pure objects over signal handles. `evaluate` is called after
+//! each BinanceTick (same as Python backtest). Gates (spread, delta_pct,
+//! staleness, max_price, halt) live in `gates.rs`, not here.
 
 use crate::signal::{DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal};
 use crate::types::{CycleContext, EntryType, Side, TradeIntent};

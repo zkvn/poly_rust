@@ -82,12 +82,11 @@ async fn main() -> Result<()> {
 
     // Route CLOB writes through the EC2 HTTP proxy when running from a geo-restricted
     // region (same var that Python's _patch_clob_proxy reads; empty = direct connect).
-    if let Ok(proxy_url) = std::env::var("CLOB_PROXY_URL") {
-        if !proxy_url.is_empty() {
-            // Safety: single-threaded here — tokio runtime not yet spawning work.
-            unsafe { std::env::set_var("HTTPS_PROXY", &proxy_url) };
-            println!("[probe] routing CLOB writes via proxy: {proxy_url}");
-        }
+    if let Ok(proxy_url) = std::env::var("CLOB_PROXY_URL")
+        && !proxy_url.is_empty() {
+        // Safety: single-threaded here — tokio runtime not yet spawning work.
+        unsafe { std::env::set_var("HTTPS_PROXY", &proxy_url) };
+        println!("[probe] routing CLOB writes via proxy: {proxy_url}");
     }
 
     match args.cmd {

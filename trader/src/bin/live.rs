@@ -160,7 +160,7 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
     use std::io::{BufRead as _, Write as _};
 
     if !std::path::Path::new(path).exists() {
-        let mut f = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
+        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
         writeln!(f, "{CSV_HEADER}")?;
         return Ok(());
     }
@@ -525,7 +525,7 @@ impl Driver<'_> {
                 }
             }
             Action::PlaceLimitSell { shares, price } => {
-                let Some(token_id) = slot.current_token_id else { return None };
+                let token_id = slot.current_token_id?;
                 let received_ts = now_secs_f64();
                 let r = self.engine.place_limit_sell(token_id, *shares, *price).await;
                 let confirmed_ts = now_secs_f64();
@@ -540,7 +540,7 @@ impl Driver<'_> {
                 })
             }
             Action::ClosePosition { shares, reason, limit_price, signal_ts } => {
-                let Some(token_id) = slot.current_token_id else { return None };
+                let token_id = slot.current_token_id?;
                 if matches!(reason, CloseReason::StopLoss) {
                     println!("[SL] {} stop-loss triggered — closing {shares:.4} shares (sl_pnl floor crossed; up to 5 retries)", slot.worker.asset);
                     // Only alert on the first trigger for this position — worker.rs
@@ -764,13 +764,12 @@ async fn main() -> Result<()> {
     // Route CLOB writes through the EC2 HTTP proxy when running from a geo-restricted
     // region (same var that Python's _patch_clob_proxy reads; empty = direct connect).
     // reqwest reads HTTPS_PROXY from the environment at Client::builder().build() time.
-    if let Ok(proxy_url) = std::env::var("CLOB_PROXY_URL") {
-        if !proxy_url.is_empty() {
-            // Safety: single-threaded at this point in main() — tokio runtime not yet
-            // spawning work, and no other thread reads HTTPS_PROXY concurrently.
-            unsafe { std::env::set_var("HTTPS_PROXY", &proxy_url) };
-            println!("[live] routing CLOB writes via proxy: {proxy_url}");
-        }
+    if let Ok(proxy_url) = std::env::var("CLOB_PROXY_URL")
+        && !proxy_url.is_empty() {
+        // Safety: single-threaded at this point in main() — tokio runtime not yet
+        // spawning work, and no other thread reads HTTPS_PROXY concurrently.
+        unsafe { std::env::set_var("HTTPS_PROXY", &proxy_url) };
+        println!("[live] routing CLOB writes via proxy: {proxy_url}");
     }
 
     // Telegram control plane (optional — runs without it if unconfigured, same

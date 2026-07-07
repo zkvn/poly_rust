@@ -289,6 +289,10 @@ pub struct Worker {
 }
 
 impl Worker {
+    // Private, 2 call sites (new_reversal/new_high_prob) — each arg is an
+    // independently meaningful strategy-specific scalar, not a good fit for a
+    // wrapper struct.
+    #[allow(clippy::too_many_arguments)]
     fn common(asset: &str, strategy_name: &'static str, kind: StrategyKind, p: &AssetParams, sl: f64, sl_pnl: f64, unwind_pnl: f64, halt_max: i64, halt_reset_hour: i64) -> Self {
         Self {
             asset: asset.to_string(),
@@ -416,26 +420,19 @@ impl Worker {
     pub fn reconcile(persisted: &PersistedWorkerState, open_order_ids: &[String], token_balance: f64) -> WorkerState {
         match persisted {
             PersistedWorkerState::Watching => WorkerState::Watching,
-            PersistedWorkerState::Entering => {
-                // The FAK either filled or didn't while we were down; with no
-                // fill confirmation available, the safe default is to treat it
-                // as not filled (no token balance implies nothing to resume).
-                if token_balance > 0.0 {
-                    WorkerState::Watching // conservative: can't reconstruct entry details
-                } else {
-                    WorkerState::Watching
-                }
-            }
+            // The FAK either filled or didn't while we were down; with no fill
+            // confirmation available, the safe default is to treat it as not
+            // filled either way (no entry details to reconstruct a Holding from).
+            PersistedWorkerState::Entering => WorkerState::Watching,
             PersistedWorkerState::Holding(h) | PersistedWorkerState::Unwinding(h) | PersistedWorkerState::StopExiting(h) => {
                 if token_balance <= 0.0 {
                     return WorkerState::Watching; // already resolved/sold while we were down
                 }
                 let mut h = h.clone();
-                if let ExitArm::GtcResting { order_id } = &h.exit_arm {
-                    if !open_order_ids.contains(order_id) {
-                        // Resting order is gone but tokens remain — fall back to PriceMonitor.
-                        h.exit_arm = ExitArm::PriceMonitor { tp_price: h.token_price + 0.0 };
-                    }
+                if let ExitArm::GtcResting { order_id } = &h.exit_arm
+                    && !open_order_ids.contains(order_id) {
+                    // Resting order is gone but tokens remain — fall back to PriceMonitor.
+                    h.exit_arm = ExitArm::PriceMonitor { tp_price: h.token_price + 0.0 };
                 }
                 WorkerState::Holding(h)
             }
@@ -626,11 +623,10 @@ impl Worker {
         // tp_price itself (`limit_price: Some(tp_price)`) — the minimum
         // acceptable sell price is automatically the take-profit target, no
         // separate config needed (see trader/doc/incident_sol_unwind_but_loss_2026-07-06.md).
-        if let ExitArm::PriceMonitor { tp_price } = h.exit_arm {
-            if exit_price >= tp_price && h.shares >= MIN_SELLABLE_SHARES {
-                self.state = WorkerState::Unwinding(h.clone());
-                return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit, limit_price: Some(tp_price), signal_ts: tick.ts }, Action::Persist];
-            }
+        if let ExitArm::PriceMonitor { tp_price } = h.exit_arm
+            && exit_price >= tp_price && h.shares >= MIN_SELLABLE_SHARES {
+            self.state = WorkerState::Unwinding(h.clone());
+            return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit, limit_price: Some(tp_price), signal_ts: tick.ts }, Action::Persist];
         }
 
         vec![]

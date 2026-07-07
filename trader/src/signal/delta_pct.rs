@@ -1,6 +1,6 @@
-/// DeltaPctSignal — (latest_binance - cycle_open) / cycle_open.
-///
-/// Returns 0.0 if either price is missing (mirrors Python DeltaPctSignal).
+//! DeltaPctSignal — (latest_binance - cycle_open) / cycle_open.
+//!
+//! Returns 0.0 if either price is missing (mirrors Python DeltaPctSignal).
 
 use crate::signal::Signal;
 use crate::types::{BinanceTick, CycleContext};
@@ -8,6 +8,12 @@ use crate::types::{BinanceTick, CycleContext};
 pub struct DeltaPctSignal {
     price: f64,
     open: f64,
+}
+
+impl Default for DeltaPctSignal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DeltaPctSignal {

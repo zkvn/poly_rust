@@ -1,4 +1,4 @@
-/// LatestBinanceSignal — latest Binance spot price and timestamp.
+//! LatestBinanceSignal — latest Binance spot price and timestamp.
 
 use crate::signal::Signal;
 use crate::types::{BinanceTick, CycleContext};
@@ -6,6 +6,12 @@ use crate::types::{BinanceTick, CycleContext};
 pub struct LatestBinanceSignal {
     price: f64,
     ts: f64,
+}
+
+impl Default for LatestBinanceSignal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LatestBinanceSignal {

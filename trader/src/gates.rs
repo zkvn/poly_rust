@@ -1,11 +1,11 @@
-/// Cross-strategy gate checks (mirrors Python worker._common_gates / backtest._gate_blocked).
-///
-/// Gate order (matches Python):
-///   1. spread premium/discount
-///   2. poly staleness (age)
-///   3. |delta_pct| < per-strategy minimum
-///   4. token_price > max_buy_price
-///   5. reversal: token_price > price_high_rev
+//! Cross-strategy gate checks (mirrors Python worker._common_gates / backtest._gate_blocked).
+//!
+//! Gate order (matches Python):
+//!   1. spread premium/discount
+//!   2. poly staleness (age)
+//!   3. |delta_pct| < per-strategy minimum
+//!   4. token_price > max_buy_price
+//!   5. reversal: token_price > price_high_rev
 
 use crate::signal::{DeltaPctSignal, LatestPolySignal, SpreadSignal};
 use crate::types::{EntryType, TradeIntent};

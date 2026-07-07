@@ -42,7 +42,7 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
     if std::path::Path::new(path).exists() {
         return Ok(());
     }
-    let mut f = OpenOptions::new().create(true).write(true).open(path)?;
+    let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
     writeln!(f, "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl")?;
     Ok(())
 }

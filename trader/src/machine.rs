@@ -439,7 +439,7 @@ mod tests {
         let rec = rec.unwrap();
         assert_eq!(rec.outcome, Outcome::StopLoss);
         // pnl = -trade_size * sl_pnl / token_price = -1.0 * 0.20 / 0.75
-        assert!((rec.pnl - (-1.0 * 0.20 / 0.75)).abs() < 0.0001,
+        assert!((rec.pnl - (-0.20 / 0.75)).abs() < 0.0001,
             "pnl={}, expected {}", rec.pnl, -0.20/0.75);
     }
 

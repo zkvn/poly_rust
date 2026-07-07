@@ -1,11 +1,11 @@
-/// SawLowSignal — latches True when the side's token price dips below
-/// `low_threshold` while time_left is in `[end_time_left, start_time_left]`.
-///
-/// Window is in time_left (seconds until cycle end):
-///   - opens at `start_time_left` (e.g. 120s remaining for BTC reversal_start_time)
-///   - closes at `end_time_left` (e.g. 10s = no_enter_when_time_left)
-///
-/// Once latched, `saw_low()` returns true for the rest of the cycle.
+//! SawLowSignal — latches True when the side's token price dips below
+//! `low_threshold` while time_left is in `[end_time_left, start_time_left]`.
+//!
+//! Window is in time_left (seconds until cycle end):
+//!   - opens at `start_time_left` (e.g. 120s remaining for BTC reversal_start_time)
+//!   - closes at `end_time_left` (e.g. 10s = no_enter_when_time_left)
+//!
+//! Once latched, `saw_low()` returns true for the rest of the cycle.
 
 use crate::signal::Signal;
 use crate::types::{CycleContext, PolyTick};

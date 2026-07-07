@@ -199,10 +199,9 @@ impl TelegramBot {
                 Ok(messages) => {
                     for m in messages {
                         if let Some(d) = dispatch(&m.text) {
-                            if let Some(control) = d.control {
-                                if control_tx.send(control).is_err() {
-                                    return Ok(()); // receiver dropped — worker shut down
-                                }
+                            if let Some(control) = d.control
+                                && control_tx.send(control).is_err() {
+                                return Ok(()); // receiver dropped — worker shut down
                             }
                             if let Some(reply) = d.reply {
                                 let _ = self.send(&reply).await;

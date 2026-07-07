@@ -122,10 +122,9 @@ pub fn spawn_binance_task(asset: &str, tx: mpsc::UnboundedSender<BinanceTick>) {
                             Ok(Message::Text(txt)) => {
                                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
                                     let price = v["p"].as_str().and_then(|s| s.parse::<f64>().ok());
-                                    if let Some(price) = price {
-                                        if tx.send(BinanceTick { ts: now_secs_f64(), price }).is_err() {
-                                            return; // receiver dropped
-                                        }
+                                    if let Some(price) = price
+                                        && tx.send(BinanceTick { ts: now_secs_f64(), price }).is_err() {
+                                        return; // receiver dropped
                                     }
                                 }
                             }
@@ -208,10 +207,10 @@ pub fn clob_client() -> ClobWsClient {
 }
 
 pub fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
         .build()
-        .context("http client")?)
+        .context("http client")
 }
 
 /// Wraps the current cycle's poly subscription task so it can be aborted on rotation.

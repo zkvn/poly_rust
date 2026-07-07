@@ -1001,6 +1001,54 @@ behavior change to backtest/sweeps. New tests: `halt_tracker_record_trade_signal
 `halt_reset_on_session_rollover_with_no_active_halt_is_silent` and extended assertions on
 `halt_by_loss_streak_suppresses_entry_and_resets_next_session` (`worker.rs`).
 
+### `cargo clippy --all-targets --all-features -- -D warnings` cleaned up (2026-07-07, fixed)
+
+`trader`'s clippy had drifted to 24 pre-existing errors on `main` (confirmed unrelated to any
+feature work — same count on a clean checkout before this pass), evidently from a toolchain/clippy
+version bump surfacing lints this code predates. All fixed, no behavior change to any of them —
+verified via `cargo build`/`cargo test` (141 lib + 10 bin tests, all passing) after every fix:
+
+- **9× `empty_line_after_doc_comments`** (`config.rs`, `gates.rs`, `signal/mod.rs`,
+  `signal/delta_pct.rs`, `signal/latest_binance.rs`, `signal/latest_poly.rs`, `signal/saw_low.rs`,
+  `strategies.rs`, `types.rs`) — a file-level `///` doc comment followed by a blank line reads as
+  documenting the *next item* (a `use`/`mod`), not the file. All were genuinely file-level docs;
+  changed `///` → `//!` on each rather than deleting the blank line (which would've kept the
+  comment wrongly attached to the following `use` statement).
+- **6× `collapsible_if`** (`marketdata.rs`, `telegram/mod.rs`, `worker.rs`×2, `api_probe.rs`,
+  `live.rs`) — nested `if let X { if cond { ... } }` collapsed into `if let X && cond { ... }`
+  (Rust let-chains). Behavior-identical.
+- **5× `new_without_default`** (`signal/delta_pct.rs`, `signal/latest_binance.rs`,
+  `signal/latest_poly.rs`×2, `signal/mod.rs`) — added `impl Default { fn default() -> Self {
+  Self::new() } }` for each `pub fn new()` with no args.
+- **`single_match`** (`redemption.rs`) — `match { Ok(true) => {...}, Ok(false)|Err(_) => {} }` →
+  `if let Ok(true) = ...`.
+- **`needless_question_mark`** (`marketdata.rs::http_client`) — `Ok(foo?)` → `foo`.
+- **`trim_split_whitespace`** (`telegram/commands.rs::parse_command`) — `.trim().split_whitespace()`
+  had a redundant `.trim()` (`split_whitespace()` already ignores leading/trailing whitespace).
+- **`neg_multiply`** (`machine.rs` test) — `-1.0 * 0.20` → `-0.20`.
+- **2× `suspicious_open_options`** (`bin/shadow.rs`, `bin/live.rs::append_csv_header_if_new`) —
+  `OpenOptions::new().create(true).write(true)` with no explicit truncate/append intent; both call
+  sites only ever run when the file doesn't already exist (guarded by an `if !exists`/`if exists {
+  return }` check just above), so `.truncate(true)` documents the already-true behavior rather than
+  changing it.
+- **2× `question_mark`** (`bin/live.rs::execute`) — `let Some(token_id) = slot.current_token_id
+  else { return None };` → `let token_id = slot.current_token_id?;` (the enclosing fn already
+  returns `Option<Event>`).
+- **`too_many_arguments`** (`worker.rs::Worker::common`, 9 args) — added
+  `#[allow(clippy::too_many_arguments)]` rather than restructuring: private, 2 call sites
+  (`new_reversal`/`new_high_prob`), each arg independently meaningful — a wrapper struct would add
+  a layer without a real clarity gain here.
+- **`if_same_then_else`** (`worker.rs::reconcile`'s `Entering` arm) — both branches of `if
+  token_balance > 0.0 { Watching } else { Watching }` returned the identical value; collapsed to
+  unconditional `WorkerState::Watching` with the explanatory comment kept (the surrounding doc
+  comment already establishes both cases are meant to resolve the same way — this wasn't a missed
+  branch, just dead conditioning).
+
+Not addressed in this pass: `cargo fmt --all --check` also has ~350 pre-existing diffs across the
+crate (same toolchain-drift shape, confirmed unrelated to any feature work) — out of scope here
+since `cargo fmt --all` would rewrite most lines of every touched file, obscuring any real change
+in the same commit. Left for a dedicated formatting-only pass if wanted.
+
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 
 Polymarket enforces two independent, differently-denominated minimum order sizes (no single

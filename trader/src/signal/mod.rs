@@ -1,4 +1,4 @@
-/// Signal layer — trait, TickBus, and one file per signal.
+//! Signal layer — trait, TickBus, and one file per signal.
 
 pub mod delta_pct;
 pub mod latest_binance;
@@ -26,6 +26,12 @@ pub trait Signal {
 pub struct TickBus {
     binance: Vec<Box<dyn FnMut(BinanceTick)>>,
     poly: Vec<Box<dyn FnMut(PolyTick)>>,
+}
+
+impl Default for TickBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TickBus {

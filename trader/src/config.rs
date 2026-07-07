@@ -1,7 +1,7 @@
-/// Load strategy_*.toml config — same rule as Python bot/config._load_strategy_toml.
-///
-/// Per-asset dicts use a "default" key; get_asset(map, asset) returns the
-/// asset-specific value or falls back to the default.
+//! Load strategy_*.toml config — same rule as Python bot/config._load_strategy_toml.
+//!
+//! Per-asset dicts use a "default" key; get_asset(map, asset) returns the
+//! asset-specific value or falls back to the default.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -1,5 +1,5 @@
-/// LatestPolySignal — tracks the most recent non-zero UP/DN prices + timestamp.
-/// SpreadSignal — sum of latest UP + DN prices (spread gate).
+//! LatestPolySignal — tracks the most recent non-zero UP/DN prices + timestamp.
+//! SpreadSignal — sum of latest UP + DN prices (spread gate).
 
 use crate::signal::Signal;
 use crate::types::{CycleContext, PolyTick};
@@ -8,6 +8,12 @@ pub struct LatestPolySignal {
     pub up: f64,
     pub dn: f64,
     pub ts: f64,
+}
+
+impl Default for LatestPolySignal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LatestPolySignal {
@@ -41,6 +47,12 @@ impl Signal for LatestPolySignal {
 pub struct SpreadSignal {
     up: f64,
     dn: f64,
+}
+
+impl Default for SpreadSignal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpreadSignal {

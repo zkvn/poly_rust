@@ -94,7 +94,7 @@ pub enum Command {
 /// Parse one incoming Telegram message text into a `Command`.
 /// Returns `None` only for a blank/whitespace-only message (nothing to dispatch).
 pub fn parse_command(text: &str) -> Option<Command> {
-    let parts: Vec<&str> = text.trim().split_whitespace().collect();
+    let parts: Vec<&str> = text.split_whitespace().collect();
     if parts.is_empty() {
         return None;
     }
