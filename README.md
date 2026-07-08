@@ -1134,6 +1134,61 @@ asymmetric-safe compared to `sl_pnl`: a too-short `unwind_time` only makes exits
 (closes earlier/more often), the opposite direction from the SOL/DOGE failure mode where a
 boundary value masked a threshold that couldn't fire at all.
 
+### Halt state and `/status` counters didn't survive a restart (2026-07-08, fixed)
+
+A balance-drawdown halt engaged 2026-07-07 stayed silently cleared by a routine
+`trader-live.service` restart 12+ hours later — not by `/resume`, not by the loss-streak's daily
+reset — with zero Telegram notification either way (full diagnosis:
+`trader/doc/incident_no_reset_notification_2026-07-08.md`). Root cause: `entry_suppressed`
+(`/halt`/`/resume`/the drawdown guard) and `HaltTracker`'s loss/session counters only ever lived
+in-memory on `Worker`; a restart rebuilds every `Worker` from scratch via `new_reversal`/
+`new_high_prob`, which always starts un-halted, and no code path notifies on that transition.
+The same gap meant `/status`'s win/loss/stoploss/unwind/timeout counts and total PnL — tracked on
+`bin/live.rs`'s `AssetSlot`, never on `Worker` — also reset to zero on every restart, even with no
+trade in between.
+
+**Fix — restart now round-trips both:**
+- `PersistedState` (`worker.rs`) gained `entry_suppressed`, `halt_losses`, `halt_last_session`
+  (`#[serde(default)]`, so a pre-existing `live_state_*.json` still loads — as "un-halted, zero
+  counters," identical to today's from-scratch behavior). `HaltTracker` gained `losses()`/
+  `last_session()`/`restore()` (`backtest.rs`); `Worker::restore_halt()` rebuilds both flags from a
+  loaded file. `halt_max`/`halt_reset_hour` are deliberately never persisted — they always come
+  fresh from config, so a config change between restarts takes effect immediately rather than
+  being shadowed by the old file.
+- `bin/live.rs` wraps `PersistedState` plus a new `PersistedStats{wins,losses,stoplosses,unwinds,
+  timeouts,total_pnl,last_trade}` in one `PersistedSlot` written to the same `live_state_*.json` —
+  no new files. `persist()` now takes `&AssetSlot` (was `&Worker`) so both halves are written
+  together; `load_persisted_slot()` is best-effort (missing file, corrupt JSON, or a legacy
+  pre-this-change shape all fall back to a fresh un-halted/zero-stats start, never a hard failure)
+  and runs once per `(asset, strategy)` slot at startup, before the first cycle opens.
+- `on_control`/`on_balance` (`/halt`, `/resume`, the drawdown guard) now also emit
+  `Action::Persist`. Previously they returned no actions at all, so a halt/resume only reached disk
+  whenever the *next* trade-lifecycle event happened to persist — up to ~5 minutes away at the next
+  cycle open. A restart in that window would have silently lost a just-issued `/halt` even with the
+  fix above; this closes it so every halt-state change is flushed immediately.
+
+**Net effect:** `/status` after a restart is now identical to before it, provided no trade and no
+config change happened in between — the two things a restart legitimately should and shouldn't
+remember, respectively (a config change correctly changes the displayed `sl`/`halt_after`/etc.
+values; live balance and current market prices are re-fetched live either way, restart or not, and
+were never meant to be "restored").
+
+**Deliberately out of scope:** an in-flight *position* still does not resume across a restart —
+`Worker::reconcile`/`resume_from` exist and are unit-tested (`to_persisted_round_trips_holding_state`
+etc.) but have no call site in `bin/live.rs`; `live_state_*.json` has effectively been write-only
+for that part of the state since the file was introduced. Flagged in the incident doc as a known
+follow-up, not fixed here — halt/stats parity doesn't depend on it, and wiring up live position
+resume is a larger, separate change (needs a CLOB reconciliation call against real order/balance
+state before trusting a resumed `Holding`, per `reconcile`'s existing doc comment).
+
+New tests: `control_and_balance_events_persist_immediately`,
+`halt_state_round_trips_across_a_restart`, `manual_halt_round_trips_across_a_restart` (`worker.rs`);
+`round_trips_halt_state_and_stats`, `legacy_file_without_new_fields_loads_with_defaults`,
+`missing_file_loads_as_none`, `corrupt_file_loads_as_none_not_a_panic` (`bin/live.rs`). Full suite:
+166 passed (152 lib + 14 bin), 0 failed. Verified live on Oracle post-deploy: `live_state_eth_*.json`
+now carries `entry_suppressed`/`halt_losses`/`halt_last_session`/`stats` after the restart that
+shipped this fix.
+
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 
 Polymarket enforces two independent, differently-denominated minimum order sizes (no single

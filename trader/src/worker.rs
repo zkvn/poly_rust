@@ -9,6 +9,7 @@
 // `Event`. This keeps the decision core testable with a scripted event
 // sequence and no live I/O (§10: sync core, async shell).
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::backtest::HaltTracker;
@@ -209,6 +210,20 @@ pub struct PersistedState {
     pub cycle_start: f64,
     pub cycle_end: f64,
     pub state: PersistedWorkerState,
+    /// No-entry gate at the time of persisting — `/halt`, the balance-drawdown
+    /// guard, or manually cleared by `/resume`. `#[serde(default)]` so a state
+    /// file written before this field existed still loads (as `false`, i.e.
+    /// "not halted" — the same as today's un-persisted behavior).
+    #[serde(default)]
+    pub entry_suppressed: bool,
+    /// The per-strategy consecutive-loss halt's counter/session at persist
+    /// time — restores `HaltTracker` across a restart via `Worker::restore_halt`.
+    /// `halt_max`/`halt_reset_hour` are deliberately NOT persisted here; they
+    /// always come fresh from config so a config change takes effect on restart.
+    #[serde(default)]
+    pub halt_losses: i64,
+    #[serde(default)]
+    pub halt_last_session: Option<NaiveDate>,
 }
 
 // ── Strategy variant (mirrors machine.rs) ─────────────────────────────────────
@@ -431,7 +446,21 @@ impl Worker {
             cycle_start: self.cycle_start_ts,
             cycle_end: self.cycle_end_ts,
             state,
+            entry_suppressed: self.entry_suppressed,
+            halt_losses: self.halt.losses(),
+            halt_last_session: self.halt.last_session(),
         }
+    }
+
+    /// Restores halt state from a previously-persisted `PersistedState` — the
+    /// counterpart to `to_persisted`'s `entry_suppressed`/`halt_losses`/
+    /// `halt_last_session`. Config-derived halt params (`max`/`reset_hour`)
+    /// stay whatever `new_reversal`/`new_high_prob` already set from the
+    /// current config, so a config change between restarts takes effect
+    /// immediately rather than being shadowed by the persisted file.
+    pub fn restore_halt(&mut self, entry_suppressed: bool, halt_losses: i64, halt_last_session: Option<NaiveDate>) {
+        self.entry_suppressed = entry_suppressed;
+        self.halt = HaltTracker::restore(self.halt.max(), self.halt.reset_hour(), halt_losses, halt_last_session);
     }
 
     /// Reconcile a reloaded `PersistedState` against the live CLOB before
@@ -926,14 +955,18 @@ impl Worker {
             ControlEvent::Resume => self.entry_suppressed = false,
         }
         // No state change — halt/resume never touch an in-flight position.
-        vec![]
+        // `Action::Persist` still fires so `entry_suppressed` reaches disk
+        // immediately rather than waiting for the next trade-lifecycle event
+        // (up to ~5 min away at the next cycle open) — see
+        // trader/doc/incident_no_reset_notification_2026-07-08.md.
+        vec![Action::Persist]
     }
 
     fn on_balance(&mut self, event: BalanceEvent) -> Vec<Action> {
         match event {
             BalanceEvent::DrawdownHalt => self.entry_suppressed = true,
         }
-        vec![]
+        vec![Action::Persist]
     }
 
     fn last_binance_ts(&self) -> f64 {
@@ -1242,6 +1275,94 @@ mod tests {
 
         w.step(Event::Control(ControlEvent::Resume));
         assert!(!w.is_halted(), "/resume must still clear the halt");
+    }
+
+    /// trader/doc/incident_no_reset_notification_2026-07-08.md: `/halt`,
+    /// `/resume`, and the balance-drawdown halt used to return no actions at
+    /// all, so a halt/resume only reached `live_state_*.json` whenever the
+    /// *next* trade-lifecycle event happened to persist — up to ~5 minutes
+    /// away at the next cycle open. A restart in that window silently lost
+    /// the just-issued halt. Both must now flush to disk immediately.
+    #[test]
+    fn control_and_balance_events_persist_immediately() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+
+        assert_eq!(w.step(Event::Control(ControlEvent::Halt)), vec![Action::Persist]);
+        assert_eq!(w.step(Event::Control(ControlEvent::Resume)), vec![Action::Persist]);
+        assert_eq!(w.step(Event::Balance(BalanceEvent::DrawdownHalt)), vec![Action::Persist]);
+    }
+
+    /// A process restart rebuilds every `Worker` from scratch via
+    /// `new_reversal`/`new_high_prob`, which always starts un-halted
+    /// (trader/doc/incident_no_reset_notification_2026-07-08.md). This
+    /// reproduces that restart across both halt mechanisms — manual/drawdown
+    /// (`entry_suppressed`) and the loss-streak counter (`HaltTracker`) — via
+    /// `to_persisted`/`restore_halt`, and confirms the restored worker behaves
+    /// exactly as the original would have: still halted, survives a
+    /// same-session cycle boundary, and still clears on the next daily reset.
+    #[test]
+    fn halt_state_round_trips_across_a_restart() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+
+        // Trip the loss-streak halt (halt_rev=2) — leaves entry_suppressed
+        // untouched (false) so this also exercises halt_losses/halt_last_session
+        // independently of the manual-halt flag.
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 }));
+        w.step(Event::CycleClose);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 }));
+        w.step(Event::CycleClose);
+        assert!(w.is_halted(), "sanity: halt_rev=2 should have tripped");
+
+        let persisted = w.to_persisted();
+        assert!(!persisted.entry_suppressed, "loss-streak halt must not touch entry_suppressed");
+        assert_eq!(persisted.halt_losses, 2);
+        assert!(persisted.halt_last_session.is_some());
+
+        // Simulate a restart: a fresh worker starts un-halted...
+        let mut restarted = Worker::new_reversal("BTC", &p);
+        assert!(!restarted.is_halted());
+        // ...until restore_halt replays what was persisted just before shutdown.
+        restarted.restore_halt(persisted.entry_suppressed, persisted.halt_losses, persisted.halt_last_session);
+        assert!(restarted.is_halted(), "restored worker must come back halted");
+
+        // Behaves exactly like the pre-restart worker from here: survives a
+        // same-session cycle boundary, clears on the next HKT session.
+        let actions = restarted.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
+        assert!(restarted.is_halted(), "halt must survive a same-session cycle boundary post-restart");
+        assert!(!actions.contains(&Action::HaltReset));
+        let actions = restarted.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
+        assert!(!restarted.is_halted(), "halt must still clear on the next daily reset post-restart");
+        assert!(actions.contains(&Action::HaltReset));
+    }
+
+    /// Same restart scenario as `halt_state_round_trips_across_a_restart`, but
+    /// for the manual/drawdown flag (`entry_suppressed`) in isolation — no
+    /// loss-streak involved, and no daily reset ever clears it (only `/resume`
+    /// does), so a restore must leave it halted indefinitely across cycles.
+    #[test]
+    fn manual_halt_round_trips_across_a_restart() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::Control(ControlEvent::Halt));
+
+        let persisted = w.to_persisted();
+        assert!(persisted.entry_suppressed);
+        assert_eq!(persisted.halt_losses, 0);
+        assert!(persisted.halt_last_session.is_none());
+
+        let mut restarted = Worker::new_reversal("BTC", &p);
+        restarted.restore_halt(persisted.entry_suppressed, persisted.halt_losses, persisted.halt_last_session);
+        assert!(restarted.is_halted(), "restored worker must come back halted");
+
+        restarted.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
+        assert!(restarted.is_halted(), "manual halt must not be cleared by a daily reset, restored or not");
+
+        restarted.step(Event::Control(ControlEvent::Resume));
+        assert!(!restarted.is_halted(), "/resume must still clear a restored manual halt");
     }
 
     #[test]

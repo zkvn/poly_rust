@@ -225,11 +225,67 @@ fn extract_server_ts(payload: &[u8]) -> Option<f64> {
     serde_json::from_slice::<ServerTs>(payload).ok().and_then(|s| s.server_ts)
 }
 
-fn persist(worker: &Worker, state_file: &str) {
-    let snap = worker.to_persisted();
+/// `/status`'s win/loss/pnl counters — `Worker` has no notion of these, they're
+/// purely this binary's `AssetSlot` bookkeeping. Persisted alongside the
+/// worker's own `PersistedState` so a restart with no new trade in between
+/// shows an identical `/status` to before it (see
+/// trader/doc/incident_no_reset_notification_2026-07-08.md). Every field
+/// defaults on a missing/legacy file — same as never having persisted them.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct PersistedStats {
+    #[serde(default)]
+    wins: u32,
+    #[serde(default)]
+    losses: u32,
+    #[serde(default)]
+    stoplosses: u32,
+    #[serde(default)]
+    unwinds: u32,
+    #[serde(default)]
+    timeouts: u32,
+    #[serde(default)]
+    total_pnl: f64,
+    #[serde(default)]
+    last_trade: Option<String>,
+}
+
+/// On-disk shape of `live_state_<asset>_<strategy>.json`: the worker's own
+/// position/halt invariants, flattened, plus this binary's display counters.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedSlot {
+    #[serde(flatten)]
+    worker: trader::worker::PersistedState,
+    #[serde(default)]
+    stats: PersistedStats,
+}
+
+fn persist(slot: &AssetSlot) {
+    let snap = PersistedSlot {
+        worker: slot.worker.to_persisted(),
+        stats: PersistedStats {
+            wins: slot.wins,
+            losses: slot.losses,
+            stoplosses: slot.stoplosses,
+            unwinds: slot.unwinds,
+            timeouts: slot.timeouts,
+            total_pnl: slot.total_pnl,
+            last_trade: slot.last_trade.clone(),
+        },
+    };
     if let Ok(json) = serde_json::to_string_pretty(&snap) {
-        let _ = std::fs::write(state_file, json);
+        let _ = std::fs::write(&slot.state_file, json);
     }
+}
+
+/// Best-effort load of a previously-persisted slot — a missing file (first
+/// run), unparsable JSON, or any other error just means "nothing to restore,"
+/// never a startup failure. Loading is intentionally silent on failure since
+/// a corrupt/legacy state file is expected to eventually happen (manual edits,
+/// a field-shape change) and should never block the live process from coming
+/// up un-halted with zero stats — the same as today's from-scratch behavior.
+fn load_persisted_slot(state_file: &str) -> Option<PersistedSlot> {
+    let contents = std::fs::read_to_string(state_file).ok()?;
+    serde_json::from_str(&contents).ok()
 }
 
 /// Which upstream feed produced the tick that triggered the action currently
@@ -660,7 +716,7 @@ impl Driver<'_> {
         Box::pin(async move {
             for action in &actions {
                 match action {
-                    Action::Persist => persist(&slot.worker, &slot.state_file),
+                    Action::Persist => persist(slot),
                     Action::LogTrade(rec) => {
                         println!("[TRADE] {rec:?}");
                         if let Err(e) = log_trade(&slot.log_path, rec) {
@@ -881,7 +937,7 @@ async fn main() -> Result<()> {
         }
 
         for strategy in &params.strategies {
-            let worker = match strategy.as_str() {
+            let mut worker = match strategy.as_str() {
                 "reversal" => Worker::new_reversal(asset, &params),
                 "high_prob" => Worker::new_high_prob(asset, &params),
                 other => anyhow::bail!("unknown strategy `{other}` for asset {asset} (from config)"),
@@ -890,6 +946,19 @@ async fn main() -> Result<()> {
             let log_path = format!("{}/live_trades_{lower}_{strategy}.csv", args.log_dir);
             let state_file = format!("{}/live_state_{lower}_{strategy}.json", args.log_dir);
             append_csv_header_if_new(&log_path)?;
+
+            // Restore halt state + /status counters from before the last
+            // restart (position/cycle state is deliberately NOT restored here
+            // — see README's "Restart behavior" section). `halt_max`/
+            // `halt_reset_hour` always come from the config just loaded above,
+            // never from this file, so a config change takes effect immediately.
+            let stats = match load_persisted_slot(&state_file) {
+                Some(persisted) => {
+                    worker.restore_halt(persisted.worker.entry_suppressed, persisted.worker.halt_losses, persisted.worker.halt_last_session);
+                    persisted.stats
+                }
+                None => PersistedStats::default(),
+            };
 
             if args.nats_url.is_none() {
                 let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<BinanceTick>();
@@ -917,13 +986,13 @@ async fn main() -> Result<()> {
                 cycle_trades: 0,
                 sl_notified: false,
                 timeout_notified: false,
-                wins: 0,
-                losses: 0,
-                stoplosses: 0,
-                unwinds: 0,
-                timeouts: 0,
-                total_pnl: 0.0,
-                last_trade: None,
+                wins: stats.wins,
+                losses: stats.losses,
+                stoplosses: stats.stoplosses,
+                unwinds: stats.unwinds,
+                timeouts: stats.timeouts,
+                total_pnl: stats.total_pnl,
+                last_trade: stats.last_trade,
                 current_slug: None,
                 last_binance: 0.0,
                 last_poly_up: 0.0,
@@ -1302,6 +1371,112 @@ mod csv_header_tests {
         for line in &lines {
             assert_eq!(line.matches(',').count(), 14, "every row must have 15 fields: {line}");
         }
+        std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod persisted_slot_tests {
+    use super::*;
+    use trader::worker::PersistedWorkerState;
+
+    fn scratch_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("poly_rust_test_state_{name}_{}.json", std::process::id()))
+    }
+
+    fn sample_slot() -> PersistedSlot {
+        PersistedSlot {
+            worker: trader::worker::PersistedState {
+                asset: "ETH".to_string(),
+                strategy: "high_prob".to_string(),
+                slug: "eth-updown-5m-1000".to_string(),
+                cycle_start: 1_000.0,
+                cycle_end: 1_300.0,
+                state: PersistedWorkerState::Watching,
+                entry_suppressed: true,
+                halt_losses: 2,
+                halt_last_session: Some(chrono::NaiveDate::from_ymd_opt(2026, 7, 8).unwrap()),
+            },
+            stats: PersistedStats {
+                wins: 3,
+                losses: 5,
+                stoplosses: 1,
+                unwinds: 2,
+                timeouts: 1,
+                total_pnl: -0.4321,
+                last_trade: Some("12:00:00 UP LOSS pnl=-0.1000".to_string()),
+            },
+        }
+    }
+
+    /// `load_persisted_slot` round-trips exactly what `persist` wrote — the
+    /// core contract this feature depends on: no new-trade restart should be
+    /// able to change `/status`'s halt indicator or win/loss/pnl counters.
+    #[test]
+    fn round_trips_halt_state_and_stats() {
+        let path = scratch_path("roundtrip");
+        let path_str = path.to_str().unwrap();
+        let snap = sample_slot();
+        std::fs::write(&path, serde_json::to_string_pretty(&snap).unwrap()).unwrap();
+
+        let loaded = load_persisted_slot(path_str).expect("must parse a file it just wrote");
+        assert!(loaded.worker.entry_suppressed);
+        assert_eq!(loaded.worker.halt_losses, 2);
+        assert_eq!(loaded.worker.halt_last_session, snap.worker.halt_last_session);
+        assert_eq!(loaded.stats.wins, 3);
+        assert_eq!(loaded.stats.losses, 5);
+        assert_eq!(loaded.stats.stoplosses, 1);
+        assert_eq!(loaded.stats.unwinds, 2);
+        assert_eq!(loaded.stats.timeouts, 1);
+        assert_eq!(loaded.stats.total_pnl, -0.4321);
+        assert_eq!(loaded.stats.last_trade, snap.stats.last_trade);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A state file written before this feature shipped has none of
+    /// `entry_suppressed`/`halt_losses`/`halt_last_session`/`stats` — must load
+    /// as "un-halted, zero stats" rather than fail to parse (see
+    /// trader/doc/incident_no_reset_notification_2026-07-08.md: the whole point
+    /// is a restart must never crash or regress just because the on-disk shape
+    /// predates this change).
+    #[test]
+    fn legacy_file_without_new_fields_loads_with_defaults() {
+        let path = scratch_path("legacy");
+        let path_str = path.to_str().unwrap();
+        let legacy = r#"{
+            "asset": "ETH",
+            "strategy": "high_prob",
+            "slug": "eth-updown-5m-1000",
+            "cycle_start": 1000.0,
+            "cycle_end": 1300.0,
+            "state": "Watching"
+        }"#;
+        std::fs::write(&path, legacy).unwrap();
+
+        let loaded = load_persisted_slot(path_str).expect("legacy shape must still parse");
+        assert!(!loaded.worker.entry_suppressed);
+        assert_eq!(loaded.worker.halt_losses, 0);
+        assert_eq!(loaded.worker.halt_last_session, None);
+        assert_eq!(loaded.stats.wins, 0);
+        assert_eq!(loaded.stats.total_pnl, 0.0);
+        assert_eq!(loaded.stats.last_trade, None);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn missing_file_loads_as_none() {
+        let path = scratch_path("missing");
+        let _ = std::fs::remove_file(&path);
+        assert!(load_persisted_slot(path.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn corrupt_file_loads_as_none_not_a_panic() {
+        let path = scratch_path("corrupt");
+        std::fs::write(&path, "not valid json{{{").unwrap();
+        assert!(load_persisted_slot(path.to_str().unwrap()).is_none());
         std::fs::remove_file(&path).unwrap();
     }
 }

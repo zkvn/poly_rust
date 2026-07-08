@@ -298,6 +298,30 @@ impl HaltTracker {
         Self { max, reset_hour, losses: 0, last_session: None }
     }
 
+    /// Rebuilds a tracker with a previously-observed loss count/session — used
+    /// to restore halt state across a process restart (`worker.rs::to_persisted`/
+    /// `Worker::restore_halt`). `max`/`reset_hour` still come fresh from config,
+    /// never from the persisted file, so a config change takes effect immediately.
+    pub(crate) fn restore(max: i64, reset_hour: i64, losses: i64, last_session: Option<NaiveDate>) -> Self {
+        Self { max, reset_hour, losses, last_session }
+    }
+
+    pub(crate) fn losses(&self) -> i64 {
+        self.losses
+    }
+
+    pub(crate) fn last_session(&self) -> Option<NaiveDate> {
+        self.last_session
+    }
+
+    pub(crate) fn max(&self) -> i64 {
+        self.max
+    }
+
+    pub(crate) fn reset_hour(&self) -> i64 {
+        self.reset_hour
+    }
+
     /// Returns whether this call just cleared an *active* halt — i.e. the
     /// session rolled over *and* the streak was actually halted beforehand —
     /// not merely whether the session changed. Callers that want a Telegram
