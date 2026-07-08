@@ -3,6 +3,9 @@
 Rust price recorder for Polymarket CLOB markets. Streams live order-book, price, and Binance
 spot-price data and writes hourly Parquet files.
 
+<details>
+<summary><strong>Git branch convention</strong></summary>
+
 ## Git branch convention
 
 **Each feature gets its own branch. Do not mix unrelated features in one branch** (e.g. price
@@ -13,6 +16,11 @@ actually checked out / running on the target machine — deploying a branch that
 branch's already-shipped feature will silently regress production (this happened once: a
 price-recorder fix branch that predated the Binance-recording feature was deployed over it on
 Oracle, killing Binance recording for about an hour before being caught).
+
+</details>
+
+<details>
+<summary><strong>Data Files</strong></summary>
 
 ## Data Files
 
@@ -107,6 +115,11 @@ on the remote before the nightly sync runs.
 
 ---
 
+</details>
+
+<details>
+<summary><strong>TODO</strong></summary>
+
 ## TODO
 
 - **Backfill hour-14 gap on Oracle (2026-07-02, price_feed) — still open.** While iterating the
@@ -140,6 +153,11 @@ on the remote before the nightly sync runs.
   `raw/_pre_python_backfill_2026-07-05/`. Other assets (ETH/SOL/BNB/XRP/DOGE/HYPE) remain
   unfilled for this window — btc_5mins only records BTC. A separate ~6.4h gap on 2026-07-03
   08:15–14:38 HKT (unrelated collector restart) was backfilled the same way and same day.
+
+</details>
+
+<details>
+<summary><strong>Build and deploy</strong></summary>
 
 ## Build and deploy
 
@@ -415,6 +433,11 @@ trades. Requires `/home/kev/apps/btc_5mins/.env` mounted read-only into the trad
 
 ---
 
+</details>
+
+<details>
+<summary><strong>Latency & observability infrastructure</strong></summary>
+
 ## Latency & observability infrastructure
 
 Full study: `trader/doc/latency_2026-07-04.md` (data + method: `price_feed/analysis/latency_study.py`
@@ -559,6 +582,11 @@ code). Summary:
   `exit_signal_latency_ms`/`exit_process_latency_ms` columns with no summing.
 
 ---
+
+</details>
+
+<details>
+<summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
 
@@ -1189,6 +1217,11 @@ New tests: `control_and_balance_events_persist_immediately`,
 now carries `entry_suppressed`/`halt_losses`/`halt_last_session`/`stats` after the restart that
 shipped this fix.
 
+</details>
+
+<details>
+<summary><strong>Order sizing: limit (GTC) vs market (FAK), by trade size</strong></summary>
+
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 
 Polymarket enforces two independent, differently-denominated minimum order sizes (no single
@@ -1228,3 +1261,5 @@ live price crossing a trigger band and need to grab the current price immediatel
 GTC buy would risk missing the entry window entirely if price moves away before a passive limit
 fills. `../btc_5mins` makes the same choice (`TradingEngine.place()` is always a market order for
 entries).
+
+</details>

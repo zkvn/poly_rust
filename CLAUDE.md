@@ -4,6 +4,7 @@
 - **Think first, then code.** Analyze the problem and explain the root cause before making changes.
 - **Don't code too fast.** Avoid jumping straight to edits or patches.
 - **Ask for confirmation before ANY file change and before ANY git commit. Push by default: once a commit is made, push it immediately without asking.**
+- **Exception — Markdown docs (`.md`): always commit and push these automatically, without asking first.** This covers audit/plan docs (`trader/doc/*.md`), study summaries, and README updates. The pushed doc/diff *is* the review mechanism — don't hold it back waiting for in-chat confirmation. This exception is scoped to `.md` files only; actual code (`.rs`), config (`.toml`), and scripts still require confirmation before every file change and commit per the rule above.
 - Prefer diagnosing over patching — verify the actual cause (logs, processes, config) before proposing a fix.
 
 ## Project notes
