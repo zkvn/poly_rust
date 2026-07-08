@@ -341,6 +341,18 @@ fn fmt_ago(last_tick_ts: Option<f64>, now_ts: f64) -> String {
     }
 }
 
+/// Wall-clock duration (ms) between two local-clock timestamps. Used for both
+/// `signal_latency_ms` (`signal_ts` -> `received_ts`, order dispatch started)
+/// and `process_latency_ms` (`signal_ts` -> `confirmed_ts`, order confirmed) —
+/// `process_latency_ms` is deliberately measured from the same `signal_ts`
+/// origin as `signal_latency_ms`, not from `received_ts`, so it reads as the
+/// full "trigger signal received locally -> order confirmed locally" duration
+/// rather than only the dispatch-to-confirm leg (2026-07-08 redefinition —
+/// see README.md's "Latency & observability infrastructure" section).
+fn latency_ms(from_ts: f64, to_ts: f64) -> f64 {
+    (to_ts - from_ts) * 1000.0
+}
+
 /// Everything one (asset, strategy) pair's cycle needs, mutated in place as
 /// ticks/events arrive. `worker` lives inside so `process_actions`/`execute`
 /// only need one `&mut` borrow. An asset with multiple configured strategies
@@ -543,8 +555,8 @@ impl Driver<'_> {
                 let received_ts = now_secs_f64();
                 let result = self.engine.place(token_id, *price, *size_usdc, slot.max_buy_price).await;
                 let confirmed_ts = now_secs_f64();
-                let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
-                let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
+                let signal_latency_ms = latency_ms(*signal_ts, received_ts);
+                let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
                 // Real, per-tick exchange network latency for each feed's last known
                 // tick (see `exchange_latency_ms`) — always computed now (previously
                 // only the triggering feed's was, silently dropping the other one —
@@ -600,7 +612,7 @@ impl Driver<'_> {
                 // only the process leg is meaningful here.
                 Some(Event::LimitSellPlaced {
                     order_id: r.order_id, status: r.status, error: r.error,
-                    signal_latency_ms: 0.0, process_latency_ms: (confirmed_ts - received_ts) * 1000.0,
+                    signal_latency_ms: 0.0, process_latency_ms: latency_ms(received_ts, confirmed_ts),
                 })
             }
             Action::ClosePosition { shares, reason, limit_price, signal_ts } => {
@@ -656,8 +668,8 @@ impl Driver<'_> {
                     None => self.engine.close_position(token_id, *shares).await,
                 };
                 let confirmed_ts = now_secs_f64();
-                let signal_latency_ms = (received_ts - signal_ts) * 1000.0;
-                let process_latency_ms = (confirmed_ts - received_ts) * 1000.0;
+                let signal_latency_ms = latency_ms(*signal_ts, received_ts);
+                let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
                 // Exits are always Poly/CLOB-triggered (only `on_poly` ever
                 // produces a ClosePosition — see worker.rs), so this is always
                 // the CLOB exchange latency, unlike the entry side above — no
@@ -1534,5 +1546,28 @@ mod exchange_latency_tests {
     #[test]
     fn fmt_ago_none_when_feed_never_ticked() {
         assert_eq!(fmt_ago(None, 100.200), "n/a");
+    }
+
+    #[test]
+    fn latency_ms_is_to_minus_from() {
+        assert!((latency_ms(1000.0, 1001.75) - 1750.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn process_latency_spans_signal_ts_to_confirmed_ts_not_received_ts() {
+        // signal_ts=100.000 (tick arrives), received_ts=100.001 (driver starts
+        // the order call, negligible signal-processing delay), confirmed_ts=101.751
+        // (exchange responds after a failed attempt + 1s retry sleep + round trips).
+        // process_latency must span the full signal_ts -> confirmed_ts trip (1751ms),
+        // not just received_ts -> confirmed_ts (1750ms) — this is the 2026-07-08
+        // redefinition (see README.md's "Latency & observability infrastructure").
+        let signal_ts = 100.000;
+        let received_ts = 100.001;
+        let confirmed_ts = 101.751;
+        let signal_latency_ms = latency_ms(signal_ts, received_ts);
+        let process_latency_ms = latency_ms(signal_ts, confirmed_ts);
+        assert!((signal_latency_ms - 1.0).abs() < 1e-9, "got {signal_latency_ms}");
+        assert!((process_latency_ms - 1751.0).abs() < 1e-9, "got {process_latency_ms}");
+        assert!(process_latency_ms > latency_ms(received_ts, confirmed_ts));
     }
 }

@@ -123,15 +123,21 @@ pub struct TradeRecord {
     /// to the driver receiving/starting to process it.
     #[serde(default)]
     pub entry_signal_latency_ms: f64,
-    /// Entry BUY latency (ms): time from the driver starting to process the
-    /// order to the fill confirmation coming back from the CLOB.
+    /// Entry BUY latency (ms): time from the triggering tick's own timestamp
+    /// (same origin as `entry_signal_latency_ms`) to the fill confirmation
+    /// coming back from the CLOB — the full "trigger signal received locally
+    /// to order confirmed locally" round trip, not just the dispatch-to-
+    /// confirm leg (redefined 2026-07-08; see README.md's "Latency &
+    /// observability infrastructure" section).
     #[serde(default)]
     pub entry_process_latency_ms: f64,
     /// Exit order latency (ms), signal leg — 0.0 when the position resolved
     /// by natural market close rather than an early exit order.
     #[serde(default)]
     pub exit_signal_latency_ms: f64,
-    /// Exit order latency (ms), process leg — 0.0 when there was no early exit order.
+    /// Exit order latency (ms): same "trigger signal received locally to
+    /// order confirmed locally" definition as `entry_process_latency_ms`
+    /// above — 0.0 when there was no early exit order.
     #[serde(default)]
     pub exit_process_latency_ms: f64,
 }

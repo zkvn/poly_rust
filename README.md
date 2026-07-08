@@ -446,11 +446,12 @@ code). Summary:
 
 > **Quick definitions** (both timestamps below are our own local clock — see the `2026-07-07`
 > bullet for why neither is ever an exchange-side timestamp): **`signal_latency`** = the
-> triggering tick's own timestamp → the local time our driver starts handling it (usually
-> sub-millisecond). **`process_latency`** = the local time our driver starts the order-placement
-> call (`received_ts`) → the local time it gets the exchange's response back for that same call
-> (`confirmed_ts`) — i.e. how long the order round-trip itself took, including any internal
-> retries/backoff (see the two bullets below).
+> triggering tick's own timestamp (`signal_ts`) → the local time our driver starts handling it
+> (`received_ts`, usually sub-millisecond). **`process_latency`** = that same triggering tick's
+> own timestamp (`signal_ts`) → the local time we get the exchange's response back for the
+> resulting order (`confirmed_ts`) — the full "trigger signal received locally → order confirmed
+> locally" round trip (redefined 2026-07-08, see the dated bullet below; previously measured only
+> from `received_ts`, the dispatch leg, not the trigger itself).
 
 - **CLOB (Poly) price feed latency is not a concern** — p50 ≈ 4–5ms, p95 ≈ 15–17ms,
   Polymarket-server-timestamp to Oracle-box-receive, consistent across every asset. Every
@@ -540,6 +541,31 @@ code). Summary:
   found to match," and the bot slept the full second anyway before the (successful) second attempt
   — not a bug, but a real, identified asymmetry between the entry and exit retry paths that's worth
   revisiting if entry latency ever becomes a binding constraint.
+- **Follow-up: how conservative is the 1s retry sleep relative to Polymarket's actual rate limits?
+  (2026-07-08)** — checked the current published limits
+  ([docs.polymarket.com/quickstart/introduction/rate-limits](https://docs.polymarket.com/quickstart/introduction/rate-limits)):
+  `POST /order` (single order — what both `place()` and `close_position()` use) allows a **5,000
+  requests/10s burst** and a **120,000 requests/10min sustained** ceiling (~500/s burst, ~200/s
+  sustained average), and — importantly — exceeding it is documented to throttle (delay/queue the
+  request) rather than immediately reject it with a 429. (Some third-party guides/older cached
+  search results quote lower figures, e.g. 3,500/10s burst — the number above is what the live docs
+  page reports as of this check; either way the conclusion below holds by a wide margin.) Against
+  this ceiling, our actual worst-case request rate is tiny: `order_max_retries = 3` means at most 4
+  requests for a single entry, and the worst real incident on record — the 2026-07-03 DOGE storm —
+  was 284 requests over ~9-10s (≈28-31 req/s) from a *single* misbehaving position, roughly two
+  orders of magnitude under the documented burst ceiling even before accounting for the fact that
+  `trade_assets` is currently scoped to one asset (`ETH`) at a time. **Conclusion: the flat 1s sleep
+  is not load-bearing for rate-limit safety at today's request volume** — it was a reasonable
+  defensive reflex adopted in the heat of the DOGE incident (any backoff beats none), not a number
+  derived from Polymarket's actual published capacity. There is comfortable headroom to apply
+  `close_position`'s existing fast-path (retry a "no orders found to match" FAK rejection
+  immediately, keep the 1s sleep only for genuine settlement-delay cases like "not enough balance")
+  to `place()`/entries too, closing the asymmetry noted in the bullet above, without meaningfully
+  risking Polymarket's rate limits even under a repeat of the worst incident on record. **This is a
+  recommendation, not yet implemented** — no code change made here; scope was research + doc only.
+  If/when `trade_assets` grows beyond one asset, or another asset starts firing entries as
+  frequently as DOGE's take-profit storm did, it's worth re-running this comparison rather than
+  assuming the headroom still holds.
 - **`signal_latency_ms` replaced by real per-feed exchange latency (`clob_latency`/
   `binance_latency`), and `attempts` renamed to `n_attempts` (2026-07-06)** — the previous
   `signal_latency_ms` (`received_ts − signal_ts`, where `signal_ts` was `tick.ts`, price_feed's
@@ -600,11 +626,29 @@ code). Summary:
   `UnwindWatcher` already subscribes to independently) — reaching it here would need either a
   second API round-trip after the order already completed, or correlating against that separate
   async channel, neither of which is wired into this synchronous call. This is also the
-  conceptually correct choice regardless of availability: `process_latency = confirmed_ts −
-  received_ts` is a round-trip *interval*, and both ends should come from the same clock (local)
-  — mixing in a foreign server timestamp would introduce clock-skew error into what should be a
-  clean duration measurement, unlike `clob_latency`/`binance_latency` above, which are legitimately
-  one-way comparisons across the two clocks (and already carry that same caveat implicitly).
+  conceptually correct choice regardless of availability: `process_latency` is a round-trip
+  *interval* (see the next bullet for exactly which two local timestamps it spans today), and both
+  ends should come from the same clock (local) — mixing in a foreign server timestamp would
+  introduce clock-skew error into what should be a clean duration measurement, unlike
+  `clob_latency`/`binance_latency` above, which are legitimately one-way comparisons across the two
+  clocks (and already carry that same caveat implicitly).
+- **`process_latency` redefined to start from `signal_ts`, not `received_ts` (2026-07-08, by
+  request)** — previously `process_latency_ms = (confirmed_ts − received_ts) * 1000.0`: only the
+  dispatch-to-confirm leg (order call started → response received), deliberately excluding the
+  (typically sub-millisecond) gap already reported separately as `signal_latency`. By request, this
+  no longer matches the intended meaning: `process_latency` should read as the full "trigger signal
+  received locally → order confirmed locally" duration. Fixed in `trader/src/bin/live.rs`: both
+  order-triggering call sites (`Action::PlaceBuy`, `Action::ClosePosition`) now compute
+  `process_latency_ms = latency_ms(*signal_ts, confirmed_ts)` via a new shared helper
+  (`latency_ms(from_ts, to_ts) = (to_ts − from_ts) * 1000.0`, also used to recompute
+  `signal_latency_ms = latency_ms(*signal_ts, received_ts)` for symmetry — same formula, different
+  endpoints). `Action::PlaceLimitSell` (the internal GTC-resting follow-up to an entry fill, with no
+  external `signal_ts` of its own — see the code comment at its call site) is unchanged: still
+  `latency_ms(received_ts, confirmed_ts)`, the dispatch-only leg, since there's no earlier trigger
+  timestamp to start from. `TradeRecord.entry_process_latency_ms`/`exit_process_latency_ms`
+  (`types.rs`) now carry this same wider span — doc comments updated there accordingly. Regression
+  test: `process_latency_spans_signal_ts_to_confirmed_ts_not_received_ts`
+  (`trader/src/bin/live.rs`).
 - **`trade_reconcile.py`'s Trade History table now shows signal and process latency separately,
   entry and exit (2026-07-07)** — previously two combined columns (`Entry Latency (ms)` = entry
   signal + entry process summed, `Exit Latency (ms)` similarly), which hid which half — tick/network
