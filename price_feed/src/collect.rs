@@ -147,10 +147,10 @@ async fn discover_assets(http: &reqwest::Client) -> Result<Vec<String>> {
     let mut assets = std::collections::BTreeSet::new();
     if let Some(arr) = resp.as_array() {
         for event in arr {
-            if let Some(slug) = event["slug"].as_str() {
-                if let Some(pos) = slug.find("-updown-") {
-                    assets.insert(slug[..pos].to_uppercase());
-                }
+            if let Some(slug) = event["slug"].as_str()
+                && let Some(pos) = slug.find("-updown-")
+            {
+                assets.insert(slug[..pos].to_uppercase());
             }
         }
     }
@@ -307,11 +307,11 @@ impl ParquetBuf {
     // during a deploy) exists. Without this, a restart within the same hour would
     // start an empty .tmp that, on the next seal, renames over and destroys the
     // already-sealed final file from before the restart.
-    fn open_for_hour(tmp_path: PathBuf, final_path: &PathBuf, schema: Schema) -> Result<Self> {
+    fn open_for_hour(tmp_path: PathBuf, final_path: &Path, schema: Schema) -> Result<Self> {
         let carry_source = if tmp_path.exists() {
             Some(tmp_path.clone())
         } else if final_path.exists() {
-            Some(final_path.clone())
+            Some(final_path.to_path_buf())
         } else {
             None
         };
@@ -607,7 +607,7 @@ struct AssetWriters {
 }
 
 impl AssetWriters {
-    fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
+    fn new(asset: &str, raw_dir: &Path) -> Result<Self> {
         let hour_key = hkt_hour_string();
         let ps = poly_schema();
         let bs = book_schema();
@@ -623,7 +623,7 @@ impl AssetWriters {
             poly_schema: ps,
             book_schema: bs,
             hour_key,
-            raw_dir: raw_dir.clone(),
+            raw_dir: raw_dir.to_path_buf(),
         })
     }
 
@@ -667,6 +667,11 @@ impl AssetWriters {
         Ok(())
     }
 
+    // 7 real params (+ self): private, 3 call sites (5m/15m/4hr writers, collect.rs::run),
+    // each independently meaningful (raw tick data + both timestamp sources + the optional
+    // bba override) — a wrapper struct would add a layer without a real clarity gain here,
+    // matching the same call already made for Worker::common in ../trader/src/worker.rs.
+    #[allow(clippy::too_many_arguments)]
     fn write_sample(
         &mut self,
         ts: f64,
@@ -799,7 +804,7 @@ struct BinanceWriters {
 }
 
 impl BinanceWriters {
-    fn new(asset: &str, raw_dir: &PathBuf) -> Result<Self> {
+    fn new(asset: &str, raw_dir: &Path) -> Result<Self> {
         let hour_key = hkt_hour_string();
         let schema = binance_schema();
         let tmp = raw_dir.join(format!("{asset}_binance_{hour_key}.parquet.tmp"));
@@ -810,7 +815,7 @@ impl BinanceWriters {
             buf: ParquetBuf::open_for_hour(tmp, &final_path, schema.clone())?,
             schema,
             hour_key,
-            raw_dir: raw_dir.clone(),
+            raw_dir: raw_dir.to_path_buf(),
         })
     }
 
@@ -1016,16 +1021,15 @@ fn spawn_book_task(
                             while let Some(Ok(update)) = s.next().await {
                                 if let Some(&(_, idx, is_up)) =
                                     map.iter().find(|(id, _, _)| *id == update.asset_id)
+                                    && is_up
                                 {
-                                    if is_up {
-                                        let received_at_ms = now_ms();
-                                        let server_ts_ms = update.timestamp;
-                                        let mut st = state.lock().unwrap();
-                                        if idx < st.len() {
-                                            st[idx].book_server_ts_ms = server_ts_ms;
-                                            st[idx].book_received_at_ms = received_at_ms;
-                                            st[idx].latest_book = Some(update);
-                                        }
+                                    let received_at_ms = now_ms();
+                                    let server_ts_ms = update.timestamp;
+                                    let mut st = state.lock().unwrap();
+                                    if idx < st.len() {
+                                        st[idx].book_server_ts_ms = server_ts_ms;
+                                        st[idx].book_received_at_ms = received_at_ms;
+                                        st[idx].latest_book = Some(update);
                                     }
                                 }
                             }
@@ -1137,19 +1141,15 @@ fn spawn_bba_task(
                                             });
                                         }
                                     }
-                                    if let Some(ref nc) = nats {
-                                        if idx < assets.len() {
-                                            let up_mid = (bid + ask) / 2.0;
-                                            let payload = poly_nats_payload(
-                                                received_at_ms,
-                                                up_mid,
-                                                server_ts_ms,
-                                            );
-                                            let subject = format!("price.poly.{}", assets[idx]);
-                                            let _ = nc
-                                                .publish(subject, payload.into_bytes().into())
-                                                .await;
-                                        }
+                                    if let Some(ref nc) = nats
+                                        && idx < assets.len()
+                                    {
+                                        let up_mid = (bid + ask) / 2.0;
+                                        let payload =
+                                            poly_nats_payload(received_at_ms, up_mid, server_ts_ms);
+                                        let subject = format!("price.poly.{}", assets[idx]);
+                                        let _ =
+                                            nc.publish(subject, payload.into_bytes().into()).await;
                                     }
                                 }
                             }

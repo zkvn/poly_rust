@@ -199,10 +199,10 @@ async fn drive_feed(
                 match item {
                     Some(Ok(bba)) => {
                         got = true;
-                        if let Some(m) = decimal_mid(&bba.best_bid, &bba.best_ask) {
-                            if tx.send((idx, m, bba.timestamp)).await.is_err() {
-                                return;
-                            }
+                        if let Some(m) = decimal_mid(&bba.best_bid, &bba.best_ask)
+                            && tx.send((idx, m, bba.timestamp)).await.is_err()
+                        {
+                            return;
                         }
                     }
                     Some(Err(_)) => continue,
@@ -224,12 +224,11 @@ async fn drive_feed(
                 if e.asset_id != asset_id {
                     continue;
                 }
-                if let (Some(b), Some(a)) = (e.best_bid.as_ref(), e.best_ask.as_ref()) {
-                    if let Some(m) = decimal_mid(b, a) {
-                        if tx.send((idx, m, pc.timestamp)).await.is_err() {
-                            return;
-                        }
-                    }
+                if let (Some(b), Some(a)) = (e.best_bid.as_ref(), e.best_ask.as_ref())
+                    && let Some(m) = decimal_mid(b, a)
+                    && tx.send((idx, m, pc.timestamp)).await.is_err()
+                {
+                    return;
                 }
             }
         }
@@ -347,32 +346,30 @@ async fn run_app(
                     .map(|m| m.slot != slot || m.fetched_at.elapsed() > Duration::from_secs(30))
                     .unwrap_or(true);
 
-                if stale {
-                    if let Ok(new_meta) = fetch_meta(&http, &asset, slot).await {
-                        let _ = vol_tx.send((idx, new_meta.volume)).await;
+                if stale && let Ok(new_meta) = fetch_meta(&http, &asset, slot).await {
+                    let _ = vol_tx.send((idx, new_meta.volume)).await;
 
-                        if let Ok(new_id) = U256::from_str(&new_meta.up_token_id) {
-                            if Some(new_id) != current_token_id {
-                                // Abort old stream task and unsubscribe old token on slot rotation.
-                                if let Some(old_task) = stream_task.take() {
-                                    old_task.abort();
-                                }
-                                if let Some(old_id) = current_token_id {
-                                    let _ = clob.unsubscribe_midpoints(&[old_id]);
-                                }
-                                let tx = price_tx.clone();
-                                stream_task = Some(tokio::spawn(drive_feed(
-                                    clob.clone(),
-                                    new_id,
-                                    idx,
-                                    custom_features,
-                                    tx,
-                                )));
-                                current_token_id = Some(new_id);
-                            }
+                    if let Ok(new_id) = U256::from_str(&new_meta.up_token_id)
+                        && Some(new_id) != current_token_id
+                    {
+                        // Abort old stream task and unsubscribe old token on slot rotation.
+                        if let Some(old_task) = stream_task.take() {
+                            old_task.abort();
                         }
-                        meta = Some(new_meta);
+                        if let Some(old_id) = current_token_id {
+                            let _ = clob.unsubscribe_midpoints(&[old_id]);
+                        }
+                        let tx = price_tx.clone();
+                        stream_task = Some(tokio::spawn(drive_feed(
+                            clob.clone(),
+                            new_id,
+                            idx,
+                            custom_features,
+                            tx,
+                        )));
+                        current_token_id = Some(new_id);
                     }
+                    meta = Some(new_meta);
                 }
 
                 tokio::time::sleep(Duration::from_secs(10)).await;
