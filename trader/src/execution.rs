@@ -218,6 +218,78 @@ fn aggressive_entry_price(price: f64, max_buy_price: f64, attempt: u32) -> f64 {
     }
 }
 
+/// How an entry BUY failure should be retried — see
+/// `trader/doc/plan_optimal_retry_sleep_2026-07-08.md`. Entries never see a genuine
+/// on-chain settlement race the way exits do (confirmed against production logs:
+/// 0 of 411 "not enough balance" occurrences were BUY-side — a fresh entry spends
+/// already-funded USDC, it doesn't resell a share that just landed), so unlike
+/// `close_position`'s no-match/balance split, there's no case here that needs a
+/// multi-second wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryFailure {
+    /// Thin/stale book — can change tick to tick, no reason to wait (mirrors
+    /// `close_position`'s identical treatment of this same error on the exit side).
+    NoMatch,
+    /// Deterministic/structural rejection (bad decimal precision, below minimum
+    /// order size) — retrying can never succeed, same failure class as the
+    /// 2026-07-03 DOGE oversell incident. Fail fast, don't burn the retry budget.
+    Deterministic,
+    /// Unrecognized/unexpected error (network blip, API hiccup) — moderate backoff,
+    /// no real-world timing evidence either way for this bucket.
+    Other,
+}
+
+/// Sleep before retrying a "no orders found to match" FAK rejection — the book can
+/// change on the very next tick, so this exists only to yield the runtime for a
+/// moment, not to wait out any real external condition.
+const NO_MATCH_RETRY_SLEEP: Duration = Duration::from_millis(10);
+/// Sleep before retrying an unrecognized/unexpected entry failure.
+const OTHER_RETRY_SLEEP: Duration = Duration::from_millis(250);
+
+fn classify_entry_failure(msg: &str) -> EntryFailure {
+    if msg.contains("no orders found to match with FAK order") {
+        EntryFailure::NoMatch
+    } else if msg.contains("invalid amounts")
+        || msg.contains("invalid amount for a marketable BUY order")
+        || msg.contains("min size")
+    {
+        EntryFailure::Deterministic
+    } else {
+        EntryFailure::Other
+    }
+}
+
+/// Sleeps (if appropriate) and returns whether `place()` should retry after this
+/// failure — `false` means give up now, either because it's the last attempt or
+/// because the failure is deterministic and further attempts can't possibly
+/// succeed. Logs which bucket fired and what sleep (if any) was applied, so a slow
+/// or exhausted entry is explainable from the log alone.
+async fn retry_entry_failure(
+    failure: EntryFailure,
+    attempt: u32,
+    max_attempts: u32,
+    token_id: U256,
+) -> bool {
+    if failure == EntryFailure::Deterministic {
+        eprintln!(
+            "[ORDER-RETRY] token={token_id} BUY: deterministic failure, not retrying (would fail identically) — giving up after attempt {}/{max_attempts}",
+            attempt + 1
+        );
+        return false;
+    }
+    if attempt >= max_attempts - 1 {
+        return false;
+    }
+    let sleep = match failure {
+        EntryFailure::NoMatch => NO_MATCH_RETRY_SLEEP,
+        EntryFailure::Other => OTHER_RETRY_SLEEP,
+        EntryFailure::Deterministic => unreachable!("handled above"),
+    };
+    eprintln!("[ORDER-RETRY] token={token_id} BUY: retrying in {sleep:?} ({failure:?})");
+    tokio::time::sleep(sleep).await;
+    true
+}
+
 #[async_trait]
 impl ExecutionEngine for SimExecutionEngine {
     async fn place(
@@ -544,24 +616,47 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                     };
                 }
                 Ok(_) => {
-                    last_err = Some("order not successful".to_string());
+                    let msg = "order not successful".to_string();
+                    last_err = Some(msg.clone());
+                    let failure = classify_entry_failure(&msg);
                     eprintln!(
-                        "[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> order not successful",
+                        "[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> {msg} [{failure:?}]",
                         attempt + 1
                     );
+                    if !retry_entry_failure(failure, attempt, max_attempts, token_id).await {
+                        return TradeResult {
+                            placed: false,
+                            filled_shares: 0.0,
+                            cost: 0.0,
+                            error: Some(msg),
+                            attempts: attempt + 1,
+                        };
+                    }
                 }
                 Err(e) => {
-                    last_err = Some(e.to_string());
+                    let msg = e.to_string();
+                    last_err = Some(msg.clone());
+                    let failure = classify_entry_failure(&msg);
                     eprintln!(
-                        "[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> {e}",
+                        "[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> {msg} [{failure:?}]",
                         attempt + 1
                     );
+                    if !retry_entry_failure(failure, attempt, max_attempts, token_id).await {
+                        return TradeResult {
+                            placed: false,
+                            filled_shares: 0.0,
+                            cost: 0.0,
+                            error: Some(msg),
+                            attempts: attempt + 1,
+                        };
+                    }
                 }
             }
-            if attempt < max_attempts - 1 {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
         }
+        // Unreachable in practice: every iteration above returns, either on success
+        // or via `retry_entry_failure` saying "give up" (which it always does by the
+        // last attempt) — kept only because the loop's static type doesn't prove
+        // that to the compiler.
         TradeResult {
             placed: false,
             filled_shares: 0.0,
@@ -1127,5 +1222,89 @@ mod tests {
     fn floor2_exact_two_decimals_unchanged() {
         assert!((floor2(1.52) - 1.52).abs() < 1e-9);
         assert!((floor2(0.0) - 0.0).abs() < 1e-9);
+    }
+
+    // ── Entry retry classification (trader/doc/plan_optimal_retry_sleep_2026-07-08.md) ──
+
+    #[test]
+    fn classify_entry_failure_no_match() {
+        // Exact error string observed in production live.log.
+        let msg = "Status: error(400 Bad Request) making POST call to /order with {\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\",\"orderID\":\"0x1\"}";
+        assert_eq!(classify_entry_failure(msg), EntryFailure::NoMatch);
+    }
+
+    #[test]
+    fn classify_entry_failure_deterministic() {
+        // Exact error strings observed in production live.log — neither can ever
+        // succeed on retry, regardless of book state or sleep duration.
+        let decimals = "Status: error(400 Bad Request) making POST call to /order with {\"error\":\"invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals\"}";
+        assert_eq!(
+            classify_entry_failure(decimals),
+            EntryFailure::Deterministic
+        );
+
+        let min_size = "Status: error(400 Bad Request) making POST call to /order with {\"error\":\"invalid amount for a marketable BUY order ($0.9975), min size: 1\"}";
+        assert_eq!(
+            classify_entry_failure(min_size),
+            EntryFailure::Deterministic
+        );
+    }
+
+    #[test]
+    fn classify_entry_failure_other_is_the_fallback() {
+        assert_eq!(
+            classify_entry_failure("some unexpected network error"),
+            EntryFailure::Other
+        );
+        assert_eq!(
+            classify_entry_failure("order not successful"),
+            EntryFailure::Other
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_entry_failure_no_match_sleeps_the_short_interval_and_retries() {
+        let token = U256::from(1u64);
+        let start = std::time::Instant::now();
+        let should_retry = retry_entry_failure(EntryFailure::NoMatch, 0, 5, token).await;
+        assert!(should_retry);
+        assert!(
+            start.elapsed() >= NO_MATCH_RETRY_SLEEP,
+            "expected at least the {NO_MATCH_RETRY_SLEEP:?} no-match sleep"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_entry_failure_deterministic_never_retries_even_on_first_attempt() {
+        let token = U256::from(1u64);
+        let start = std::time::Instant::now();
+        let should_retry = retry_entry_failure(EntryFailure::Deterministic, 0, 5, token).await;
+        assert!(!should_retry);
+        // No sleep at all — giving up is immediate, not just "no retry".
+        assert!(start.elapsed() < Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn retry_entry_failure_stops_on_the_last_attempt_without_sleeping() {
+        let token = U256::from(1u64);
+        let max_attempts = 5;
+        let start = std::time::Instant::now();
+        // attempt is 0-indexed; the last attempt is max_attempts - 1.
+        let should_retry =
+            retry_entry_failure(EntryFailure::NoMatch, max_attempts - 1, max_attempts, token).await;
+        assert!(!should_retry);
+        assert!(start.elapsed() < Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn retry_entry_failure_other_sleeps_the_longer_interval() {
+        let token = U256::from(1u64);
+        let start = std::time::Instant::now();
+        let should_retry = retry_entry_failure(EntryFailure::Other, 0, 5, token).await;
+        assert!(should_retry);
+        assert!(
+            start.elapsed() >= OTHER_RETRY_SLEEP,
+            "expected at least the {OTHER_RETRY_SLEEP:?} fallback sleep"
+        );
     }
 }

@@ -581,6 +581,34 @@ code). Summary:
   If/when `trade_assets` grows beyond one asset, or another asset starts firing entries as
   frequently as DOGE's take-profit storm did, it's worth re-running this comparison rather than
   assuming the headroom still holds.
+- **Entry retries split by error type; `order_max_retries` raised 3 → 5 (2026-07-08, implemented)**
+  — see `trader/doc/plan_optimal_retry_sleep_2026-07-08.md` for the full analysis this implements.
+  `execution.rs::place` no longer sleeps a flat 1s on every failure — it now classifies each one
+  (`classify_entry_failure`) into three buckets, each with its own log line so a slow or exhausted
+  entry is explainable from `live.log` alone:
+  - `"no orders found to match with FAK order"` → retry after **10ms** (`NO_MATCH_RETRY_SLEEP`) —
+    the book can change tick to tick, mirrors `close_position`'s existing treatment of this same
+    error on the exit side.
+  - Recognized deterministic errors (`"invalid amounts, ... decimals"`, `"invalid amount for a
+    marketable BUY order ... min size"`) → **fail immediately, no retry, no sleep.** Confirmed via
+    `git stash`-style log analysis that these are the same failure class as the 2026-07-03 DOGE
+    oversell incident — no amount of retrying was ever going to help (one production example
+    burned `n_attempts=4 process_ms=4303` retrying an order that could never succeed).
+  - Anything else (unrecognized/unexpected error) → retry after **250ms** (`OTHER_RETRY_SLEEP`) —
+    the one bucket without hard timing evidence either way, so a moderate rather than aggressive
+    number.
+  - `retry_entry_failure` (`execution.rs`) centralizes this decision and does the actual sleeping,
+    logging which bucket fired and what sleep (if any) was applied on every attempt.
+  `order_max_retries` raised `3` → `5` in `strategy_20260705.toml` (6 total attempts) — now that
+  the common no-match case costs ~10ms instead of ~1s per retry, more attempts are nearly free
+  time-wise, directly increasing fill probability inside `high_prob`'s narrow ~10-20s entry window.
+  **Not changed**: `close_position`'s own retry cadence (already correct — 0s no-match, 1s
+  "not enough balance") and `place_limit_sell`'s `settle_sleep` (1.5s) — both retain their existing
+  genuine-settlement-lag sleep, per the plan doc's finding that this specific wait (~1-2s on
+  Polygon) can't safely be shortened to sub-100ms without risking more failures, not fewer. 8 new
+  unit tests (`execution.rs::tests`, `classify_entry_failure_*`/`retry_entry_failure_*`) pin the
+  classification and the sleep/no-sleep/give-up decision for each bucket, including the exact error
+  strings observed in production `live.log`. Full suite: 159 lib + 16 bin passing, clippy clean.
 - **`signal_latency_ms` replaced by real per-feed exchange latency (`clob_latency`/
   `binance_latency`), and `attempts` renamed to `n_attempts` (2026-07-06)** — the previous
   `signal_latency_ms` (`received_ts − signal_ts`, where `signal_ts` was `tick.ts`, price_feed's

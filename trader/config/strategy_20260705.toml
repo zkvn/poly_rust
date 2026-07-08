@@ -14,7 +14,7 @@ order_slippage = 0.05
 
 # Retries
 stop_loss_max_retries = 5
-order_max_retries = 3
+order_max_retries = 5
 cycle_open_close_rest_max_retries = 3
 cycle_start_price_retry_interval_s = 2
 cycle_start_price_retry_deadline_s = 150

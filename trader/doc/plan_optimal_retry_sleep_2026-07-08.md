@@ -1,6 +1,11 @@
 # Plan — optimal retry sleep for entry/exit order placement
 
-Status: **draft for review, not yet implemented.** No code in this plan has been written.
+Status: **§6.1 and #3 implemented, same day.** Entry retries (`execution.rs::place`) now split by
+error type — `"no orders found to match"` retries after 10ms (proposed 0-50ms; 10ms chosen per
+review), deterministic errors fail immediately with no retry, everything else retries after 250ms
+— and `order_max_retries` raised 3 → 5. See README.md's "Latency & observability infrastructure"
+section for the implementation writeup. §6.2/§6.3 (exit-side changes) were **not** touched, per
+§5's finding that the genuine settlement-lag case shouldn't be shortened.
 
 ## 0. Question being answered
 
