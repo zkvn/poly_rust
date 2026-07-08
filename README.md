@@ -154,13 +154,11 @@ on the remote before the nightly sync runs.
   unfilled for this window — btc_5mins only records BTC. A separate ~6.4h gap on 2026-07-03
   08:15–14:38 HKT (unrelated collector restart) was backfilled the same way and same day.
 
-- **`price_feed` clippy cleanup — not yet done (flagged 2026-07-08).** `cargo clippy
-  --all-targets --all-features -- -D warnings` currently fails on `price_feed` with 12
-  pre-existing errors (mostly `collapsible_if`), confirmed via `git stash` to predate the
-  2026-07-08 `cargo fmt --all` pass entirely — `price_feed` never got the equivalent of
-  `trader`'s 2026-07-07 clippy cleanup (README's "Trading engine — known incidents" section).
-  Left untouched since it was out of scope for a formatting-only change. Worth its own dedicated
-  pass, mirroring `trader`'s.
+- ~~`price_feed` clippy cleanup — flagged 2026-07-08.~~ **Done, same day** (`88673cd`): all 12
+  pre-existing errors (7x `collapsible_if` -> let-chains, 3x `ptr_arg` `&PathBuf` -> `&Path`, 1x
+  `too_many_arguments` allowed with justification) fixed, no behavior change — `cargo build`,
+  `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and
+  `cargo fmt --all --check` all clean.
 
 - **`rust-toolchain.toml` pin — deliberately skipped (flagged 2026-07-08).** Would prevent the
   rustfmt-version drift that caused the 2026-07-08 `cargo fmt --all` cleanup from recurring, but
