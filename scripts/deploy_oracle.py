@@ -35,6 +35,7 @@ Usage:
     python scripts/deploy_oracle.py --price-feed-only   # skip trader steps
     python scripts/deploy_oracle.py --trader-only       # skip price-feed steps
     python scripts/deploy_oracle.py --config-only       # sync strategy config + restart trader only
+    python scripts/deploy_oracle.py --update-config     # commit + push config, then sync + restart
 
 --config-only is for a config-only change (new/edited strategy_*.toml, no code
 change) when you don't also want to redeploy the binary: rsyncs this repo's
@@ -46,6 +47,16 @@ rsync. Every other mode that deploys the trader (default, --trader-only) does
 this same config sync too, unconditionally, before restarting — --config-only
 is just the "config changed, binary didn't" fast path, not a separate
 requirement you have to remember to run.
+
+--update-config is --config-only's superset: commits + pushes trader/config/
+first (pathspec-scoped to that directory only, so it can never sweep up
+unrelated staged changes — see commit_and_push_config), aborting before ever
+connecting to Oracle if the commit/push fails, then does exactly what
+--config-only does. Use this right after hand-editing a strategy_*.toml when
+you haven't committed yet — one command takes the edit from "on disk" to
+"in git and live on Oracle" without a full binary rebuild/redeploy. A no-op
+commit (config directory already clean) still proceeds to sync, so it's also
+safe to run just to force a resync.
 """
 
 from __future__ import annotations
@@ -237,6 +248,58 @@ def sync_config(client: paramiko.SSHClient, dry_run: bool) -> bool:
     return True
 
 
+def commit_and_push_config(dry_run: bool) -> bool:
+    """Commit + push `trader/config/` if it has uncommitted changes, so a
+    Oracle-bound config sync never lands a config that only ever existed on
+    this machine's disk — git and Oracle stay in lockstep. No-op (returns
+    True without committing) if the directory is already clean, so this is
+    safe to run even when the config was already committed by hand earlier.
+
+    Scopes the commit to exactly `trader/config/` via a trailing pathspec on
+    `git commit`, regardless of anything else staged in the index at the same
+    moment — plain `git commit -m message` commits the whole index, which is
+    the exact bug fixed in `trade_reconcile.py`'s `git_commit_push()` (see
+    README's "Recon auto-commit swept up unrelated staged changes" incident).
+    """
+    rel = "trader/config"
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", rel],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    )
+    if not status.stdout.strip():
+        print(f"  {rel}: no local changes to commit.")
+        return True
+    print(f"  {rel} has uncommitted changes:\n{status.stdout}")
+
+    candidates = sorted(LOCAL_TRADER_CFG_DIR.glob("strategy_*.toml"))
+    latest_name = candidates[-1].name if candidates else "strategy config"
+    message = f"config: update {latest_name} for Oracle deploy"
+
+    if dry_run:
+        print(f"  [dry-run] git add {rel} && git commit -m {message!r} -- {rel} && git push")
+        return True
+
+    if not run_local(["git", "add", rel]):
+        return False
+    if not run_local(["git", "commit", "-m", message, "--", rel]):
+        return False
+    return run_local(["git", "push"])
+
+
+def _sync_config_and_restart(client: paramiko.SSHClient, dry_run: bool) -> bool:
+    """Shared tail of `--config-only`/`--update-config`: sync `trader/config/`
+    to Oracle, then restart trader-live.service (no binary rsync) so it picks
+    up the new file."""
+    print("\n[config] syncing strategy config...")
+    ok = sync_config(client, dry_run)
+    if ok:
+        print("\n[trader] restarting to pick up new config...")
+        ok = deploy_trader(client, dry_run, skip_binary=True)
+    else:
+        print("  config sync failed.")
+    return ok
+
+
 def deploy_price_feed(client: paramiko.SSHClient, dry_run: bool) -> bool:
     bin_path = PRICE_FEED_BIN
     if not bin_path.exists():
@@ -334,22 +397,33 @@ def main() -> None:
     ap.add_argument("--config-only",     action="store_true",
                      help="Sync strategy config (rsync trader/config/ + git pull btc_5mins) and "
                           "restart trader-live.service only — no build, no binary rsync")
+    ap.add_argument("--update-config",   action="store_true",
+                     help="Commit + push trader/config/ (if changed), then sync + restart "
+                          "trader-live.service only — no build, no binary rsync. Superset of "
+                          "--config-only: use this when the local edit hasn't been committed yet.")
     args = ap.parse_args()
 
     if args.dry_run:
         print("[DRY RUN — no changes will be made]\n")
 
+    # ── update-config fast path (commit+push, then sync) ─────────────────────
+    if args.update_config:
+        print(f"\n[git] committing + pushing {LOCAL_TRADER_CFG_DIR}...")
+        if not commit_and_push_config(args.dry_run):
+            print("  git commit/push failed — aborting before touching Oracle.")
+            sys.exit(1)
+        print(f"\nConnecting to {ORACLE_USER}@{ORACLE_HOST} ...")
+        client = connect_oracle()
+        ok = _sync_config_and_restart(client, args.dry_run)
+        client.close()
+        print("\nDone." if ok else "\nDone (with errors).")
+        sys.exit(0 if ok else 1)
+
     # ── config-only fast path ────────────────────────────────────────────────
     if args.config_only:
         print(f"\nConnecting to {ORACLE_USER}@{ORACLE_HOST} ...")
         client = connect_oracle()
-        print("\n[config] syncing strategy config...")
-        ok = sync_config(client, args.dry_run)
-        if ok:
-            print("\n[trader] restarting to pick up new config...")
-            ok = deploy_trader(client, args.dry_run, skip_binary=True)
-        else:
-            print("  config sync failed.")
+        ok = _sync_config_and_restart(client, args.dry_run)
         client.close()
         print("\nDone." if ok else "\nDone (with errors).")
         sys.exit(0 if ok else 1)

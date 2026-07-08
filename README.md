@@ -167,6 +167,8 @@ python scripts/deploy_oracle.py --dry-run          # preview, no changes
 python scripts/deploy_oracle.py --skip-build       # rsync + restart only (binaries already built)
 python scripts/deploy_oracle.py --price-feed-only  # skip trader
 python scripts/deploy_oracle.py --trader-only      # skip price_feed
+python scripts/deploy_oracle.py --config-only      # sync strategy config only, no build/binary rsync
+python scripts/deploy_oracle.py --update-config    # commit+push config, then sync — no build
 ```
 
 **Since this redeploys `price_feed` too, the git branch convention above applies here as well** —
@@ -180,9 +182,12 @@ For trader-only changes (the common case — strategy/worker logic changes far m
 `price_feed`), use the wrapper instead of calling `deploy_oracle.py` directly:
 
 ```bash
-./scripts/deploy_trader.sh              # build + deploy + restart trader
-./scripts/deploy_trader.sh --dry-run    # preview every step, change nothing
-./scripts/deploy_trader.sh --skip-build # reuse the last local build (rsync + restart only)
+./scripts/deploy_trader.sh                 # build + deploy + restart trader
+./scripts/deploy_trader.sh --dry-run       # preview every step, change nothing
+./scripts/deploy_trader.sh --skip-build    # reuse the last local build (rsync + restart only)
+./scripts/deploy_trader.sh --config-only   # sync strategy config only, no build/binary rsync
+./scripts/deploy_trader.sh --update-config # commit+push config, then sync — no build (see
+                                            # "Editing a config and deploying it in one step" below)
 ```
 
 It's a thin wrapper that always calls `deploy_oracle.py --trader-only` (using
@@ -253,6 +258,23 @@ same way now: directly, from this script, with no git operation on Oracle.
 ```bash
 python scripts/deploy_oracle.py --config-only            # sync config + restart trader
 python scripts/deploy_oracle.py --config-only --dry-run   # preview, no changes
+```
+
+**Editing a config and deploying it in one step:** `scripts/deploy_oracle.py --update-config`
+(or `./scripts/deploy_trader.sh --update-config`) — the "workflow for a new config revision" above
+manually says "commit+push this repo", then run `--config-only`; `--update-config` does both in one
+command. It first commits + pushes `trader/config/` if it has uncommitted changes (pathspec-scoped
+to that directory only via `git commit -- trader/config`, so it can never sweep up unrelated staged
+changes — same fix as the "Recon auto-commit" incident below), aborting **before ever connecting to
+Oracle** if the commit/push fails, then does exactly what `--config-only` does: rsync + symlink +
+restart, no build, no binary rsync. If `trader/config/` is already clean (nothing to commit), it
+skips straight to the sync — safe to run just to force a resync. This is the fast path for "I just
+hand-edited `strategy_YYYYMMDD.toml` and want Oracle running it now," without waiting on a full
+cross-compile.
+
+```bash
+python scripts/deploy_oracle.py --update-config            # commit + push config, then sync + restart
+python scripts/deploy_oracle.py --update-config --dry-run  # preview, no changes (no commit either)
 ```
 
 ### Oracle infra: NATS price bridge
@@ -1064,6 +1086,53 @@ restarting the service, and aborts without restarting if it fails. New test file
 `scripts/test_deploy_oracle.py` (stdlib `unittest`/`mock`, no new dependency — first Python tests in
 this repo) pins the fixed step ordering across all four deploy modes. Full writeup:
 `trader/doc/incident_stale_oracle_config_2026-07-07.md`.
+
+### `--update-config` deploy mode: commit+push+sync in one step (2026-07-08, added)
+
+Added `scripts/deploy_oracle.py --update-config` (and `./scripts/deploy_trader.sh --update-config`)
+— commits + pushes `trader/config/` if it has uncommitted changes (pathspec-scoped to that
+directory only, same pattern as the "Recon auto-commit" fix above), aborting before ever
+connecting to Oracle if the commit/push fails, then does exactly what `--config-only` already did:
+rsync + symlink + restart, no build, no binary rsync. Previously, landing a hand-edited
+`strategy_*.toml` on Oracle required two separate manual steps — `git commit && git push`, then
+`--config-only` — with nothing enforcing they happened together or in order; this collapses that
+into one command and one failure mode (git fails → nothing touches Oracle). See "Editing a config
+and deploying it in one step" above for usage; tests in `scripts/test_deploy_oracle.py`
+(`test_update_config_commits_before_syncing`,
+`test_update_config_never_touches_oracle_when_git_push_fails`).
+
+### `unwind_time` — max-holding-time force-exit (2026-07-08, added)
+
+New per-strategy, per-asset config parameter `unwind_time_rev`/`unwind_time_hp` (seconds; `0.0` =
+disabled), ported from `btc_5mins/studies/unwind_safely`'s backtest engine — see
+`trader/doc/plan_unwind_time_2026-07-08.md` for the full design writeup. While a position is open,
+checked **last** in the exit chain (after PnL-based stop-loss and take-profit both fail to fire on
+a given tick): if `now - entry_ts >= unwind_time`, force-close at whatever the current market price
+is, win or lose — a pure max-exposure-time cap, independent of whether any PnL threshold is even
+reachable. This directly backstops the class of failure documented in
+`trader/doc/audit_sl_no_trigger_2026-07-07.md` (SOL/DOGE positions that bled out because
+`sl_pnl_rev` was unreachable at their entry price) — a stuck position now has a second, orthogonal
+exit condition that doesn't depend on price ever crossing anything.
+
+Implementation: new `WorkerState::TimingOut`/`Outcome::Timeout`/`CloseReason::Timeout`, mirroring
+`StopExiting`/`Outcome::StopLoss` exactly (same unbounded-FAK mechanics, same "re-fires every
+PolyTick until cleared" retry behavior), kept as a distinct variant rather than folded into
+`StopExiting` so the outcome and Telegram copy ("⏱️ TIME LIMIT triggered") can differ. Excluded from
+the halt loss-streak by construction (`Outcome::is_loss_for_halt` only matches `Loss`/`StopLoss`) —
+matches the backtest's "cum_losses NOT incremented for TIMEOUT" semantics, since a time-cap exit
+isn't a signal-quality failure the way a real stop-loss is. Visible in Telegram `/status` alongside
+`unwind_pnl`/`sl_pnl` (this is the exact visibility gap that let the `sl_pnl` stale-config incident
+above go unnoticed for a full deploy cycle).
+
+**Shipped at `30.0`s for both strategies** (ETH, the only live `trade_assets` entry) — the
+walk-forward study's final-calibration value. Flagged explicitly in the plan doc: this sits at the
+top of the study's tested 10–30s range, the same grid-boundary-artifact pattern already documented
+for `sl_pnl` in `btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md` — the sweep shows
+"longer beat shorter at every step within [10, 30]," not that 30s is a validated optimum. Shipped
+anyway (rather than disabled, or waiting on a wider re-sweep) because the risk here is
+asymmetric-safe compared to `sl_pnl`: a too-short `unwind_time` only makes exits *more* conservative
+(closes earlier/more often), the opposite direction from the SOL/DOGE failure mode where a
+boundary value masked a threshold that couldn't fire at all.
 
 ## Order sizing: limit (GTC) vs market (FAK), by trade size
 

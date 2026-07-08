@@ -93,6 +93,12 @@ pub enum WorkerState {
     Unwinding(HoldingData),
     /// Stop-loss floor crossed; FAK SELL in flight.
     StopExiting(HoldingData),
+    /// Max holding time (`unwind_time_rev`/`unwind_time_hp`) elapsed with no
+    /// other exit having fired; unbounded FAK SELL in flight, same mechanics
+    /// as `StopExiting` but a distinct variant so the eventual `Outcome`
+    /// (`Timeout`, not `StopLoss`) and Telegram copy can differ. See
+    /// `trader/doc/plan_unwind_time_2026-07-08.md`.
+    TimingOut(HoldingData),
     /// Held WIN/LOSS awaiting async `ApiResult` confirmation (may flip + fix halt).
     Confirming(TradeRecord),
     /// STOPLOSS/UNWIND awaiting `ApiResult` for the CSV column only (pnl/halt final).
@@ -115,6 +121,8 @@ pub enum Event {
     UnwindFailed { error: Option<String> },
     StopSellFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
     StopSellFailed { error: Option<String> },
+    TimeoutSellFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
+    TimeoutSellFailed { error: Option<String> },
     /// Async market-resolution confirmation (Gamma/CLOB), arriving after cycle end.
     ApiResult { won: bool },
     Control(ControlEvent),
@@ -142,6 +150,11 @@ pub enum BalanceEvent {
 pub enum CloseReason {
     TakeProfit,
     StopLoss,
+    /// Max holding time elapsed (`unwind_time_rev`/`unwind_time_hp`) — force
+    /// closed at market, same as StopLoss mechanically (unbounded FAK), but a
+    /// distinct reason so the driver routes it to `TimeoutSellFilled`/
+    /// `TimeoutSellFailed` instead of `StopSellFilled`/`StopSellFailed`.
+    Timeout,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +198,7 @@ pub enum PersistedWorkerState {
     Holding(HoldingData),
     Unwinding(HoldingData),
     StopExiting(HoldingData),
+    TimingOut(HoldingData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +296,10 @@ pub struct Worker {
     sl: f64,
     sl_pnl: f64,
     unwind_pnl: f64,
+    /// Max holding time (seconds) before a still-open position is force-closed
+    /// at market — `0.0` disables it. See `on_poly`'s timeout check and
+    /// `trader/doc/plan_unwind_time_2026-07-08.md`.
+    unwind_time: f64,
     trade_size: f64,
     gate_params: GateParams,
     /// Set when entering `Entering`, consumed when the fill/reject event lands.
@@ -293,7 +311,7 @@ impl Worker {
     // independently meaningful strategy-specific scalar, not a good fit for a
     // wrapper struct.
     #[allow(clippy::too_many_arguments)]
-    fn common(asset: &str, strategy_name: &'static str, kind: StrategyKind, p: &AssetParams, sl: f64, sl_pnl: f64, unwind_pnl: f64, halt_max: i64, halt_reset_hour: i64) -> Self {
+    fn common(asset: &str, strategy_name: &'static str, kind: StrategyKind, p: &AssetParams, sl: f64, sl_pnl: f64, unwind_pnl: f64, unwind_time: f64, halt_max: i64, halt_reset_hour: i64) -> Self {
         Self {
             asset: asset.to_string(),
             strategy_name,
@@ -316,6 +334,7 @@ impl Worker {
             sl,
             sl_pnl,
             unwind_pnl,
+            unwind_time,
             trade_size: p.trade_size_usdc,
             pending_entry: None,
             gate_params: GateParams {
@@ -339,6 +358,7 @@ impl Worker {
             p.sl_reversal,
             p.sl_pnl_rev,
             p.unwind_pnl_rev,
+            p.unwind_time_rev,
             p.halt_rev,
             p.halt_reset_hour_rev,
         )
@@ -355,6 +375,7 @@ impl Worker {
             p.sl_high_prob,
             p.sl_pnl_hp,
             p.unwind_pnl_hp,
+            p.unwind_time_hp,
             p.halt_prob,
             p.halt_reset_hour_hp,
         )
@@ -369,7 +390,7 @@ impl Worker {
     }
 
     pub fn has_open_position(&self) -> bool {
-        matches!(self.state, WorkerState::Entering | WorkerState::Holding(_) | WorkerState::Unwinding(_) | WorkerState::StopExiting(_))
+        matches!(self.state, WorkerState::Entering | WorkerState::Holding(_) | WorkerState::Unwinding(_) | WorkerState::StopExiting(_) | WorkerState::TimingOut(_))
     }
 
     /// Current `(latest_binance - cycle_open) / cycle_open` — the live reading
@@ -397,6 +418,7 @@ impl Worker {
             WorkerState::Holding(h) => PersistedWorkerState::Holding(h.clone()),
             WorkerState::Unwinding(h) => PersistedWorkerState::Unwinding(h.clone()),
             WorkerState::StopExiting(h) => PersistedWorkerState::StopExiting(h.clone()),
+            WorkerState::TimingOut(h) => PersistedWorkerState::TimingOut(h.clone()),
             // Resolved/Confirming/EnrichOnly are not open-exposure states; a
             // crash there loses only the async-confirmation follow-up, not a
             // live position, so they persist as Watching (nothing to resume).
@@ -424,7 +446,7 @@ impl Worker {
             // confirmation available, the safe default is to treat it as not
             // filled either way (no entry details to reconstruct a Holding from).
             PersistedWorkerState::Entering => WorkerState::Watching,
-            PersistedWorkerState::Holding(h) | PersistedWorkerState::Unwinding(h) | PersistedWorkerState::StopExiting(h) => {
+            PersistedWorkerState::Holding(h) | PersistedWorkerState::Unwinding(h) | PersistedWorkerState::StopExiting(h) | PersistedWorkerState::TimingOut(h) => {
                 if token_balance <= 0.0 {
                     return WorkerState::Watching; // already resolved/sold while we were down
                 }
@@ -462,6 +484,9 @@ impl Worker {
             Event::StopSellFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
                 self.on_stop_sell_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
             Event::StopSellFailed { error } => self.on_stop_sell_failed(error),
+            Event::TimeoutSellFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
+                self.on_timeout_sell_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
+            Event::TimeoutSellFailed { error } => self.on_timeout_sell_failed(error),
             Event::ApiResult { won } => self.on_api_result(won),
             Event::Control(c) => self.on_control(c),
             Event::Balance(b) => self.on_balance(b),
@@ -501,12 +526,12 @@ impl Worker {
     }
 
     fn on_cycle_close(&mut self) -> Vec<Action> {
-        // Any open position — Holding, or Unwinding/StopExiting that hadn't
-        // resolved yet — is held to maturity: a failed/incomplete early exit
-        // is not an exit (invariant). Only Holding's data is needed to compute
-        // the WIN/LOSS outcome.
+        // Any open position — Holding, or Unwinding/StopExiting/TimingOut that
+        // hadn't resolved yet — is held to maturity: a failed/incomplete early
+        // exit is not an exit (invariant). Only Holding's data is needed to
+        // compute the WIN/LOSS outcome.
         let holding = match &self.state {
-            WorkerState::Holding(h) | WorkerState::Unwinding(h) | WorkerState::StopExiting(h) => Some(h.clone()),
+            WorkerState::Holding(h) | WorkerState::Unwinding(h) | WorkerState::StopExiting(h) | WorkerState::TimingOut(h) => Some(h.clone()),
             _ => None,
         };
         let Some(h) = holding else {
@@ -627,6 +652,23 @@ impl Worker {
             && exit_price >= tp_price && h.shares >= MIN_SELLABLE_SHARES {
             self.state = WorkerState::Unwinding(h.clone());
             return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit, limit_price: Some(tp_price), signal_ts: tick.ts }, Action::Persist];
+        }
+
+        // Max holding time — checked last, after stop-loss and take-profit both
+        // fail to fire on this tick, matching the backtest's exit-chain order
+        // exactly (see trader/doc/plan_unwind_time_2026-07-08.md). Force-closes
+        // at whatever the current market price is, win or lose — `tick.ts` and
+        // `h.entry_ts` are both wall-clock seconds from their own tick's receipt
+        // (marketdata.rs), so no unit conversion is needed.
+        if self.unwind_time > 0.0 && (tick.ts - h.entry_ts) >= self.unwind_time && h.shares >= MIN_SELLABLE_SHARES {
+            self.state = WorkerState::TimingOut(h.clone());
+            let mut actions = vec![];
+            if let ExitArm::GtcResting { order_id } = &h.exit_arm {
+                actions.push(Action::CancelLimitSell { order_id: order_id.clone() });
+            }
+            actions.push(Action::ClosePosition { shares: h.shares, reason: CloseReason::Timeout, limit_price: None, signal_ts: tick.ts });
+            actions.push(Action::Persist);
+            return actions;
         }
 
         vec![]
@@ -813,6 +855,26 @@ impl Worker {
         vec![Action::Persist]
     }
 
+    fn on_timeout_sell_filled(&mut self, sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
+        let WorkerState::TimingOut(h) = &self.state else { return vec![] };
+        let h = h.clone();
+        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::Timeout, signal_latency_ms, process_latency_ms)
+    }
+
+    fn on_timeout_sell_failed(&mut self, error: Option<String>) -> Vec<Action> {
+        // Falls back to Holding exactly like on_stop_sell_failed — on_poly's
+        // timeout condition (tick.ts - h.entry_ts >= unwind_time) stays true
+        // (more true, as time passes), so the next PolyTick naturally re-fires
+        // the close attempt with no separate retry-counter needed.
+        if let WorkerState::TimingOut(h) = &self.state {
+            let mut h = h.clone();
+            h.exit_attempts += 1;
+            h.exit_last_error = error;
+            self.state = WorkerState::Holding(h);
+        }
+        vec![Action::Persist]
+    }
+
     fn on_api_result(&mut self, won: bool) -> Vec<Action> {
         match &self.state {
             WorkerState::Confirming(original) => {
@@ -900,12 +962,14 @@ mod tests {
             sl_reversal: 0.0,
             unwind_pnl_rev: 0.03,
             sl_pnl_rev: 0.20,
+            unwind_time_rev: 0.0,
             price_low: 0.80,
             price_high: 0.93,
             delta_pct_hp: 0.0004,
             sl_high_prob: 0.49,
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
+            unwind_time_hp: 0.0,
             halt_rev: 2,
             halt_prob: 2,
             halt_reset_hour_rev: 2,
@@ -1383,6 +1447,123 @@ mod tests {
 
         w.step(Event::StopSellFailed { error: Some("test error".to_string()) });
         assert!(matches!(w.state, WorkerState::Holding(_)), "failed exit is not an exit — reclassified as held");
+    }
+
+    /// unwind_time (max holding time) — see trader/doc/plan_unwind_time_2026-07-08.md.
+    /// entry_ts is 1250.0 (enter_down_position's final BinanceTick) in every case
+    /// below; dn=0.60 is chosen to sit strictly between the stop-loss floor
+    /// (0.70 - sl_pnl_rev(0.20) = 0.50) and the take-profit target
+    /// (0.70 + unwind_pnl_rev(0.03) = 0.73), so only the timeout path can fire.
+    #[test]
+    fn timeout_force_closes_after_unwind_time_elapsed_with_no_other_exit() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // 1250 + 30
+        assert_eq!(actions, vec![
+            Action::ClosePosition { shares: 10.0, reason: CloseReason::Timeout, limit_price: None, signal_ts: 1280.0 },
+            Action::Persist,
+        ]);
+        assert!(matches!(w.state, WorkerState::TimingOut(_)));
+    }
+
+    #[test]
+    fn timeout_does_not_fire_before_threshold_elapsed() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1279.0, up: 0.40, dn: 0.60 })); // 1250 + 29
+        assert_eq!(actions, vec![], "must not fire 1s before the threshold");
+        assert!(matches!(w.state, WorkerState::Holding(_)));
+    }
+
+    #[test]
+    fn timeout_disabled_when_unwind_time_zero() {
+        let p = btc_params(); // unwind_time_rev defaults to 0.0 (disabled)
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+
+        // Enormous elapsed time — would fire at any positive threshold.
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 100_000.0, up: 0.40, dn: 0.60 }));
+        assert_eq!(actions, vec![], "0.0 must mean disabled regardless of elapsed time");
+        assert!(matches!(w.state, WorkerState::Holding(_)));
+    }
+
+    #[test]
+    fn stoploss_takes_priority_over_timeout_on_same_tick() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+
+        // Both conditions true simultaneously: 30s elapsed AND dn(0.49) crosses
+        // the stop-loss floor (0.50) — matches the backtest's fixed exit-chain
+        // order (stop-loss, then take-profit, then timeout last).
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.45, dn: 0.49 }));
+        assert_eq!(actions, vec![
+            Action::ClosePosition { shares: 10.0, reason: CloseReason::StopLoss, limit_price: None, signal_ts: 1280.0 },
+            Action::Persist,
+        ]);
+        assert!(matches!(w.state, WorkerState::StopExiting(_)), "stop-loss must win over timeout on the same tick");
+    }
+
+    #[test]
+    fn timeout_sell_failure_falls_back_to_holding_and_refires_next_tick() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // triggers TimingOut
+        assert!(matches!(w.state, WorkerState::TimingOut(_)));
+
+        w.step(Event::TimeoutSellFailed { error: Some("test error".to_string()) });
+        assert!(matches!(w.state, WorkerState::Holding(_)), "failed exit is not an exit — reclassified as held");
+
+        // Threshold condition is still true (more true, as time passes) — the
+        // next PolyTick naturally re-fires, no separate retry-counter needed.
+        let actions = w.step(Event::PolyTick(PolyTick { ts: 1281.0, up: 0.40, dn: 0.60 }));
+        assert_eq!(actions, vec![
+            Action::ClosePosition { shares: 10.0, reason: CloseReason::Timeout, limit_price: None, signal_ts: 1281.0 },
+            Action::Persist,
+        ]);
+        assert!(matches!(w.state, WorkerState::TimingOut(_)));
+    }
+
+    #[test]
+    fn timeout_sell_filled_produces_timeout_outcome() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // triggers TimingOut
+
+        let actions = w.step(Event::TimeoutSellFilled { sold_shares: 10.0, exit_price: 0.60, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        assert_eq!(record.outcome, Outcome::Timeout);
+        assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
+    }
+
+    #[test]
+    fn to_persisted_round_trips_timing_out_state() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // triggers TimingOut
+
+        let snap = w.to_persisted();
+        match &snap.state {
+            PersistedWorkerState::TimingOut(h) => assert_eq!(h.shares, 10.0),
+            _ => panic!("expected TimingOut in persisted snapshot"),
+        }
+
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: PersistedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.asset, "BTC");
     }
 
     #[test]

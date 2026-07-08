@@ -43,6 +43,10 @@ pub struct StrategyToml {
     pub sl_reversal: HashMap<String, f64>,
     pub unwind_pnl_rev: HashMap<String, f64>,
     pub sl_pnl_rev: HashMap<String, f64>,
+    /// Max holding time (seconds) before a still-open reversal position is
+    /// force-closed at market, regardless of price — `0.0` disables it. See
+    /// `trader/doc/plan_unwind_time_2026-07-08.md`.
+    pub unwind_time_rev: HashMap<String, f64>,
 
     pub enter_when_time_left: HashMap<String, i64>,
     pub price_low: HashMap<String, f64>,
@@ -50,6 +54,8 @@ pub struct StrategyToml {
     pub sl_high_prob: HashMap<String, f64>,
     pub unwind_pnl_hp: HashMap<String, f64>,
     pub sl_pnl_hp: HashMap<String, f64>,
+    /// Same as `unwind_time_rev`, for high_prob. `0.0` disables it.
+    pub unwind_time_hp: HashMap<String, f64>,
 
     pub trade_size_usdc: HashMap<String, f64>,
 
@@ -78,6 +84,7 @@ pub struct AssetParams {
     pub sl_reversal: f64,
     pub unwind_pnl_rev: f64,
     pub sl_pnl_rev: f64,
+    pub unwind_time_rev: f64,
 
     // High-prob
     pub price_low: f64,
@@ -86,6 +93,7 @@ pub struct AssetParams {
     pub sl_high_prob: f64,
     pub unwind_pnl_hp: f64,
     pub sl_pnl_hp: f64,
+    pub unwind_time_hp: f64,
 
     // Risk
     pub halt_rev: i64,
@@ -132,12 +140,14 @@ impl StrategyToml {
             sl_reversal: req(&self.sl_reversal, asset, "sl_reversal")?,
             unwind_pnl_rev: req(&self.unwind_pnl_rev, asset, "unwind_pnl_rev")?,
             sl_pnl_rev: req(&self.sl_pnl_rev, asset, "sl_pnl_rev")?,
+            unwind_time_rev: req(&self.unwind_time_rev, asset, "unwind_time_rev")?,
             price_low: req(&self.price_low, asset, "price_low")?,
             price_high: req(&self.price_high, asset, "price_high")?,
             delta_pct_hp: req(&self.delta_pct_hp, asset, "delta_pct_hp")?,
             sl_high_prob: req(&self.sl_high_prob, asset, "sl_high_prob")?,
             unwind_pnl_hp: req(&self.unwind_pnl_hp, asset, "unwind_pnl_hp")?,
             sl_pnl_hp: req(&self.sl_pnl_hp, asset, "sl_pnl_hp")?,
+            unwind_time_hp: req(&self.unwind_time_hp, asset, "unwind_time_hp")?,
             halt_rev: req(&self.halt_rev, asset, "halt_rev")?,
             halt_prob: req(&self.halt_prob, asset, "halt_prob")?,
             halt_reset_hour_rev: req(&self.halt_reset_hour_rev, asset, "halt_reset_hour_rev")?,
@@ -196,6 +206,27 @@ mod tests {
         assert!((p.sl_pnl_rev - 0.25).abs() < 1e-9);
         assert!((p.unwind_pnl_hp - 0.05).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.25).abs() < 1e-9);
+        // unwind_time_{rev,hp} added 2026-07-08 (studies/unwind_safely walk-forward
+        // final calibration) — flat 30.0 for both, no per-asset override yet.
+        assert!((p.unwind_time_rev - 30.0).abs() < 1e-9);
+        assert!((p.unwind_time_hp - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unwind_time_falls_back_to_default_and_resolves_asset_override() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        // Default fallback (no BTC-specific entry in the real config).
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!((p.unwind_time_rev - 30.0).abs() < 1e-9);
+        // Asset-specific override takes priority over default when present.
+        toml.unwind_time_rev.insert("ETH".to_string(), 12.0);
+        let p = toml.resolve("ETH").expect("resolve ETH");
+        assert!((p.unwind_time_rev - 12.0).abs() < 1e-9);
+        // 0.0 is a valid, meaningful value (disabled) — not treated as missing.
+        toml.unwind_time_hp.insert("ETH".to_string(), 0.0);
+        let p = toml.resolve("ETH").expect("resolve ETH");
+        assert!((p.unwind_time_hp - 0.0).abs() < 1e-9);
     }
 
     #[test]

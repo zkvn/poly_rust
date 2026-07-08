@@ -1,6 +1,6 @@
 # meta
-ts = "2026-07-07T00:00:00+08:00"
-source = "reversal strategy recalibration — Highest Win Rate table, Final Calibration (Cal 2026-05-26 -> 2026-07-02), studies/bt2/results_bt2_weekly/report_5m_20260704_004615.md; scoped trade_assets down to ETH only and sl_pnl_rev/sl_pnl_hp both tightened to 0.25 following trader/doc/audit_sl_no_trigger_2026-07-07.md's SOL/DOGE near-total-loss findings and btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md's grid-boundary-artifact writeup"
+ts = "2026-07-08T00:00:00+08:00"
+source = "reversal strategy recalibration — Highest Win Rate table, Final Calibration (Cal 2026-05-26 -> 2026-07-02), studies/bt2/results_bt2_weekly/report_5m_20260704_004615.md; scoped trade_assets down to ETH only and sl_pnl_rev/sl_pnl_hp both tightened to 0.25 following trader/doc/audit_sl_no_trigger_2026-07-07.md's SOL/DOGE near-total-loss findings and btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md's grid-boundary-artifact writeup; added unwind_time_rev/unwind_time_hp = 30.0 (max holding time, new parameter — see trader/doc/plan_unwind_time_2026-07-08.md and btc_5mins/studies/unwind_safely/results/walk_forward_ETH_20260707_232318.md)"
 
 # Scoped to ETH only (2026-07-07) — see trader/doc/audit_sl_no_trigger_2026-07-07.md.
 assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
@@ -92,6 +92,17 @@ default = 0.03
 [sl_pnl_rev]
 default = 0.25
 
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. 0 = disabled. See
+# trader/doc/plan_unwind_time_2026-07-08.md: 30.0 is the walk-forward final
+# calibration value for ETH (studies/unwind_safely/results/
+# walk_forward_ETH_20260707_232318.md) — flagged there as sitting at the top
+# of the tested 10-30s range (same grid-boundary caveat as sl_pnl), shipped
+# anyway since a too-short unwind_time only makes exits more conservative,
+# unlike sl_pnl where a boundary value masked unreachable thresholds.
+[unwind_time_rev]
+default = 30.0
+
 [price_high_rev]
 default = 0.9
 
@@ -125,6 +136,11 @@ default = 0.05
 
 [sl_pnl_hp]
 default = 0.25
+
+# Max holding time (seconds), high_prob — same convention as unwind_time_rev
+# above. 30.0 per walk_forward_ETH_20260707_232318.md's final calibration.
+[unwind_time_hp]
+default = 30.0
 
 # HAR beta coefficients [intercept, b_short, b_med, b_long]
 [har_beta]

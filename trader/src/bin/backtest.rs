@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "-".repeat(100));
 
     let mut total_pnl = 0.0_f64;
-    let (mut wins, mut losses, mut stoplosses, mut unwinds) = (0usize, 0, 0, 0);
+    let (mut wins, mut losses, mut stoplosses, mut unwinds, mut timeouts) = (0usize, 0, 0, 0, 0);
 
     for t in &trades {
         let outcome_str = t.outcome.as_str();
@@ -59,12 +59,16 @@ fn main() -> anyhow::Result<()> {
             trader::types::Outcome::Loss => losses += 1,
             trader::types::Outcome::StopLoss => stoplosses += 1,
             trader::types::Outcome::Unwind => unwinds += 1,
+            // machine.rs (this replay engine) doesn't implement unwind_time —
+            // only worker.rs (the live driver) does — so this never fires today.
+            // Counted anyway for exhaustiveness and in case that changes later.
+            trader::types::Outcome::Timeout => timeouts += 1,
         }
     }
 
     let total_pnl = (total_pnl * 10_000.0).round() / 10_000.0;
-    println!("\nTotal: trades={} wins={} losses={} stoplosses={} unwinds={} pnl={}",
-        trades.len(), wins, losses, stoplosses, unwinds, total_pnl);
+    println!("\nTotal: trades={} wins={} losses={} stoplosses={} unwinds={} timeouts={} pnl={}",
+        trades.len(), wins, losses, stoplosses, unwinds, timeouts, total_pnl);
 
     Ok(())
 }

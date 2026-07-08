@@ -50,6 +50,7 @@ class DeployStepOrderingTests(unittest.TestCase):
         self.mod.deploy_price_feed = MagicMock(return_value=True)
         self.mod.deploy_trader = MagicMock(return_value=True)
         self.mod.sync_config = MagicMock(return_value=True)
+        self.mod.commit_and_push_config = MagicMock(return_value=True)
 
     def _run(self, argv, expected_exit_code=0):
         with patch.object(sys, "argv", ["deploy_oracle.py", *argv]):
@@ -89,6 +90,26 @@ class DeployStepOrderingTests(unittest.TestCase):
         self.mod.sync_config.return_value = False
         self._run(["--trader-only", "--skip-build"], expected_exit_code=1)
         self.mod.sync_config.assert_called_once()
+        self.mod.deploy_trader.assert_not_called()
+
+    def test_update_config_commits_before_syncing(self):
+        self._run(["--update-config"])
+        self.mod.commit_and_push_config.assert_called_once()
+        self.mod.sync_config.assert_called_once()
+        client = self.mod.connect_oracle.return_value
+        self.mod.deploy_trader.assert_called_once_with(client, False, skip_binary=True)
+        self.mod.deploy_price_feed.assert_not_called()
+        self.mod.build.assert_not_called()
+
+    def test_update_config_never_touches_oracle_when_git_push_fails(self):
+        """A failed commit/push must not sync a config change to Oracle that
+        isn't safely recorded in git — same "don't propagate an unconfirmed
+        state" principle as the config-sync-failure case above, one level up."""
+        self.mod.commit_and_push_config.return_value = False
+        self._run(["--update-config"], expected_exit_code=1)
+        self.mod.commit_and_push_config.assert_called_once()
+        self.mod.connect_oracle.assert_not_called()
+        self.mod.sync_config.assert_not_called()
         self.mod.deploy_trader.assert_not_called()
 
 

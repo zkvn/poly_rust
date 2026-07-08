@@ -180,6 +180,15 @@ place — turns out every unconstrained bt2 sweep in `../../btc_5mins` (both 202
 `sl_pnl = 0` and then walked to that search's grid maximum. Full writeup:
 `../../btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md`.
 
+**Follow-up 2 (2026-07-08):** implemented the actual mitigation this section deferred — a
+max-holding-time force-exit (`unwind_time_rev`/`unwind_time_hp`) that closes a stuck position at
+market after a fixed number of seconds, *independent* of whether `sl_pnl` can ever mathematically
+trigger. This is a structurally different fix from re-tuning `sl_pnl_rev` itself (which this
+section left as a calibration call): it bounds worst-case exposure time regardless of what the
+PnL-based threshold is set to, so a future unreachable-threshold config mistake like this one would
+still be capped. See `trader/doc/plan_unwind_time_2026-07-08.md` and README's "`unwind_time` —
+max-holding-time force-exit" entry.
+
 ## 5. Data note
 
 `price_feed/raw/` on this machine only had data through `2026-07-06_17` before this audit — the

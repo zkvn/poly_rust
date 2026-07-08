@@ -311,10 +311,15 @@ struct AssetSlot {
     /// until the position actually clears, unlike take-profit's one-shot
     /// `TakeProfitAbandoned` latch (see `on_stop_sell_failed`'s doc comment).
     sl_notified: bool,
+    /// Same guard as `sl_notified`, for the "TIME LIMIT triggered" alert —
+    /// worker.rs's timeout check re-fires `ClosePosition{Timeout}` every
+    /// PolyTick the same way stop-loss does.
+    timeout_notified: bool,
     wins: u32,
     losses: u32,
     stoplosses: u32,
     unwinds: u32,
+    timeouts: u32,
     total_pnl: f64,
     last_trade: Option<String>,
     current_slug: Option<String>,
@@ -387,7 +392,7 @@ impl Driver<'_> {
         let mut ta_lines = Vec::new();
         let mut mkt_lines = Vec::new();
         let mut pnl_lines = Vec::new();
-        let (mut tw, mut tl, mut ts, mut tu) = (0u32, 0u32, 0u32, 0u32);
+        let (mut tw, mut tl, mut ts, mut tu, mut tt) = (0u32, 0u32, 0u32, 0u32, 0u32);
         let mut t_pnl = 0.0f64;
         let mut seen_markets = std::collections::HashSet::new();
 
@@ -398,7 +403,7 @@ impl Driver<'_> {
             // `low`/`high` are the strategy's entry trigger band — reversal_low_threshold/
             // reversal for reversal (aka "unwind" — the reversal+take-profit-unwind
             // strategy), price_low/price_high for high_prob.
-            let (sl, delta_gate, low, high, halt_n, unwind_pnl, sl_pnl) =
+            let (sl, delta_gate, low, high, halt_n, unwind_pnl, sl_pnl, unwind_time) =
                 if slot.worker.strategy_name == "high_prob" {
                     (
                         slot.params.sl_high_prob,
@@ -408,6 +413,7 @@ impl Driver<'_> {
                         slot.params.halt_prob,
                         slot.params.unwind_pnl_hp,
                         slot.params.sl_pnl_hp,
+                        slot.params.unwind_time_hp,
                     )
                 } else {
                     (
@@ -418,10 +424,11 @@ impl Driver<'_> {
                         slot.params.halt_rev,
                         slot.params.unwind_pnl_rev,
                         slot.params.sl_pnl_rev,
+                        slot.params.unwind_time_rev,
                     )
                 };
             ta_lines.push(format!(
-                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  size=${:.2}",
+                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  unwind_time={unwind_time:.1}s  size=${:.2}",
                 slot.worker.strategy_name, slot.params.trade_size_usdc
             ));
 
@@ -455,6 +462,7 @@ impl Driver<'_> {
             tl += slot.losses;
             ts += slot.stoplosses;
             tu += slot.unwinds;
+            tt += slot.timeouts;
             t_pnl += slot.total_pnl;
         }
 
@@ -462,7 +470,7 @@ impl Driver<'_> {
         sections.push(format!("<b>MARKETS</b>  ({now})\n{}", mkt_lines.join("\n")));
 
         let sign = if t_pnl >= 0.0 { "+" } else { "" };
-        let mut all_pnl = vec![format!("  Session: {tw}W/{tl}L/{ts}SL/{tu}UW  {sign}${t_pnl:.4}")];
+        let mut all_pnl = vec![format!("  Session: {tw}W/{tl}L/{ts}SL/{tu}UW/{tt}TO  {sign}${t_pnl:.4}")];
         all_pnl.extend(pnl_lines);
         sections.push(format!("<b>PNL</b>\n{}", all_pnl.join("\n")));
 
@@ -565,6 +573,23 @@ impl Driver<'_> {
                         )).await;
                     }
                 }
+                if matches!(reason, CloseReason::Timeout) {
+                    println!("[TIMEOUT] {} max holding time elapsed — closing {shares:.4} shares (unwind_time floor crossed; up to 5 retries)", slot.worker.asset);
+                    // Same first-trigger-only guard as stop-loss — worker.rs
+                    // re-fires ClosePosition{Timeout} every PolyTick until the
+                    // position clears.
+                    if !slot.timeout_notified {
+                        slot.timeout_notified = true;
+                        let side = if token_id == slot.up_id { Side::Up } else { Side::Down };
+                        let trigger_price = if side == Side::Up { slot.last_poly_up } else { slot.last_poly_dn };
+                        let dt = hkt_now().format("%H:%M:%S");
+                        let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                        self.notify(&format!(
+                            "⏱️ <b>{}</b> TIME LIMIT triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | max holding time elapsed — closing at market",
+                            slot.worker.asset, arrow_side(side), slot.worker.strategy_name
+                        )).await;
+                    }
+                }
                 let received_ts = now_secs_f64();
                 // Take-profit closes are bounded at limit_price (== the position's
                 // own tp_price — no separate config, see
@@ -590,7 +615,11 @@ impl Driver<'_> {
                 let matched = matches!(result.status, SellStatus::Matched);
                 if matched {
                     let dt = hkt_now().format("%H:%M:%S");
-                    let label = if matches!(reason, CloseReason::StopLoss) { "STOP LOSS" } else { "TAKE PROFIT" };
+                    let label = match reason {
+                        CloseReason::StopLoss => "STOP LOSS",
+                        CloseReason::TakeProfit => "TAKE PROFIT",
+                        CloseReason::Timeout => "TIME LIMIT",
+                    };
                     self.notify(&format!(
                         "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | {clob_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, slot.worker.strategy_name, result.filled_usdc, result.attempts
@@ -599,8 +628,10 @@ impl Driver<'_> {
                 let event = match (matched, reason) {
                     (true, CloseReason::TakeProfit) => Event::UnwindFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
                     (true, CloseReason::StopLoss) => Event::StopSellFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
+                    (true, CloseReason::Timeout) => Event::TimeoutSellFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
                     (false, CloseReason::TakeProfit) => Event::UnwindFailed { error: result.error },
                     (false, CloseReason::StopLoss) => Event::StopSellFailed { error: result.error },
+                    (false, CloseReason::Timeout) => Event::TimeoutSellFailed { error: result.error },
                 };
                 if matched && sold >= *shares {
                     slot.current_token_id = None;
@@ -635,7 +666,7 @@ impl Driver<'_> {
                         if let Err(e) = log_trade(&slot.log_path, rec) {
                             eprintln!("log error: {e:#}");
                         }
-                        if matches!(rec.outcome, Outcome::Win | Outcome::Loss | Outcome::StopLoss | Outcome::Unwind) {
+                        if matches!(rec.outcome, Outcome::Win | Outcome::Loss | Outcome::StopLoss | Outcome::Unwind | Outcome::Timeout) {
                             slot.cycle_trades += 1;
                         }
                         match rec.outcome {
@@ -643,6 +674,7 @@ impl Driver<'_> {
                             Outcome::Loss => slot.losses += 1,
                             Outcome::StopLoss => slot.stoplosses += 1,
                             Outcome::Unwind => slot.unwinds += 1,
+                            Outcome::Timeout => slot.timeouts += 1,
                         }
                         slot.total_pnl += rec.pnl;
                         let summary = format!(
@@ -657,6 +689,10 @@ impl Driver<'_> {
                         let icon = match rec.outcome {
                             Outcome::Win | Outcome::Unwind => "✅",
                             Outcome::Loss | Outcome::StopLoss => "❌",
+                            // A timeout can land at a profit or a loss — it's not
+                            // directionally fixed like stop-loss/take-profit.
+                            Outcome::Timeout if rec.pnl >= 0.0 => "⏱️✅",
+                            Outcome::Timeout => "⏱️❌",
                         };
                         let sign = if rec.pnl >= 0.0 { "+" } else { "-" };
                         self.notify(&format!(
@@ -682,12 +718,12 @@ impl Driver<'_> {
                         match previous_outcome {
                             Outcome::Win => slot.wins = slot.wins.saturating_sub(1),
                             Outcome::Loss => slot.losses = slot.losses.saturating_sub(1),
-                            Outcome::StopLoss | Outcome::Unwind => {} // Confirming only ever holds Win/Loss
+                            Outcome::StopLoss | Outcome::Unwind | Outcome::Timeout => {} // Confirming only ever holds Win/Loss
                         }
                         match record.outcome {
                             Outcome::Win => slot.wins += 1,
                             Outcome::Loss => slot.losses += 1,
-                            Outcome::StopLoss | Outcome::Unwind => {}
+                            Outcome::StopLoss | Outcome::Unwind | Outcome::Timeout => {}
                         }
                         slot.total_pnl += record.pnl - previous_pnl;
                         self.notify(&format!(
@@ -880,10 +916,12 @@ async fn main() -> Result<()> {
                 state_file,
                 cycle_trades: 0,
                 sl_notified: false,
+                timeout_notified: false,
                 wins: 0,
                 losses: 0,
                 stoplosses: 0,
                 unwinds: 0,
+                timeouts: 0,
                 total_pnl: 0.0,
                 last_trade: None,
                 current_slug: None,
@@ -1060,6 +1098,7 @@ async fn main() -> Result<()> {
                         // the cycle that just closed.
                         slot.cycle_trades = 0;
                         slot.sl_notified = false;
+                        slot.timeout_notified = false;
 
                         let slug = make_slug(&asset, slot_now, "5m");
                         match fetch_meta(&http, &slug).await {

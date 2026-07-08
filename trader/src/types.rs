@@ -76,6 +76,10 @@ pub enum Outcome {
     Loss,
     StopLoss,
     Unwind,
+    /// Max-holding-time cap (`unwind_time_rev`/`unwind_time_hp`) force-closed the
+    /// position at market — may land at a profit or a loss, unlike StopLoss/Unwind
+    /// which are directionally fixed. See `trader/doc/plan_unwind_time_2026-07-08.md`.
+    Timeout,
 }
 
 impl Outcome {
@@ -85,9 +89,14 @@ impl Outcome {
             Outcome::Loss => "LOSS",
             Outcome::StopLoss => "STOPLOSS",
             Outcome::Unwind => "UNWIND",
+            Outcome::Timeout => "TIMEOUT",
         }
     }
 
+    /// `Timeout` is deliberately excluded (matches the backtest's "cum_losses
+    /// NOT incremented" TIMEOUT comment) — a max-holding-time exit isn't a
+    /// signal quality failure the way a real stop-loss/loss is, so it
+    /// shouldn't feed the halt loss-streak either way.
     pub fn is_loss_for_halt(self) -> bool {
         matches!(self, Outcome::Loss | Outcome::StopLoss)
     }

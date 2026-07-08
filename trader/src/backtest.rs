@@ -481,12 +481,14 @@ mod tests {
             sl_reversal: 0.0,
             unwind_pnl_rev: 0.03,
             sl_pnl_rev: 0.20,
+            unwind_time_rev: 0.0,
             price_low: 0.80,
             price_high: 0.93,
             delta_pct_hp: 0.0004,
             sl_high_prob: 0.49,
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
+            unwind_time_hp: 0.0,
             halt_rev: 2,
             halt_prob: 2,
             halt_reset_hour_rev: 2,
@@ -600,6 +602,18 @@ mod tests {
         assert!(!h.record_trade(&halt_test_record("reversal", crate::types::Outcome::Win), "reversal"));
         assert!(!h.record_trade(&halt_test_record("reversal", crate::types::Outcome::Unwind), "reversal"));
         assert!(!h.is_halted(), "wins/unwinds must never halt");
+
+        // A Timeout (unwind_time force-exit) is excluded from the halt loss-streak
+        // regardless of pnl sign — matches the backtest's "cum_losses NOT
+        // incremented" TIMEOUT semantics. Try both a losing and a winning-pnl
+        // timeout record to confirm the exclusion isn't accidentally pnl-gated.
+        let mut losing_timeout = halt_test_record("reversal", crate::types::Outcome::Timeout);
+        losing_timeout.pnl = -0.5;
+        assert!(!h.record_trade(&losing_timeout, "reversal"));
+        let mut winning_timeout = halt_test_record("reversal", crate::types::Outcome::Timeout);
+        winning_timeout.pnl = 0.5;
+        assert!(!h.record_trade(&winning_timeout, "reversal"));
+        assert!(!h.is_halted(), "timeout exits must never halt, win or lose");
 
         assert!(!h.record_trade(&halt_test_record("high_prob", crate::types::Outcome::Loss), "reversal"),
             "a loss from a different strategy must be ignored by this tracker");

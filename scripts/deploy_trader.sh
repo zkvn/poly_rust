@@ -20,9 +20,11 @@
 #   be skipped.
 #
 # Usage:
-#   ./scripts/deploy_trader.sh              # build + deploy + restart trader
-#   ./scripts/deploy_trader.sh --dry-run    # show every step, change nothing
-#   ./scripts/deploy_trader.sh --skip-build # reuse the last local build
+#   ./scripts/deploy_trader.sh                 # build + deploy + restart trader
+#   ./scripts/deploy_trader.sh --dry-run       # show every step, change nothing
+#   ./scripts/deploy_trader.sh --skip-build    # reuse the last local build
+#   ./scripts/deploy_trader.sh --config-only   # sync config only, no build/binary rsync
+#   ./scripts/deploy_trader.sh --update-config # commit+push config, then sync — no build
 
 set -euo pipefail
 
