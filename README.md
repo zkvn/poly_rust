@@ -160,13 +160,14 @@ on the remote before the nightly sync runs.
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and
   `cargo fmt --all --check` all clean.
 
-- **`rust-toolchain.toml` pin — deliberately skipped (flagged 2026-07-08).** Would prevent the
-  rustfmt-version drift that caused the 2026-07-08 `cargo fmt --all` cleanup from recurring, but
-  wasn't added: `scripts/deploy_trader.sh`'s aarch64 cross-compile step runs in a separate
-  `cross`/Docker-managed toolchain, and a repo-root pin could force that container to fetch a
-  specific version on its next build rather than reuse whatever it already has cached — not
-  something to risk against the live trading deploy path untested. If picked up, verify against a
-  real `deploy_trader.sh` dry run in isolation before it ever touches `main`.
+- ~~`rust-toolchain.toml` pin — flagged 2026-07-08.~~ **Done, same day**: added
+  `rust-toolchain.toml` (`channel = "1.96.1"`, `components = ["rustfmt", "clippy"]`) at the repo
+  root. Tested in isolation before it went anywhere near `main` (see "Trading engine — known
+  incidents" below for the full writeup) — the one real risk (the aarch64 `cross`/Docker
+  toolchain needing to fetch something new) did happen once, cost ~13s, and was a one-time,
+  cacheable cost, not a recurring one: a second `cross build` for both `trader` and `price_feed`
+  after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
+  confirmed clean end-to-end with the pin in place.
 
 </details>
 
@@ -1205,20 +1206,58 @@ by re-running the full check afterward in both:
 - `trader`: `cargo build`, `cargo test` (152 lib + 16 bin, unchanged pass count), and
   `cargo clippy --all-targets --all-features -- -D warnings` all clean, before and after.
 - `price_feed`: `cargo build` and `cargo test` (5 tests) both clean before and after. **Note:**
-  `cargo clippy --all-targets --all-features -- -D warnings` currently fails on `price_feed` with
-  12 pre-existing errors (mostly `collapsible_if`) — confirmed via the same `git stash` check to
-  predate this fmt pass entirely (`price_feed` never got the equivalent of `trader`'s 2026-07-07
-  clippy cleanup). Left untouched here — out of scope for a formatting-only pass; worth its own
-  dedicated pass later, mirroring `trader`'s.
+  `cargo clippy --all-targets --all-features -- -D warnings` failed on `price_feed` with 12
+  pre-existing errors at the time (mostly `collapsible_if`) — confirmed via the same `git stash`
+  check to predate this fmt pass entirely (`price_feed` never got the equivalent of `trader`'s
+  2026-07-07 clippy cleanup). Left untouched in this pass — out of scope for a formatting-only
+  change. **Fixed same day, separately — see the next entry below.**
 
-Deliberately **not** added: a `rust-toolchain.toml` pin to stop this drift from recurring. Held
-back specifically because `scripts/deploy_trader.sh`'s aarch64 cross-compile step
+At the time, deliberately **not** added: a `rust-toolchain.toml` pin to stop this drift from
+recurring. Held back specifically because `scripts/deploy_trader.sh`'s aarch64 cross-compile step
 (`cross build --release --bin=live --target=aarch64-unknown-linux-gnu`) runs in a separate
 Docker-based toolchain that `cross` manages itself; a repo-root toolchain pin could force that
 container to fetch a specific version on its next build rather than using whatever it already has
-cached, which isn't something to risk against the live trading deploy path without testing it in
-isolation first. Worth revisiting as its own change, verified against a real `deploy_trader.sh`
-dry run before it ever touches `main`.
+cached, which wasn't something to risk against the live trading deploy path without testing it in
+isolation first. **Added and verified later the same day — see "Toolchain pin added" below.**
+
+### `price_feed` clippy cleanup (2026-07-08, fixed)
+
+The 12 errors flagged above: 7x `collapsible_if` (`collect.rs`, `markets.rs`) collapsed into Rust
+let-chains (`if let X && cond { ... }`), behavior-identical; 3x `ptr_arg` (`&PathBuf` -> `&Path`)
+on `collect.rs`'s `open_for_hour`/`AssetWriters::new`/`BinanceWriters::new` — call sites unaffected
+via deref coercion, internal `.clone()` calls on the narrowed param switched to `.to_path_buf()`;
+1x `too_many_arguments` on `collect.rs::write_sample` (8/7) allowed with a justifying comment
+(private, 3 call sites, each arg independently meaningful), matching the precedent already set for
+`trader/src/worker.rs::Worker::common`. Verified: `cargo build`, `cargo test` (5/5), `cargo clippy
+--all-targets --all-features -- -D warnings`, and `cargo fmt --all --check` all clean.
+
+### Toolchain pin added: `rust-toolchain.toml` (2026-07-08, added)
+
+Pins `channel = "1.96.1"` (today's already-installed version) plus `rustfmt`/`clippy` components,
+at the repo root — applies to both `trader` and `price_feed` via rustup's directory-walk-up
+resolution. This is what stops the drift that caused the fmt cleanup above from recurring: without
+it, the next dev machine (or CI runner, or this machine after a `rustup update`) picks whatever
+"stable" happens to resolve to at the time, silently diverging from whatever last formatted the
+repo.
+
+Tested in isolation before merging, specifically targeting the risk flagged above (the aarch64
+`cross`/Docker toolchain needing to fetch a pinned version it doesn't already have cached):
+- Local host tooling: `cargo build`/`test`/`clippy`/`fmt --check` all clean under the pinned
+  toolchain (rustup auto-installed a distinct `1.96.1-x86_64-unknown-linux-gnu` toolchain
+  alongside the existing `stable` one — same underlying version, so no behavior change, just now
+  explicit instead of implicit).
+- `cross build --release --bin live --target aarch64-unknown-linux-gnu` (`trader`): the risk
+  materialized once — the container needed to fetch the `rust-std` component for the aarch64
+  target under the pinned channel, costing ~13s. **A second run immediately after came back in
+  under 2 seconds** — confirming this is a one-time, cacheable cost, not a per-deploy recurring
+  one.
+- `cross build --release --target aarch64-unknown-linux-gnu` (`price_feed`, which has its own
+  `Cross.toml` for `libssl-dev:arm64`/`pkg-config` pre-build steps): also clean, ~7s, no new
+  toolchain fetch needed (already warmed by the `trader` build above).
+- `./scripts/deploy_trader.sh --dry-run`: full pipeline clean end-to-end with the pin in place.
+
+No real deploy was run as part of this change (dry-run + isolated `cross build` only) — the
+pin itself doesn't change what gets built, only which toolchain version builds it.
 
 ### `--trader-only` deploy silently left Oracle running a stale strategy config (2026-07-07, fixed, critical)
 
