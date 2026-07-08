@@ -1173,7 +1173,38 @@ verified via `cargo build`/`cargo test` (141 lib + 10 bin tests, all passing) af
 Not addressed in this pass: `cargo fmt --all --check` also has ~350 pre-existing diffs across the
 crate (same toolchain-drift shape, confirmed unrelated to any feature work) — out of scope here
 since `cargo fmt --all` would rewrite most lines of every touched file, obscuring any real change
-in the same commit. Left for a dedicated formatting-only pass if wanted.
+in the same commit. Left for a dedicated formatting-only pass if wanted. **Done, see below.**
+
+### `cargo fmt --all --check` cleaned up, both crates (2026-07-08, fixed)
+
+The `~350` diffs flagged above (deferred from the 2026-07-07 clippy pass) turned out to be `374`
+diffs across `26` files in `trader`, plus `55` more across `price_feed` — same root cause in both:
+no `rust-toolchain.toml`/`rustfmt.toml` in the repo, so each crate was formatted by whatever
+rustfmt happened to be installed at the time, and the currently-installed `rustfmt 1.9.0-stable`
+(`rustc 1.96.1`, 2026-06-26) disagrees with that on import-statement ordering and struct-literal/
+enum-variant field wrapping (multi-field literals that used to fit on one line now wrap one field
+per line). Confirmed via `git stash`/clean-checkout diffing that none of this was caused by any
+in-flight feature work in either crate.
+
+Fixed with a single `cargo fmt --all` per crate — purely mechanical, zero behavior change, verified
+by re-running the full check afterward in both:
+- `trader`: `cargo build`, `cargo test` (152 lib + 16 bin, unchanged pass count), and
+  `cargo clippy --all-targets --all-features -- -D warnings` all clean, before and after.
+- `price_feed`: `cargo build` and `cargo test` (5 tests) both clean before and after. **Note:**
+  `cargo clippy --all-targets --all-features -- -D warnings` currently fails on `price_feed` with
+  12 pre-existing errors (mostly `collapsible_if`) — confirmed via the same `git stash` check to
+  predate this fmt pass entirely (`price_feed` never got the equivalent of `trader`'s 2026-07-07
+  clippy cleanup). Left untouched here — out of scope for a formatting-only pass; worth its own
+  dedicated pass later, mirroring `trader`'s.
+
+Deliberately **not** added: a `rust-toolchain.toml` pin to stop this drift from recurring. Held
+back specifically because `scripts/deploy_trader.sh`'s aarch64 cross-compile step
+(`cross build --release --bin=live --target=aarch64-unknown-linux-gnu`) runs in a separate
+Docker-based toolchain that `cross` manages itself; a repo-root toolchain pin could force that
+container to fetch a specific version on its next build rather than using whatever it already has
+cached, which isn't something to risk against the live trading deploy path without testing it in
+isolation first. Worth revisiting as its own change, verified against a real `deploy_trader.sh`
+dry run before it ever touches `main`.
 
 ### `--trader-only` deploy silently left Oracle running a stale strategy config (2026-07-07, fixed, critical)
 

@@ -41,10 +41,17 @@ pub struct RedeemablePosition {
 /// Fetch redeemable positions for `wallet` from the Data API (read-only —
 /// no funds move). Mirrors `_fetch_redeemable_positions`: filters to entries
 /// where `redeemable && size > 0`, and silently drops rows that fail to parse.
-pub async fn fetch_redeemable_positions(http: &reqwest::Client, wallet: &str) -> Result<Vec<RedeemablePosition>> {
+pub async fn fetch_redeemable_positions(
+    http: &reqwest::Client,
+    wallet: &str,
+) -> Result<Vec<RedeemablePosition>> {
     let resp = http
         .get(format!("{DATA_API_HOST}/positions"))
-        .query(&[("user", wallet), ("redeemable", "true"), ("sizeThreshold", "0")])
+        .query(&[
+            ("user", wallet),
+            ("redeemable", "true"),
+            ("sizeThreshold", "0"),
+        ])
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
@@ -61,7 +68,9 @@ pub async fn fetch_redeemable_positions(http: &reqwest::Client, wallet: &str) ->
 
 /// Split positions into (winning, losing) by current value — mirrors Python's
 /// `currentValue > 0.01` threshold (dust below that is not worth a redeem tx).
-pub fn classify(positions: &[RedeemablePosition]) -> (Vec<&RedeemablePosition>, Vec<&RedeemablePosition>) {
+pub fn classify(
+    positions: &[RedeemablePosition],
+) -> (Vec<&RedeemablePosition>, Vec<&RedeemablePosition>) {
     positions.iter().partition(|p| p.current_value > 0.01)
 }
 
@@ -82,7 +91,9 @@ pub struct RedemptionTracker {
 
 impl RedemptionTracker {
     pub fn new() -> Self {
-        Self { attempted: HashSet::new() }
+        Self {
+            attempted: HashSet::new(),
+        }
     }
 
     /// Run one check-and-redeem pass. Losing (dust) positions are marked
@@ -128,8 +139,8 @@ impl Default for RedemptionTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn pos(condition_id: &str, current_value: f64, size: f64) -> RedeemablePosition {
         RedeemablePosition {
@@ -171,7 +182,10 @@ mod tests {
     async fn losing_positions_marked_attempted_without_redeem_call() {
         let mut tracker = RedemptionTracker::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = MockExecutor { calls: Arc::clone(&calls), succeed: true };
+        let executor = MockExecutor {
+            calls: Arc::clone(&calls),
+            succeed: true,
+        };
 
         let positions = vec![pos("dust1", 0.0, 1.0)];
         let redeemed = tracker.check_and_redeem(&positions, &executor).await;
@@ -185,7 +199,10 @@ mod tests {
     async fn winning_position_redeemed_once() {
         let mut tracker = RedemptionTracker::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = MockExecutor { calls: Arc::clone(&calls), succeed: true };
+        let executor = MockExecutor {
+            calls: Arc::clone(&calls),
+            succeed: true,
+        };
 
         let positions = vec![pos("win1", 5.0, 1.0)];
         let redeemed = tracker.check_and_redeem(&positions, &executor).await;
@@ -202,7 +219,10 @@ mod tests {
     async fn failed_redeem_is_not_marked_attempted() {
         let mut tracker = RedemptionTracker::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = MockExecutor { calls: Arc::clone(&calls), succeed: false };
+        let executor = MockExecutor {
+            calls: Arc::clone(&calls),
+            succeed: false,
+        };
 
         let positions = vec![pos("win1", 5.0, 1.0)];
         let redeemed = tracker.check_and_redeem(&positions, &executor).await;

@@ -18,7 +18,10 @@ use polymarket_client_sdk_v2::ws::config::Config as WsConfig;
 /// A GTC limit-sell fill is reported once as MATCHED then again as CONFIRMED —
 /// both are legitimate fill signals (mirrors Python's `_FILL_STATUSES`).
 pub fn is_fill_status(status: &TradeMessageStatus) -> bool {
-    matches!(status, TradeMessageStatus::Matched | TradeMessageStatus::Confirmed)
+    matches!(
+        status,
+        TradeMessageStatus::Matched | TradeMessageStatus::Confirmed
+    )
 }
 
 pub type FillCallback = Box<dyn Fn(&TradeMessage) + Send + Sync>;
@@ -34,7 +37,9 @@ pub struct UnwindWatcher {
 
 impl UnwindWatcher {
     pub fn new() -> Self {
-        Self { watchers: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            watchers: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn watch(&self, order_id: String, callback: FillCallback) {
@@ -56,7 +61,9 @@ impl UnwindWatcher {
         if !is_fill_status(&msg.status) {
             return;
         }
-        let Some(order_id) = &msg.taker_order_id else { return };
+        let Some(order_id) = &msg.taker_order_id else {
+            return;
+        };
         let watchers = self.watchers.lock().unwrap();
         if let Some(cb) = watchers.get(order_id) {
             cb(msg);
@@ -78,7 +85,13 @@ impl UnwindWatcher {
     /// fills for latency/slippage forensics (see
     /// `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md` §6), independent
     /// of whatever functional use `dispatch()`'s per-order callbacks are put to.
-    pub async fn run(&self, ws_endpoint: &str, credentials: Credentials, address: Address, markets: Vec<B256>) -> Result<()> {
+    pub async fn run(
+        &self,
+        ws_endpoint: &str,
+        credentials: Credentials,
+        address: Address,
+        markets: Vec<B256>,
+    ) -> Result<()> {
         loop {
             let client = WsClient::new(ws_endpoint, WsConfig::default())?;
             let client = client.authenticate(credentials.clone(), address)?;
@@ -89,7 +102,12 @@ impl UnwindWatcher {
                         let recv_ts = crate::marketdata::now_secs_f64();
                         println!(
                             "[unwind] fill event recv_ts={recv_ts:.3} status={:?} taker_order_id={:?} side={:?} price={} size={} matchtime={:?}",
-                            msg.status, msg.taker_order_id, msg.side, msg.price, msg.size, msg.matchtime,
+                            msg.status,
+                            msg.taker_order_id,
+                            msg.side,
+                            msg.price,
+                            msg.size,
+                            msg.matchtime,
                         );
                         self.dispatch(&msg);
                     }
@@ -134,9 +152,12 @@ mod tests {
         let w = UnwindWatcher::new();
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
-        w.watch("order-1".to_string(), Box::new(move |_msg| {
-            count2.fetch_add(1, Ordering::SeqCst);
-        }));
+        w.watch(
+            "order-1".to_string(),
+            Box::new(move |_msg| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
 
         w.dispatch(&make_msg(Some("order-1"), TradeMessageStatus::Matched));
         assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -147,9 +168,12 @@ mod tests {
         let w = UnwindWatcher::new();
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
-        w.watch("order-1".to_string(), Box::new(move |_msg| {
-            count2.fetch_add(1, Ordering::SeqCst);
-        }));
+        w.watch(
+            "order-1".to_string(),
+            Box::new(move |_msg| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
 
         w.dispatch(&make_msg(Some("order-1"), TradeMessageStatus::Confirmed));
         assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -160,9 +184,12 @@ mod tests {
         let w = UnwindWatcher::new();
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
-        w.watch("order-1".to_string(), Box::new(move |_msg| {
-            count2.fetch_add(1, Ordering::SeqCst);
-        }));
+        w.watch(
+            "order-1".to_string(),
+            Box::new(move |_msg| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
 
         w.dispatch(&make_msg(Some("order-1"), TradeMessageStatus::Retrying));
         w.dispatch(&make_msg(Some("order-1"), TradeMessageStatus::Failed));
@@ -175,9 +202,12 @@ mod tests {
         let w = UnwindWatcher::new();
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
-        w.watch("order-1".to_string(), Box::new(move |_msg| {
-            count2.fetch_add(1, Ordering::SeqCst);
-        }));
+        w.watch(
+            "order-1".to_string(),
+            Box::new(move |_msg| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
 
         w.dispatch(&make_msg(Some("order-2"), TradeMessageStatus::Matched));
         assert_eq!(count.load(Ordering::SeqCst), 0);
@@ -188,9 +218,12 @@ mod tests {
         let w = UnwindWatcher::new();
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
-        w.watch("order-1".to_string(), Box::new(move |_msg| {
-            count2.fetch_add(1, Ordering::SeqCst);
-        }));
+        w.watch(
+            "order-1".to_string(),
+            Box::new(move |_msg| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
 
         w.dispatch(&make_msg(None, TradeMessageStatus::Matched));
         assert_eq!(count.load(Ordering::SeqCst), 0);
@@ -201,9 +234,12 @@ mod tests {
         let w = UnwindWatcher::new();
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
-        w.watch("order-1".to_string(), Box::new(move |_msg| {
-            count2.fetch_add(1, Ordering::SeqCst);
-        }));
+        w.watch(
+            "order-1".to_string(),
+            Box::new(move |_msg| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         assert_eq!(w.watched_count(), 1);
 
         w.unwatch("order-1");

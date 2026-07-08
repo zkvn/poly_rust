@@ -34,12 +34,17 @@ enum Cmd {
 }
 
 fn auth_from_env() -> Result<AuthConfig> {
-    let token = std::env::var("TELEGRAM_BOT_TOKEN").context("TELEGRAM_BOT_TOKEN not set in env file")?;
+    let token =
+        std::env::var("TELEGRAM_BOT_TOKEN").context("TELEGRAM_BOT_TOKEN not set in env file")?;
     let chat_id: i64 = std::env::var("TELEGRAM_CHAT_ID")
         .context("TELEGRAM_CHAT_ID not set in env file")?
         .parse()
         .context("TELEGRAM_CHAT_ID is not a valid i64")?;
-    Ok(AuthConfig { token, chat_id, user_id: 0 })
+    Ok(AuthConfig {
+        token,
+        chat_id,
+        user_id: 0,
+    })
 }
 
 #[tokio::main]

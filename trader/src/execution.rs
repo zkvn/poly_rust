@@ -104,7 +104,11 @@ pub enum OrderKind {
 /// immediately, not resting and risking a missed entry window) — see
 /// trader/README.md for why that's a design choice, not a size limitation.
 pub fn choose_exit_order_kind(shares: f64) -> OrderKind {
-    if shares >= MIN_GTC_SHARES { OrderKind::Gtc } else { OrderKind::Fak }
+    if shares >= MIN_GTC_SHARES {
+        OrderKind::Gtc
+    } else {
+        OrderKind::Fak
+    }
 }
 
 // ── ExecutionEngine trait ─────────────────────────────────────────────────────
@@ -116,7 +120,13 @@ pub fn choose_exit_order_kind(shares: f64) -> OrderKind {
 pub trait ExecutionEngine: Send + Sync {
     /// Market BUY (FAK). `price` is the intent's midpoint; `max_buy_price` caps
     /// the limit the order is allowed to cross at.
-    async fn place(&self, token_id: U256, price: f64, size_usdc: f64, max_buy_price: f64) -> TradeResult;
+    async fn place(
+        &self,
+        token_id: U256,
+        price: f64,
+        size_usdc: f64,
+        max_buy_price: f64,
+    ) -> TradeResult;
 
     /// Resting GTC limit SELL (unwind take-profit).
     async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitSellResult;
@@ -133,7 +143,12 @@ pub trait ExecutionEngine: Send + Sync {
     /// `worker.rs::on_unwind_failed`), which is both a natural backoff (no
     /// hammering) and price-safe (repeated attempts can't fill worse than
     /// `min_price`).
-    async fn close_position_at_price(&self, token_id: U256, shares: f64, min_price: f64) -> CloseResult;
+    async fn close_position_at_price(
+        &self,
+        token_id: U256,
+        shares: f64,
+        min_price: f64,
+    ) -> CloseResult;
 
     /// Cancel a resting GTC limit sell. Returns true on success or if already gone.
     async fn cancel_limit_sell(&self, order_id: &str) -> bool;
@@ -157,7 +172,9 @@ impl SimExecutionEngine {
     }
 
     pub fn with_fill_ratio(fill_ratio: f64) -> Self {
-        Self { fill_ratio: fill_ratio.clamp(0.0, 1.0) }
+        Self {
+            fill_ratio: fill_ratio.clamp(0.0, 1.0),
+        }
     }
 }
 
@@ -185,7 +202,6 @@ fn floor2(x: f64) -> f64 {
     (x * 100.0).floor() / 100.0
 }
 
-
 /// Aggressive BUY entry price for a given attempt: the first attempt (attempt 0)
 /// splits the difference between the signal `price` and `max_buy_price` — half the
 /// spread — rather than a small fixed slippage, to bias toward actually filling.
@@ -204,43 +220,110 @@ fn aggressive_entry_price(price: f64, max_buy_price: f64, attempt: u32) -> f64 {
 
 #[async_trait]
 impl ExecutionEngine for SimExecutionEngine {
-    async fn place(&self, _token_id: U256, price: f64, size_usdc: f64, max_buy_price: f64) -> TradeResult {
+    async fn place(
+        &self,
+        _token_id: U256,
+        price: f64,
+        size_usdc: f64,
+        max_buy_price: f64,
+    ) -> TradeResult {
         if price <= 0.0 {
-            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()), attempts: 1 };
+            return TradeResult {
+                placed: false,
+                filled_shares: 0.0,
+                cost: 0.0,
+                error: Some("invalid price".to_string()),
+                attempts: 1,
+            };
         }
         let capped_price = price.min(max_buy_price);
         let requested_shares = round2(size_usdc / capped_price);
         let filled = round2(requested_shares * self.fill_ratio);
         if filled <= 0.0 {
-            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("ORDER_FAILED".to_string()), attempts: 1 };
+            return TradeResult {
+                placed: false,
+                filled_shares: 0.0,
+                cost: 0.0,
+                error: Some("ORDER_FAILED".to_string()),
+                attempts: 1,
+            };
         }
-        TradeResult { placed: true, filled_shares: filled, cost: capped_price, error: None, attempts: 1 }
+        TradeResult {
+            placed: true,
+            filled_shares: filled,
+            cost: capped_price,
+            error: None,
+            attempts: 1,
+        }
     }
 
     async fn place_limit_sell(&self, _token_id: U256, shares: f64, price: f64) -> LimitSellResult {
         if shares <= 0.0 || price <= 0.0 {
-            return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some("invalid shares/price".to_string()) };
+            return LimitSellResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("invalid shares/price".to_string()),
+            };
         }
-        LimitSellResult { order_id: Some(format!("sim-{shares}-{price}")), status: SellStatus::Live, error: None }
+        LimitSellResult {
+            order_id: Some(format!("sim-{shares}-{price}")),
+            status: SellStatus::Live,
+            error: None,
+        }
     }
 
     async fn close_position(&self, _token_id: U256, shares: f64) -> CloseResult {
         if shares <= 0.0 {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("invalid shares".to_string()), attempts: 1 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("invalid shares".to_string()),
+                attempts: 1,
+            };
         }
         let sold = round2(shares * self.fill_ratio);
-        CloseResult { filled_usdc: 0.0, status: SellStatus::Matched, shares_sold: sold, error: None, attempts: 1 }
+        CloseResult {
+            filled_usdc: 0.0,
+            status: SellStatus::Matched,
+            shares_sold: sold,
+            error: None,
+            attempts: 1,
+        }
     }
 
-    async fn close_position_at_price(&self, _token_id: U256, shares: f64, min_price: f64) -> CloseResult {
+    async fn close_position_at_price(
+        &self,
+        _token_id: U256,
+        shares: f64,
+        min_price: f64,
+    ) -> CloseResult {
         if shares <= 0.0 || min_price <= 0.0 {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("invalid shares/price".to_string()), attempts: 1 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("invalid shares/price".to_string()),
+                attempts: 1,
+            };
         }
         let sold = round2(shares * self.fill_ratio);
         if sold <= 0.0 {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("ORDER_FAILED".to_string()), attempts: 1 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("ORDER_FAILED".to_string()),
+                attempts: 1,
+            };
         }
-        CloseResult { filled_usdc: sold * min_price, status: SellStatus::Matched, shares_sold: sold, error: None, attempts: 1 }
+        CloseResult {
+            filled_usdc: sold * min_price,
+            status: SellStatus::Matched,
+            shares_sold: sold,
+            error: None,
+            attempts: 1,
+        }
     }
 
     async fn cancel_limit_sell(&self, _order_id: &str) -> bool {
@@ -303,7 +386,11 @@ impl<S: Signer + Clone + Send + Sync + 'static> LiveExecutionEngine<S> {
             .signature_type(signature_type)
             .authenticate()
             .await?;
-        Ok(Self { client, signer, cfg })
+        Ok(Self {
+            client,
+            signer,
+            cfg,
+        })
     }
 
     /// USDC (collateral) balance for the funder wallet, for `BalanceGuard`.
@@ -314,7 +401,11 @@ impl<S: Signer + Clone + Send + Sync + 'static> LiveExecutionEngine<S> {
         use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
         let resp = self
             .client
-            .balance_allowance(BalanceAllowanceRequest::builder().asset_type(AssetType::Collateral).build())
+            .balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .build(),
+            )
             .await
             .ok()?;
         let raw: f64 = resp.balance.to_string().parse().ok()?;
@@ -330,9 +421,12 @@ impl<S: Signer + Clone + Send + Sync + 'static> LiveExecutionEngine<S> {
 
 /// Build a `LocalSigner` from a hex private key, chained to Polygon — the
 /// common case (mirrors Python's `ClobClient(..., key=poly_private_key, chain_id=137)`).
-pub fn local_signer_from_key(private_key: &str) -> anyhow::Result<alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>> {
+pub fn local_signer_from_key(
+    private_key: &str,
+) -> anyhow::Result<alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>> {
     use alloy::signers::Signer as _;
-    let signer = alloy::signers::local::LocalSigner::from_str(private_key)?.with_chain_id(Some(POLYGON));
+    let signer =
+        alloy::signers::local::LocalSigner::from_str(private_key)?.with_chain_id(Some(POLYGON));
     Ok(signer)
 }
 
@@ -357,9 +451,21 @@ pub fn signature_type_from_env() -> anyhow::Result<SignatureType> {
 
 #[async_trait]
 impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutionEngine<S> {
-    async fn place(&self, token_id: U256, price: f64, size_usdc: f64, max_buy_price: f64) -> TradeResult {
+    async fn place(
+        &self,
+        token_id: U256,
+        price: f64,
+        size_usdc: f64,
+        max_buy_price: f64,
+    ) -> TradeResult {
         if price <= 0.0 {
-            return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("invalid price".to_string()), attempts: 0 };
+            return TradeResult {
+                placed: false,
+                filled_shares: 0.0,
+                cost: 0.0,
+                error: Some("invalid price".to_string()),
+                attempts: 0,
+            };
         }
 
         let max_attempts = 1 + self.cfg.order_max_retries;
@@ -368,7 +474,13 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         for attempt in 0..max_attempts {
             let capped_price = aggressive_entry_price(price, max_buy_price, attempt);
             let Ok(price_dec) = Decimal::from_str(&format!("{capped_price:.4}")) else {
-                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad price".to_string()), attempts: attempt + 1 };
+                return TradeResult {
+                    placed: false,
+                    filled_shares: 0.0,
+                    cost: 0.0,
+                    error: Some("bad price".to_string()),
+                    attempts: attempt + 1,
+                };
             };
 
             // Buy in USDC, not rounded shares. `Amount::shares` on a market BUY was
@@ -384,10 +496,22 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
             // resulting <0.01-share exit dust is written off, not chased, by the
             // MIN_SELLABLE_SHARES guard in worker.rs (plan B, same doc).
             let Ok(amount) = Decimal::from_str(&format!("{size_usdc:.2}")).map(Amount::usdc) else {
-                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()), attempts: attempt + 1 };
+                return TradeResult {
+                    placed: false,
+                    filled_shares: 0.0,
+                    cost: 0.0,
+                    error: Some("bad amount".to_string()),
+                    attempts: attempt + 1,
+                };
             };
             let Ok(amount) = amount else {
-                return TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: Some("bad amount".to_string()), attempts: attempt + 1 };
+                return TradeResult {
+                    placed: false,
+                    filled_shares: 0.0,
+                    cost: 0.0,
+                    error: Some("bad amount".to_string()),
+                    attempts: attempt + 1,
+                };
             };
 
             let result = self
@@ -411,29 +535,49 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                     let filled: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
                     let spent: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
                     let actual_cost = if filled > 0.0 { spent / filled } else { price };
-                    return TradeResult { placed: true, filled_shares: filled, cost: actual_cost, error: None, attempts: attempt + 1 };
+                    return TradeResult {
+                        placed: true,
+                        filled_shares: filled,
+                        cost: actual_cost,
+                        error: None,
+                        attempts: attempt + 1,
+                    };
                 }
                 Ok(_) => {
                     last_err = Some("order not successful".to_string());
-                    eprintln!("[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> order not successful",
-                        attempt + 1);
+                    eprintln!(
+                        "[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> order not successful",
+                        attempt + 1
+                    );
                 }
                 Err(e) => {
                     last_err = Some(e.to_string());
-                    eprintln!("[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> {e}",
-                        attempt + 1);
+                    eprintln!(
+                        "[ORDER-RETRY] token={token_id} BUY attempt {}/{max_attempts} price={capped_price:.4} -> {e}",
+                        attempt + 1
+                    );
                 }
             }
             if attempt < max_attempts - 1 {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
-        TradeResult { placed: false, filled_shares: 0.0, cost: 0.0, error: last_err.or(Some("ORDER_FAILED".to_string())), attempts: max_attempts }
+        TradeResult {
+            placed: false,
+            filled_shares: 0.0,
+            cost: 0.0,
+            error: last_err.or(Some("ORDER_FAILED".to_string())),
+            attempts: max_attempts,
+        }
     }
 
     async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitSellResult {
         if shares <= 0.0 || price <= 0.0 {
-            return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some("invalid shares/price".to_string()) };
+            return LimitSellResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("invalid shares/price".to_string()),
+            };
         }
         // Snap to 0.01 tick, clamp to [0.01, 0.99] (matches Python).
         let tick = 0.01;
@@ -441,10 +585,18 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         let shares = floor2(shares);
 
         let Ok(price_dec) = Decimal::from_str(&format!("{snapped:.2}")) else {
-            return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some("bad price".to_string()) };
+            return LimitSellResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("bad price".to_string()),
+            };
         };
         let Ok(size_dec) = Decimal::from_str(&format!("{shares:.2}")) else {
-            return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some("bad size".to_string()) };
+            return LimitSellResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("bad size".to_string()),
+            };
         };
 
         let mut last_err: Option<String> = None;
@@ -464,33 +616,62 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 Ok(resp) => {
                     let taking: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
                     if taking > 0.0 {
-                        return LimitSellResult { order_id: None, status: SellStatus::Matched, error: None };
+                        return LimitSellResult {
+                            order_id: None,
+                            status: SellStatus::Matched,
+                            error: None,
+                        };
                     }
                     if !resp.order_id.is_empty() {
-                        return LimitSellResult { order_id: Some(resp.order_id), status: SellStatus::Live, error: None };
+                        return LimitSellResult {
+                            order_id: Some(resp.order_id),
+                            status: SellStatus::Live,
+                            error: None,
+                        };
                     }
-                    return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some("empty order_id, no fill".to_string()) };
+                    return LimitSellResult {
+                        order_id: None,
+                        status: SellStatus::Failed,
+                        error: Some("empty order_id, no fill".to_string()),
+                    };
                 }
                 Err(e) => {
                     let msg = e.to_string();
                     // "balance: 0" -> FAK BUY hasn't settled on-chain yet; retry.
                     if msg.contains("balance: 0") && attempt < self.cfg.settle_retries {
-                        eprintln!("[ORDER-RETRY] token={token_id} SELL(unwind) attempt {}/{} -> {msg}",
-                            attempt + 1, self.cfg.settle_retries + 1);
+                        eprintln!(
+                            "[ORDER-RETRY] token={token_id} SELL(unwind) attempt {}/{} -> {msg}",
+                            attempt + 1,
+                            self.cfg.settle_retries + 1
+                        );
                         last_err = Some(msg);
                         tokio::time::sleep(self.cfg.settle_sleep).await;
                         continue;
                     }
-                    return LimitSellResult { order_id: None, status: SellStatus::Failed, error: Some(msg) };
+                    return LimitSellResult {
+                        order_id: None,
+                        status: SellStatus::Failed,
+                        error: Some(msg),
+                    };
                 }
             }
         }
-        LimitSellResult { order_id: None, status: SellStatus::Failed, error: last_err.or(Some("SETTLE_RETRIES_EXHAUSTED".to_string())) }
+        LimitSellResult {
+            order_id: None,
+            status: SellStatus::Failed,
+            error: last_err.or(Some("SETTLE_RETRIES_EXHAUSTED".to_string())),
+        }
     }
 
     async fn close_position(&self, token_id: U256, shares: f64) -> CloseResult {
         if shares <= 0.0 {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("invalid shares".to_string()), attempts: 0 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("invalid shares".to_string()),
+                attempts: 0,
+            };
         }
         // Amount::shares (not ::usdc) — this is a SELL of a held share count, not a USDC-
         // denominated buy. Wrapping the share count as Amount::usdc told the exchange we
@@ -504,7 +685,13 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         // trader/doc/incident_doge_2026-07-03.md.
         let size_dec = floor2(shares);
         let Ok(size_dec) = Decimal::from_str(&format!("{size_dec:.2}")) else {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("bad size".to_string()), attempts: 0 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("bad size".to_string()),
+                attempts: 0,
+            };
         };
 
         for attempt in 1..=self.cfg.close_max_retries {
@@ -522,10 +709,22 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 Ok(resp) if resp.success => {
                     let filled_usdc: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
                     let sold: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
-                    return CloseResult { filled_usdc, status: SellStatus::Matched, shares_sold: sold, error: None, attempts: attempt };
+                    return CloseResult {
+                        filled_usdc,
+                        status: SellStatus::Matched,
+                        shares_sold: sold,
+                        error: None,
+                        attempts: attempt,
+                    };
                 }
                 Ok(_) => {
-                    return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("order not successful".to_string()), attempts: attempt };
+                    return CloseResult {
+                        filled_usdc: 0.0,
+                        status: SellStatus::Failed,
+                        shares_sold: 0.0,
+                        error: Some("order not successful".to_string()),
+                        attempts: attempt,
+                    };
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -536,35 +735,76 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                     // on-chain yet and hammering it immediately won't help.
                     if attempt < self.cfg.close_max_retries {
                         if msg.contains("no orders found to match with FAK order") {
-                            eprintln!("[close] retry {attempt}/{}: {msg}", self.cfg.close_max_retries);
+                            eprintln!(
+                                "[close] retry {attempt}/{}: {msg}",
+                                self.cfg.close_max_retries
+                            );
                             continue;
                         }
                         if msg.contains("not enough balance") {
-                            eprintln!("[close] retry {attempt}/{}: {msg}", self.cfg.close_max_retries);
+                            eprintln!(
+                                "[close] retry {attempt}/{}: {msg}",
+                                self.cfg.close_max_retries
+                            );
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             continue;
                         }
                     }
-                    return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some(msg), attempts: attempt };
+                    return CloseResult {
+                        filled_usdc: 0.0,
+                        status: SellStatus::Failed,
+                        shares_sold: 0.0,
+                        error: Some(msg),
+                        attempts: attempt,
+                    };
                 }
             }
         }
-        CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("CLOSE_RETRIES_EXHAUSTED".to_string()), attempts: self.cfg.close_max_retries }
+        CloseResult {
+            filled_usdc: 0.0,
+            status: SellStatus::Failed,
+            shares_sold: 0.0,
+            error: Some("CLOSE_RETRIES_EXHAUSTED".to_string()),
+            attempts: self.cfg.close_max_retries,
+        }
     }
 
-    async fn close_position_at_price(&self, token_id: U256, shares: f64, min_price: f64) -> CloseResult {
+    async fn close_position_at_price(
+        &self,
+        token_id: U256,
+        shares: f64,
+        min_price: f64,
+    ) -> CloseResult {
         if shares <= 0.0 || min_price <= 0.0 {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("invalid shares/price".to_string()), attempts: 0 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("invalid shares/price".to_string()),
+                attempts: 0,
+            };
         }
         // Same size quantization as close_position (floor2, never round — see
         // that function's doc comment for why rounding up permanently breaks
         // "not enough balance").
         let size_dec = floor2(shares);
         let Ok(size_dec) = Decimal::from_str(&format!("{size_dec:.2}")) else {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("bad size".to_string()), attempts: 0 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("bad size".to_string()),
+                attempts: 0,
+            };
         };
         let Ok(price_dec) = Decimal::from_str(&format!("{min_price:.4}")) else {
-            return CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("bad price".to_string()), attempts: 0 };
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("bad price".to_string()),
+                attempts: 0,
+            };
         };
 
         // Single attempt, no internal retry loop: unlike close_position, a
@@ -587,10 +827,28 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
             Ok(resp) if resp.success => {
                 let filled_usdc: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
                 let sold: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
-                CloseResult { filled_usdc, status: SellStatus::Matched, shares_sold: sold, error: None, attempts: 1 }
+                CloseResult {
+                    filled_usdc,
+                    status: SellStatus::Matched,
+                    shares_sold: sold,
+                    error: None,
+                    attempts: 1,
+                }
             }
-            Ok(_) => CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some("order not successful".to_string()), attempts: 1 },
-            Err(e) => CloseResult { filled_usdc: 0.0, status: SellStatus::Failed, shares_sold: 0.0, error: Some(e.to_string()), attempts: 1 },
+            Ok(_) => CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("order not successful".to_string()),
+                attempts: 1,
+            },
+            Err(e) => CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some(e.to_string()),
+                attempts: 1,
+            },
         }
     }
 
@@ -599,7 +857,10 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
             return true;
         }
         match self.client.cancel_order(order_id).await {
-            Ok(resp) => resp.canceled.iter().any(|id| id == order_id) || !resp.not_canceled.contains_key(order_id),
+            Ok(resp) => {
+                resp.canceled.iter().any(|id| id == order_id)
+                    || !resp.not_canceled.contains_key(order_id)
+            }
             Err(e) => {
                 let msg = e.to_string().to_lowercase();
                 msg.contains("not found") || msg.contains("cancelled") || msg.contains("filled")
@@ -643,8 +904,11 @@ mod tests {
         let engine = SimExecutionEngine::new();
         let r = engine.place(dummy_token(), 0.93, 1.0, 0.95).await;
         assert!(r.placed);
-        assert!((r.filled_shares - 1.08).abs() < 1e-9,
-            "1.0/0.93 = 1.07527... must round to nearest (1.08), not floor (1.07); got {}", r.filled_shares);
+        assert!(
+            (r.filled_shares - 1.08).abs() < 1e-9,
+            "1.0/0.93 = 1.07527... must round to nearest (1.08), not floor (1.07); got {}",
+            r.filled_shares
+        );
     }
 
     #[tokio::test]
@@ -667,7 +931,11 @@ mod tests {
         let engine = SimExecutionEngine::with_fill_ratio(0.5);
         let r = engine.place(dummy_token(), 0.80, 1.0, 0.95).await;
         assert!(r.placed);
-        assert!((r.filled_shares - 0.63).abs() < 1e-9, "got {}", r.filled_shares); // round2(1.25*0.5) = round2(0.625) = 0.63
+        assert!(
+            (r.filled_shares - 0.63).abs() < 1e-9,
+            "got {}",
+            r.filled_shares
+        ); // round2(1.25*0.5) = round2(0.625) = 0.63
     }
 
     #[tokio::test]
@@ -713,7 +981,9 @@ mod tests {
     #[tokio::test]
     async fn sim_close_position_at_price_fills_at_floor() {
         let engine = SimExecutionEngine::new();
-        let r = engine.close_position_at_price(dummy_token(), 1.25, 0.93).await;
+        let r = engine
+            .close_position_at_price(dummy_token(), 1.25, 0.93)
+            .await;
         assert_eq!(r.status, SellStatus::Matched);
         assert!((r.shares_sold - 1.25).abs() < 1e-9);
         assert!((r.filled_usdc - 1.25 * 0.93).abs() < 1e-9);
@@ -723,9 +993,13 @@ mod tests {
     #[tokio::test]
     async fn sim_close_position_at_price_rejects_invalid_inputs() {
         let engine = SimExecutionEngine::new();
-        let r = engine.close_position_at_price(dummy_token(), 0.0, 0.93).await;
+        let r = engine
+            .close_position_at_price(dummy_token(), 0.0, 0.93)
+            .await;
         assert_eq!(r.status, SellStatus::Failed);
-        let r = engine.close_position_at_price(dummy_token(), 1.25, 0.0).await;
+        let r = engine
+            .close_position_at_price(dummy_token(), 1.25, 0.0)
+            .await;
         assert_eq!(r.status, SellStatus::Failed);
     }
 
@@ -758,7 +1032,10 @@ mod tests {
         let price = 0.80_f64;
         let max_buy_price = 0.95_f64;
         for attempt in 1..=5 {
-            assert!((aggressive_entry_price(price, max_buy_price, attempt) - max_buy_price).abs() < 1e-9);
+            assert!(
+                (aggressive_entry_price(price, max_buy_price, attempt) - max_buy_price).abs()
+                    < 1e-9
+            );
         }
     }
 
@@ -768,7 +1045,10 @@ mod tests {
         let max_buy_price = 0.95_f64;
         for attempt in 0..=5 {
             let p = aggressive_entry_price(price, max_buy_price, attempt);
-            assert!(p <= max_buy_price + 1e-9, "attempt {attempt} price {p} exceeded cap");
+            assert!(
+                p <= max_buy_price + 1e-9,
+                "attempt {attempt} price {p} exceeded cap"
+            );
         }
     }
 
@@ -817,8 +1097,16 @@ mod tests {
     /// on: anything under half a cent's worth of shares collapses to exactly 0.0.
     #[test]
     fn round2_of_a_too_small_size_collapses_to_zero() {
-        assert_eq!(round2(0.001), 0.0, "under half a share-cent must round down to 0.0, not up to 0.01");
-        assert_eq!(round2(0.006), 0.01, "at/over half a share-cent should round up to 0.01");
+        assert_eq!(
+            round2(0.001),
+            0.0,
+            "under half a share-cent must round down to 0.0, not up to 0.01"
+        );
+        assert_eq!(
+            round2(0.006),
+            0.01,
+            "at/over half a share-cent should round up to 0.01"
+        );
     }
 
     #[test]
@@ -828,7 +1116,10 @@ mod tests {
         // every close attempt regardless of retries.
         assert!((floor2(1.5151) - 1.51).abs() < 1e-9);
         for shares in [0.001, 0.019, 0.125, 1.5151, 1.999, 9.996] {
-            assert!(floor2(shares) <= shares + 1e-9, "floor2({shares}) exceeded input");
+            assert!(
+                floor2(shares) <= shares + 1e-9,
+                "floor2({shares}) exceeded input"
+            );
         }
     }
 

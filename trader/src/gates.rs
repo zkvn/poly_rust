@@ -88,7 +88,7 @@ pub fn check_gates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::{DeltaPctSignal, LatestPolySignal, SpreadSignal, Signal};
+    use crate::signal::{DeltaPctSignal, LatestPolySignal, Signal, SpreadSignal};
     use crate::types::{BinanceTick, CycleContext, PolyTick, Side};
 
     fn default_params() -> GateParams {
@@ -108,21 +108,40 @@ mod tests {
             side,
             entry_type: EntryType::Reversal,
             up: if side == Side::Up { token } else { 1.0 - token },
-            dn: if side == Side::Down { token } else { 1.0 - token },
+            dn: if side == Side::Down {
+                token
+            } else {
+                1.0 - token
+            },
             binance_price: 50000.0,
         }
     }
 
-    fn baseline_signals(open: f64, now_price: f64, poly_ts: f64) -> (SpreadSignal, LatestPolySignal, DeltaPctSignal) {
-        let ctx = CycleContext { start_ts: 0.0, end_ts: 300.0, open_binance: open };
+    fn baseline_signals(
+        open: f64,
+        now_price: f64,
+        poly_ts: f64,
+    ) -> (SpreadSignal, LatestPolySignal, DeltaPctSignal) {
+        let ctx = CycleContext {
+            start_ts: 0.0,
+            end_ts: 300.0,
+            open_binance: open,
+        };
         let mut spread = SpreadSignal::new();
         let mut lp = LatestPolySignal::new();
         let mut dp = DeltaPctSignal::new();
         dp.reset(&ctx);
-        let tick = PolyTick { ts: poly_ts, up: 0.70, dn: 0.30 };
+        let tick = PolyTick {
+            ts: poly_ts,
+            up: 0.70,
+            dn: 0.30,
+        };
         spread.on_poly(tick);
         lp.on_poly(tick);
-        dp.on_binance(BinanceTick { ts: poly_ts, price: now_price });
+        dp.on_binance(BinanceTick {
+            ts: poly_ts,
+            price: now_price,
+        });
         (spread, lp, dp)
     }
 
@@ -140,7 +159,10 @@ mod tests {
         let i = intent(Side::Up, 0.75);
         let p = default_params();
         // now = 103, age = 3s > max_price_age_secs=2
-        assert_eq!(check_gates(&i, &spread, &lp, &dp, &p, 103.0), Some(GateBlock::PolyStale));
+        assert_eq!(
+            check_gates(&i, &spread, &lp, &dp, &p, 103.0),
+            Some(GateBlock::PolyStale)
+        );
     }
 
     #[test]
@@ -148,7 +170,10 @@ mod tests {
         let (spread, lp, dp) = baseline_signals(50000.0, 50100.0, 100.0);
         let i = intent(Side::Up, 0.96); // > max_buy_price=0.95
         let p = default_params();
-        assert_eq!(check_gates(&i, &spread, &lp, &dp, &p, 100.5), Some(GateBlock::MaxBuyPrice));
+        assert_eq!(
+            check_gates(&i, &spread, &lp, &dp, &p, 100.5),
+            Some(GateBlock::MaxBuyPrice)
+        );
     }
 
     #[test]
@@ -156,7 +181,10 @@ mod tests {
         let (spread, lp, dp) = baseline_signals(50000.0, 50100.0, 100.0);
         let i = intent(Side::Up, 0.91); // > price_high_rev=0.90
         let p = default_params();
-        assert_eq!(check_gates(&i, &spread, &lp, &dp, &p, 100.5), Some(GateBlock::PriceHighRev));
+        assert_eq!(
+            check_gates(&i, &spread, &lp, &dp, &p, 100.5),
+            Some(GateBlock::PriceHighRev)
+        );
     }
 
     #[test]
@@ -165,6 +193,9 @@ mod tests {
         let (spread, lp, dp) = baseline_signals(50000.0, 50005.0, 100.0); // 5/50000 = 0.0001
         let i = intent(Side::Up, 0.75);
         let p = default_params();
-        assert_eq!(check_gates(&i, &spread, &lp, &dp, &p, 100.5), Some(GateBlock::MinDeltaPct));
+        assert_eq!(
+            check_gates(&i, &spread, &lp, &dp, &p, 100.5),
+            Some(GateBlock::MinDeltaPct)
+        );
     }
 }

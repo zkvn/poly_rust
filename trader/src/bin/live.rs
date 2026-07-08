@@ -32,17 +32,18 @@ use clap::Parser;
 use polymarket_client_sdk_v2::types::{Address, U256};
 use tokio::sync::mpsc;
 
-use trader::balance::{seconds_until_next_check, BalanceGuard};
+use futures::StreamExt as _;
+use trader::balance::{BalanceGuard, seconds_until_next_check};
 use trader::config::AssetParams;
 use trader::execution::{
-    local_signer_from_key, signature_type_from_env, ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus,
+    ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus, local_signer_from_key,
+    signature_type_from_env,
 };
-use futures::StreamExt as _;
 use trader::marketdata::{
-    clob_client, current_slot, fetch_gamma_resolution, fetch_meta, http_client, make_slug, now_secs_f64,
-    spawn_binance_task, PolySub,
+    PolySub, clob_client, current_slot, fetch_gamma_resolution, fetch_meta, http_client, make_slug,
+    now_secs_f64, spawn_binance_task,
 };
-use trader::telegram::commands::{parse_command, Command};
+use trader::telegram::commands::{Command, parse_command};
 use trader::telegram::render::HELP_TEXT;
 use trader::telegram::{AuthConfig, TelegramBot};
 use trader::types::{BinanceTick, CycleContext, Outcome, PolyTick, Side, TradeRecord};
@@ -60,7 +61,10 @@ const UNWIND_WS_HOST: &str = "wss://ws-subscriptions-clob.polymarket.com";
 type Signer = alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>;
 
 #[derive(Parser, Debug)]
-#[command(name = "live", about = "Live trading driver — N (asset, strategy) workers, one shared account/Telegram bot")]
+#[command(
+    name = "live",
+    about = "Live trading driver — N (asset, strategy) workers, one shared account/Telegram bot"
+)]
 struct Args {
     /// Comma-separated asset list, e.g. "DOGE,BTC" (also accepts repeated --asset flags).
     /// Strategy/strategies per asset always come from `config_dir`'s
@@ -130,7 +134,10 @@ fn spawn_resolution_watcher(
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             match fetch_gamma_resolution(&http, &slug).await {
                 Some(went_up) => {
-                    let won = match side { Side::Up => went_up, Side::Down => !went_up };
+                    let won = match side {
+                        Side::Up => went_up,
+                        Side::Down => !went_up,
+                    };
                     let _ = tx.send((asset, strategy, won));
                     return;
                 }
@@ -141,8 +148,7 @@ fn spawn_resolution_watcher(
     });
 }
 
-const CSV_HEADER: &str =
-    "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error,\
+const CSV_HEADER: &str = "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error,\
      entry_signal_latency_ms,entry_process_latency_ms,exit_signal_latency_ms,exit_process_latency_ms";
 
 /// Writes the CSV header for a new file, or heals a stale header from an
@@ -160,14 +166,20 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
     use std::io::{BufRead as _, Write as _};
 
     if !std::path::Path::new(path).exists() {
-        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
         writeln!(f, "{CSV_HEADER}")?;
         return Ok(());
     }
 
     let file = std::fs::File::open(path)?;
     let mut lines = std::io::BufReader::new(file).lines();
-    let Some(first) = lines.next().transpose()? else { return Ok(()) }; // empty file
+    let Some(first) = lines.next().transpose()? else {
+        return Ok(());
+    }; // empty file
     if first == CSV_HEADER || !first.starts_with("logged_at,") {
         return Ok(()); // already current, or not a header we recognize — leave untouched
     }
@@ -198,14 +210,34 @@ fn csv_sanitize(s: &str) -> String {
 
 fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
     use std::io::Write as _;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    let exit_last_error = rec.exit_last_error.as_deref().map(csv_sanitize).unwrap_or_default();
-    writeln!(f, "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-        trader::marketdata::now_secs_f64(), rec.slug, rec.strategy, rec.side.as_str(),
-        rec.entry_ts, rec.token_price, rec.exit_price, rec.outcome.as_str(), rec.pnl,
-        rec.exit_attempts, exit_last_error,
-        rec.entry_signal_latency_ms, rec.entry_process_latency_ms,
-        rec.exit_signal_latency_ms, rec.exit_process_latency_ms)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let exit_last_error = rec
+        .exit_last_error
+        .as_deref()
+        .map(csv_sanitize)
+        .unwrap_or_default();
+    writeln!(
+        f,
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        trader::marketdata::now_secs_f64(),
+        rec.slug,
+        rec.strategy,
+        rec.side.as_str(),
+        rec.entry_ts,
+        rec.token_price,
+        rec.exit_price,
+        rec.outcome.as_str(),
+        rec.pnl,
+        rec.exit_attempts,
+        exit_last_error,
+        rec.entry_signal_latency_ms,
+        rec.entry_process_latency_ms,
+        rec.exit_signal_latency_ms,
+        rec.exit_process_latency_ms
+    )?;
     Ok(())
 }
 
@@ -222,7 +254,9 @@ fn extract_server_ts(payload: &[u8]) -> Option<f64> {
         #[serde(default)]
         server_ts: Option<f64>,
     }
-    serde_json::from_slice::<ServerTs>(payload).ok().and_then(|s| s.server_ts)
+    serde_json::from_slice::<ServerTs>(payload)
+        .ok()
+        .and_then(|s| s.server_ts)
 }
 
 /// `/status`'s win/loss/pnl counters — `Worker` has no notion of these, they're
@@ -538,7 +572,9 @@ impl Driver<'_> {
         sections.push(format!("<b>MARKETS</b>  ({now})\n{}", mkt_lines.join("\n")));
 
         let sign = if t_pnl >= 0.0 { "+" } else { "" };
-        let mut all_pnl = vec![format!("  Session: {tw}W/{tl}L/{ts}SL/{tu}UW/{tt}TO  {sign}${t_pnl:.4}")];
+        let mut all_pnl = vec![format!(
+            "  Session: {tw}W/{tl}L/{ts}SL/{tu}UW/{tt}TO  {sign}${t_pnl:.4}"
+        )];
         all_pnl.extend(pnl_lines);
         sections.push(format!("<b>PNL</b>\n{}", all_pnl.join("\n")));
 
@@ -549,11 +585,23 @@ impl Driver<'_> {
     /// `Event` (if any) to feed back into `worker.step`.
     async fn execute(&self, slot: &mut AssetSlot, action: &Action, feed: Feed) -> Option<Event> {
         match action {
-            Action::PlaceBuy { side, price, size_usdc, signal_ts } => {
-                let token_id = if *side == Side::Up { slot.up_id } else { slot.dn_id };
+            Action::PlaceBuy {
+                side,
+                price,
+                size_usdc,
+                signal_ts,
+            } => {
+                let token_id = if *side == Side::Up {
+                    slot.up_id
+                } else {
+                    slot.dn_id
+                };
                 slot.current_token_id = Some(token_id);
                 let received_ts = now_secs_f64();
-                let result = self.engine.place(token_id, *price, *size_usdc, slot.max_buy_price).await;
+                let result = self
+                    .engine
+                    .place(token_id, *price, *size_usdc, slot.max_buy_price)
+                    .await;
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = latency_ms(*signal_ts, received_ts);
                 let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
@@ -566,8 +614,10 @@ impl Driver<'_> {
                 // an "(Nms ago)" staleness note (relative to *now*, `received_ts` —
                 // not `signal_ts`, which is the triggering tick's own timestamp) for
                 // whichever feed's tick *didn't* fire this entry.
-                let clob_latency_ms = exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
-                let binance_latency_ms = exchange_latency_ms(slot.last_binance_ts, slot.last_binance_server_ts);
+                let clob_latency_ms =
+                    exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
+                let binance_latency_ms =
+                    exchange_latency_ms(slot.last_binance_ts, slot.last_binance_server_ts);
                 let clob_tag = match feed {
                     Feed::Clob => "trigger".to_string(),
                     Feed::Binance => fmt_ago(slot.last_poly_ts, received_ts),
@@ -576,10 +626,21 @@ impl Driver<'_> {
                     Feed::Binance => "trigger".to_string(),
                     Feed::Clob => fmt_ago(slot.last_binance_ts, received_ts),
                 };
-                let clob_latency_str = format!("clob_latency={} ({clob_tag})", fmt_latency(clob_latency_ms));
-                let binance_latency_str = format!("binance_latency={} ({binance_tag})", fmt_latency(binance_latency_ms));
-                println!("[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
-                    slot.worker.asset, result.placed, result.filled_shares, result.cost, result.error, result.attempts);
+                let clob_latency_str =
+                    format!("clob_latency={} ({clob_tag})", fmt_latency(clob_latency_ms));
+                let binance_latency_str = format!(
+                    "binance_latency={} ({binance_tag})",
+                    fmt_latency(binance_latency_ms)
+                );
+                println!(
+                    "[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
+                    slot.worker.asset,
+                    result.placed,
+                    result.filled_shares,
+                    result.cost,
+                    result.error,
+                    result.attempts
+                );
 
                 let dt = hkt_now().format("%H:%M:%S");
                 let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
@@ -589,7 +650,12 @@ impl Driver<'_> {
                         "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.worker.asset, arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
-                    Some(Event::OrderFilled { filled_shares: result.filled_shares, cost: result.cost, signal_latency_ms, process_latency_ms })
+                    Some(Event::OrderFilled {
+                        filled_shares: result.filled_shares,
+                        cost: result.cost,
+                        signal_latency_ms,
+                        process_latency_ms,
+                    })
                 } else {
                     self.notify(&format!(
                         "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | n_attempts={} | error={}",
@@ -603,22 +669,38 @@ impl Driver<'_> {
             Action::PlaceLimitSell { shares, price } => {
                 let token_id = slot.current_token_id?;
                 let received_ts = now_secs_f64();
-                let r = self.engine.place_limit_sell(token_id, *shares, *price).await;
+                let r = self
+                    .engine
+                    .place_limit_sell(token_id, *shares, *price)
+                    .await;
                 let confirmed_ts = now_secs_f64();
-                println!("[ORDER] {} LIMIT SELL {shares:.4} @ {price:.4} -> status={:?} order_id={:?} err={:?}",
-                    slot.worker.asset, r.status, r.order_id, r.error);
+                println!(
+                    "[ORDER] {} LIMIT SELL {shares:.4} @ {price:.4} -> status={:?} order_id={:?} err={:?}",
+                    slot.worker.asset, r.status, r.order_id, r.error
+                );
                 // No external signal_ts for this action (it's an internal
                 // follow-up to the entry fill, not driven by a market tick) —
                 // only the process leg is meaningful here.
                 Some(Event::LimitSellPlaced {
-                    order_id: r.order_id, status: r.status, error: r.error,
-                    signal_latency_ms: 0.0, process_latency_ms: latency_ms(received_ts, confirmed_ts),
+                    order_id: r.order_id,
+                    status: r.status,
+                    error: r.error,
+                    signal_latency_ms: 0.0,
+                    process_latency_ms: latency_ms(received_ts, confirmed_ts),
                 })
             }
-            Action::ClosePosition { shares, reason, limit_price, signal_ts } => {
+            Action::ClosePosition {
+                shares,
+                reason,
+                limit_price,
+                signal_ts,
+            } => {
                 let token_id = slot.current_token_id?;
                 if matches!(reason, CloseReason::StopLoss) {
-                    println!("[SL] {} stop-loss triggered — closing {shares:.4} shares (sl_pnl floor crossed; up to 5 retries)", slot.worker.asset);
+                    println!(
+                        "[SL] {} stop-loss triggered — closing {shares:.4} shares (sl_pnl floor crossed; up to 5 retries)",
+                        slot.worker.asset
+                    );
                     // Only alert on the first trigger for this position — worker.rs
                     // intentionally keeps re-firing ClosePosition{StopLoss} every
                     // PolyTick until the position actually clears (needed: unlike
@@ -630,10 +712,19 @@ impl Driver<'_> {
                         // Fire immediately on trigger, independent of whether the close
                         // itself ends up succeeding — side derived from which token is
                         // currently held rather than a new Worker accessor.
-                        let side = if token_id == slot.up_id { Side::Up } else { Side::Down };
-                        let trigger_price = if side == Side::Up { slot.last_poly_up } else { slot.last_poly_dn };
+                        let side = if token_id == slot.up_id {
+                            Side::Up
+                        } else {
+                            Side::Down
+                        };
+                        let trigger_price = if side == Side::Up {
+                            slot.last_poly_up
+                        } else {
+                            slot.last_poly_dn
+                        };
                         let dt = hkt_now().format("%H:%M:%S");
-                        let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                        let time_left =
+                            (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
                         let delta_pct = slot.worker.delta_pct() * 100.0;
                         self.notify(&format!(
                             "🛑 <b>{}</b> STOP LOSS triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | delta={delta_pct:+.3}%",
@@ -642,16 +733,28 @@ impl Driver<'_> {
                     }
                 }
                 if matches!(reason, CloseReason::Timeout) {
-                    println!("[TIMEOUT] {} max holding time elapsed — closing {shares:.4} shares (unwind_time floor crossed; up to 5 retries)", slot.worker.asset);
+                    println!(
+                        "[TIMEOUT] {} max holding time elapsed — closing {shares:.4} shares (unwind_time floor crossed; up to 5 retries)",
+                        slot.worker.asset
+                    );
                     // Same first-trigger-only guard as stop-loss — worker.rs
                     // re-fires ClosePosition{Timeout} every PolyTick until the
                     // position clears.
                     if !slot.timeout_notified {
                         slot.timeout_notified = true;
-                        let side = if token_id == slot.up_id { Side::Up } else { Side::Down };
-                        let trigger_price = if side == Side::Up { slot.last_poly_up } else { slot.last_poly_dn };
+                        let side = if token_id == slot.up_id {
+                            Side::Up
+                        } else {
+                            Side::Down
+                        };
+                        let trigger_price = if side == Side::Up {
+                            slot.last_poly_up
+                        } else {
+                            slot.last_poly_dn
+                        };
                         let dt = hkt_now().format("%H:%M:%S");
-                        let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                        let time_left =
+                            (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
                         self.notify(&format!(
                             "⏱️ <b>{}</b> TIME LIMIT triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | max holding time elapsed — closing at market",
                             slot.worker.asset, arrow_side(side), slot.worker.strategy_name
@@ -664,7 +767,11 @@ impl Driver<'_> {
                 // trader/doc/incident_sol_unwind_but_loss_2026-07-06.md); a
                 // stop-loss has no floor and must close regardless of price.
                 let result = match limit_price {
-                    Some(price) => self.engine.close_position_at_price(token_id, *shares, *price).await,
+                    Some(price) => {
+                        self.engine
+                            .close_position_at_price(token_id, *shares, *price)
+                            .await
+                    }
                     None => self.engine.close_position(token_id, *shares).await,
                 };
                 let confirmed_ts = now_secs_f64();
@@ -674,12 +781,24 @@ impl Driver<'_> {
                 // produces a ClosePosition — see worker.rs), so this is always
                 // the CLOB exchange latency, unlike the entry side above — no
                 // "(trigger)"/"(Nms ago)" tag needed here, only one feed applies.
-                let clob_latency_ms = exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
+                let clob_latency_ms =
+                    exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
                 let clob_latency_str = format!("clob_latency={}", fmt_latency(clob_latency_ms));
-                println!("[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
-                    slot.worker.asset, result.status, result.shares_sold, result.filled_usdc, result.error, result.attempts);
+                println!(
+                    "[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
+                    slot.worker.asset,
+                    result.status,
+                    result.shares_sold,
+                    result.filled_usdc,
+                    result.error,
+                    result.attempts
+                );
                 let sold = result.shares_sold;
-                let exit_price = if sold > 0.0 { result.filled_usdc / sold } else { 0.0 };
+                let exit_price = if sold > 0.0 {
+                    result.filled_usdc / sold
+                } else {
+                    0.0
+                };
                 let matched = matches!(result.status, SellStatus::Matched);
                 if matched {
                     let dt = hkt_now().format("%H:%M:%S");
@@ -694,12 +813,33 @@ impl Driver<'_> {
                     )).await;
                 }
                 let event = match (matched, reason) {
-                    (true, CloseReason::TakeProfit) => Event::UnwindFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
-                    (true, CloseReason::StopLoss) => Event::StopSellFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
-                    (true, CloseReason::Timeout) => Event::TimeoutSellFilled { sold_shares: sold, exit_price, signal_latency_ms, process_latency_ms },
-                    (false, CloseReason::TakeProfit) => Event::UnwindFailed { error: result.error },
-                    (false, CloseReason::StopLoss) => Event::StopSellFailed { error: result.error },
-                    (false, CloseReason::Timeout) => Event::TimeoutSellFailed { error: result.error },
+                    (true, CloseReason::TakeProfit) => Event::UnwindFilled {
+                        sold_shares: sold,
+                        exit_price,
+                        signal_latency_ms,
+                        process_latency_ms,
+                    },
+                    (true, CloseReason::StopLoss) => Event::StopSellFilled {
+                        sold_shares: sold,
+                        exit_price,
+                        signal_latency_ms,
+                        process_latency_ms,
+                    },
+                    (true, CloseReason::Timeout) => Event::TimeoutSellFilled {
+                        sold_shares: sold,
+                        exit_price,
+                        signal_latency_ms,
+                        process_latency_ms,
+                    },
+                    (false, CloseReason::TakeProfit) => Event::UnwindFailed {
+                        error: result.error,
+                    },
+                    (false, CloseReason::StopLoss) => Event::StopSellFailed {
+                        error: result.error,
+                    },
+                    (false, CloseReason::Timeout) => Event::TimeoutSellFailed {
+                        error: result.error,
+                    },
                 };
                 if matched && sold >= *shares {
                     slot.current_token_id = None;
@@ -711,8 +851,12 @@ impl Driver<'_> {
                 println!("[ORDER] {} CANCEL {order_id} -> {ok}", slot.worker.asset);
                 None
             }
-            Action::Persist | Action::LogTrade(_) | Action::LogTradeCorrection { .. } | Action::StopLossVerdict { .. }
-            | Action::HaltEngaged | Action::HaltReset => None, // handled by process_actions directly
+            Action::Persist
+            | Action::LogTrade(_)
+            | Action::LogTradeCorrection { .. }
+            | Action::StopLossVerdict { .. }
+            | Action::HaltEngaged
+            | Action::HaltReset => None, // handled by process_actions directly
         }
     }
 
@@ -734,7 +878,14 @@ impl Driver<'_> {
                         if let Err(e) = log_trade(&slot.log_path, rec) {
                             eprintln!("log error: {e:#}");
                         }
-                        if matches!(rec.outcome, Outcome::Win | Outcome::Loss | Outcome::StopLoss | Outcome::Unwind | Outcome::Timeout) {
+                        if matches!(
+                            rec.outcome,
+                            Outcome::Win
+                                | Outcome::Loss
+                                | Outcome::StopLoss
+                                | Outcome::Unwind
+                                | Outcome::Timeout
+                        ) {
                             slot.cycle_trades += 1;
                         }
                         match rec.outcome {
@@ -773,12 +924,19 @@ impl Driver<'_> {
                         )).await;
 
                         spawn_resolution_watcher(
-                            self.http.clone(), rec.slug.clone(), rec.side,
-                            slot.worker.asset.clone(), slot.worker.strategy_name,
+                            self.http.clone(),
+                            rec.slug.clone(),
+                            rec.side,
+                            slot.worker.asset.clone(),
+                            slot.worker.strategy_name,
                             self.api_result_tx.clone(),
                         );
                     }
-                    Action::LogTradeCorrection { previous_outcome, previous_pnl, record } => {
+                    Action::LogTradeCorrection {
+                        previous_outcome,
+                        previous_pnl,
+                        record,
+                    } => {
                         println!("[TRADE] API-corrected: {previous_outcome:?} -> {record:?}");
                         if let Err(e) = log_trade(&slot.log_path, record) {
                             eprintln!("log error: {e:#}");
@@ -802,22 +960,40 @@ impl Driver<'_> {
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
                         )).await;
                     }
-                    Action::StopLossVerdict { record: _, would_have_won } => {
+                    Action::StopLossVerdict {
+                        record: _,
+                        would_have_won,
+                    } => {
                         let (icon, verdict, note) = if *would_have_won {
-                            ("🔴", "COSTLY", "market would have favored the position — stop cost money")
+                            (
+                                "🔴",
+                                "COSTLY",
+                                "market would have favored the position — stop cost money",
+                            )
                         } else {
-                            ("🟢", "GOOD", "market moved against the position — stop saved money")
+                            (
+                                "🟢",
+                                "GOOD",
+                                "market moved against the position — stop saved money",
+                            )
                         };
                         self.notify(&format!(
                             "{icon} <b>{} STOP {verdict}</b> | {} | {}\n{note}",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
-                        )).await;
+                            slot.worker.asset,
+                            hkt_now().format("%H:%M:%S"),
+                            slot.worker.strategy_name
+                        ))
+                        .await;
                     }
                     // Loss-streak halt (halt_rev/halt_prob) — distinct from manual /halt
                     // and the balance drawdown halt, which already notify at their own
                     // call sites (Command::Halt, DrawdownHalt).
                     Action::HaltEngaged => {
-                        let halt_n = if slot.worker.strategy_name == "high_prob" { slot.params.halt_prob } else { slot.params.halt_rev };
+                        let halt_n = if slot.worker.strategy_name == "high_prob" {
+                            slot.params.halt_prob
+                        } else {
+                            slot.params.halt_rev
+                        };
                         self.notify(&format!(
                             "🟡 <b>{} HALTED</b> | {} | {}\n{halt_n} consecutive losses — new entries suppressed until the next daily reset (or /resume).",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
@@ -851,7 +1027,8 @@ async fn main() -> Result<()> {
     dotenvy::from_path(&args.env_file).with_context(|| format!("load {}", args.env_file))?;
     let key = std::env::var("POLY_PRIVATE_KEY").context("POLY_PRIVATE_KEY not set")?;
     let signer = local_signer_from_key(&key)?;
-    let funder_raw = std::env::var("FUND_ADDRESS").unwrap_or_else(|_| DEFAULT_FUND_ADDRESS.to_string());
+    let funder_raw =
+        std::env::var("FUND_ADDRESS").unwrap_or_else(|_| DEFAULT_FUND_ADDRESS.to_string());
     let funder = Address::from_str(&funder_raw)?;
     let signature_type = signature_type_from_env()?;
 
@@ -861,7 +1038,10 @@ async fn main() -> Result<()> {
 
     println!(
         "[live] assets={} size_usdc=${:.2} max_trades={} log_dir={}",
-        args.asset.join(","), args.size_usdc, args.max_trades, args.log_dir
+        args.asset.join(","),
+        args.size_usdc,
+        args.max_trades,
+        args.log_dir
     );
     println!("[live] REAL MONEY — this will place live orders on production Polymarket.");
 
@@ -869,7 +1049,8 @@ async fn main() -> Result<()> {
     // region (same var that Python's _patch_clob_proxy reads; empty = direct connect).
     // reqwest reads HTTPS_PROXY from the environment at Client::builder().build() time.
     if let Ok(proxy_url) = std::env::var("CLOB_PROXY_URL")
-        && !proxy_url.is_empty() {
+        && !proxy_url.is_empty()
+    {
         // Safety: single-threaded at this point in main() — tokio runtime not yet
         // spawning work, and no other thread reads HTTPS_PROXY concurrently.
         unsafe { std::env::set_var("HTTPS_PROXY", &proxy_url) };
@@ -879,14 +1060,25 @@ async fn main() -> Result<()> {
     // Telegram control plane (optional — runs without it if unconfigured, same
     // as the discovery-mode fallback in telegram/mod.rs::AuthConfig). Exactly
     // one poller for the whole process — see module doc comment for why.
-    let telegram_auth = match (std::env::var("TELEGRAM_BOT_TOKEN"), std::env::var("TELEGRAM_CHAT_ID")) {
+    let telegram_auth = match (
+        std::env::var("TELEGRAM_BOT_TOKEN"),
+        std::env::var("TELEGRAM_CHAT_ID"),
+    ) {
         (Ok(token), Ok(raw_chat_id)) => {
-            let chat_id: i64 = raw_chat_id.parse().context("TELEGRAM_CHAT_ID must be an integer")?;
+            let chat_id: i64 = raw_chat_id
+                .parse()
+                .context("TELEGRAM_CHAT_ID must be an integer")?;
             println!("[live] Telegram control enabled (chat_id={chat_id}).");
-            Some(AuthConfig { token, chat_id, user_id: 0 })
+            Some(AuthConfig {
+                token,
+                chat_id,
+                user_id: 0,
+            })
         }
         _ => {
-            println!("[live] TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set — Telegram control disabled.");
+            println!(
+                "[live] TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set — Telegram control disabled."
+            );
             None
         }
     };
@@ -919,7 +1111,11 @@ async fn main() -> Result<()> {
 
     let http = http_client()?;
     // Clob client only needed for direct Poly WS subscriptions (not the NATS path).
-    let clob = if args.nats_url.is_none() { Some(clob_client()) } else { None };
+    let clob = if args.nats_url.is_none() {
+        Some(clob_client())
+    } else {
+        None
+    };
 
     // binance/poly channels are shared across assets, each tick tagged with its asset
     // name — tokio::select! can't cleanly select over a dynamic set.
@@ -927,11 +1123,13 @@ async fn main() -> Result<()> {
     // from Polymarket CLOB's/Binance's own event time), when the source
     // provided one — `None` on the direct-WS (non-NATS) path, which has no
     // price_feed hop to have captured it.
-    let (binance_tx, mut binance_rx) = mpsc::unbounded_channel::<(String, BinanceTick, Option<f64>)>();
+    let (binance_tx, mut binance_rx) =
+        mpsc::unbounded_channel::<(String, BinanceTick, Option<f64>)>();
     let (poly_tx, mut poly_rx) = mpsc::unbounded_channel::<(String, PolyTick, Option<f64>)>();
     // (asset, strategy, won) handoff from background Gamma-resolution watchers
     // (spawned per closed trade) back into the single-threaded step() loop.
-    let (api_result_tx, mut api_result_rx) = mpsc::unbounded_channel::<(String, &'static str, bool)>();
+    let (api_result_tx, mut api_result_rx) =
+        mpsc::unbounded_channel::<(String, &'static str, bool)>();
 
     // One `AssetSlot` per (asset, strategy) pair — strategy list always comes from
     // the shared TOML's `AssetParams.strategies` (e.g. ETH -> [high_prob, reversal]),
@@ -945,14 +1143,18 @@ async fn main() -> Result<()> {
         params.trade_size_usdc = args.size_usdc;
         let max_buy_price = params.max_buy_price;
         if params.strategies.is_empty() {
-            anyhow::bail!("no strategies configured for asset {asset} (missing both a `{asset}` and `default` entry in the config's [strategies] table)");
+            anyhow::bail!(
+                "no strategies configured for asset {asset} (missing both a `{asset}` and `default` entry in the config's [strategies] table)"
+            );
         }
 
         for strategy in &params.strategies {
             let mut worker = match strategy.as_str() {
                 "reversal" => Worker::new_reversal(asset, &params),
                 "high_prob" => Worker::new_high_prob(asset, &params),
-                other => anyhow::bail!("unknown strategy `{other}` for asset {asset} (from config)"),
+                other => {
+                    anyhow::bail!("unknown strategy `{other}` for asset {asset} (from config)")
+                }
             };
             let lower = asset.to_lowercase();
             let log_path = format!("{}/live_trades_{lower}_{strategy}.csv", args.log_dir);
@@ -966,7 +1168,11 @@ async fn main() -> Result<()> {
             // never from this file, so a config change takes effect immediately.
             let stats = match load_persisted_slot(&state_file) {
                 Some(persisted) => {
-                    worker.restore_halt(persisted.worker.entry_suppressed, persisted.worker.halt_losses, persisted.worker.halt_last_session);
+                    worker.restore_halt(
+                        persisted.worker.entry_suppressed,
+                        persisted.worker.halt_losses,
+                        persisted.worker.halt_last_session,
+                    );
                     persisted.stats
                 }
                 None => PersistedStats::default(),
@@ -1019,18 +1225,24 @@ async fn main() -> Result<()> {
     }
 
     for slot in &assets {
-        println!("[live]   {} -> strategy={}", slot.worker.asset, slot.worker.strategy_name);
+        println!(
+            "[live]   {} -> strategy={}",
+            slot.worker.asset, slot.worker.strategy_name
+        );
     }
 
     // NATS path: subscribe to price.binance.<ASSET> and price.poly.<ASSET> for each
     // asset, forwarding into the same channels the direct-WS path uses.
     // Set up before engine.connect() so ticks flow and can be verified independently.
     if let Some(ref url) = args.nats_url {
-        let nc = async_nats::connect(url).await
+        let nc = async_nats::connect(url)
+            .await
             .with_context(|| format!("connect to NATS at {url}"))?;
         println!("[live] NATS price source: {url}");
         for asset in &args.asset {
-            let mut sub = nc.subscribe(format!("price.binance.{asset}")).await
+            let mut sub = nc
+                .subscribe(format!("price.binance.{asset}"))
+                .await
                 .context("NATS binance subscribe")?;
             let out = binance_tx.clone();
             let a = asset.clone();
@@ -1050,7 +1262,9 @@ async fn main() -> Result<()> {
                 }
             });
 
-            let mut sub = nc.subscribe(format!("price.poly.{asset}")).await
+            let mut sub = nc
+                .subscribe(format!("price.poly.{asset}"))
+                .await
                 .context("NATS poly subscribe")?;
             let out = poly_tx.clone();
             let a = asset.clone();
@@ -1060,7 +1274,10 @@ async fn main() -> Result<()> {
                     if let Ok(tick) = serde_json::from_slice::<PolyTick>(&msg.payload) {
                         n += 1;
                         if n == 1 {
-                            println!("[NATS] first poly tick for {a}: up={:.4} dn={:.4}", tick.up, tick.dn);
+                            println!(
+                                "[NATS] first poly tick for {a}: up={:.4} dn={:.4}",
+                                tick.up, tick.dn
+                            );
                         }
                         let server_ts = extract_server_ts(&msg.payload);
                         if out.send((a.clone(), tick, server_ts)).is_err() {
@@ -1078,7 +1295,8 @@ async fn main() -> Result<()> {
         ..LiveConfig::default()
     };
     let engine =
-        LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, live_config).await?;
+        LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, live_config)
+            .await?;
 
     // Real-time USER-channel fill logger (diagnostic sidecar — doesn't feed
     // back into trading decisions). Subscribes to all markets for this
@@ -1087,14 +1305,23 @@ async fn main() -> Result<()> {
         let watcher = trader::unwind::UnwindWatcher::new();
         let credentials = engine.credentials();
         tokio::spawn(async move {
-            if let Err(e) = watcher.run(UNWIND_WS_HOST, credentials, funder, vec![]).await {
+            if let Err(e) = watcher
+                .run(UNWIND_WS_HOST, credentials, funder, vec![])
+                .await
+            {
                 eprintln!("[unwind] watcher exited: {e:#}");
             }
         });
     }
 
-    let driver = Driver { engine: &engine, telegram: telegram_send.clone(), http: http.clone(), api_result_tx: api_result_tx.clone() };
-    let asset_strategy_summary = assets.iter()
+    let driver = Driver {
+        engine: &engine,
+        telegram: telegram_send.clone(),
+        http: http.clone(),
+        api_result_tx: api_result_tx.clone(),
+    };
+    let asset_strategy_summary = assets
+        .iter()
         .map(|s| format!("{}:{}", s.worker.asset, s.worker.strategy_name))
         .collect::<Vec<_>>()
         .join(", ");
@@ -1106,8 +1333,8 @@ async fn main() -> Result<()> {
         .await;
 
     let balance_guard = BalanceGuard::new();
-    let mut balance_deadline =
-        tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
+    let mut balance_deadline = tokio::time::Instant::now()
+        + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1378,10 +1605,20 @@ mod csv_header_tests {
         let healed = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = healed.lines().collect();
         assert_eq!(lines[0], CSV_HEADER);
-        assert_eq!(lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,,,,,", "9-field legacy row padded to 15 fields");
-        assert_eq!(lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price,,,,", "11-field legacy row padded to 15 fields");
+        assert_eq!(
+            lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,,,,,",
+            "9-field legacy row padded to 15 fields"
+        );
+        assert_eq!(
+            lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price,,,,",
+            "11-field legacy row padded to 15 fields"
+        );
         for line in &lines {
-            assert_eq!(line.matches(',').count(), 14, "every row must have 15 fields: {line}");
+            assert_eq!(
+                line.matches(',').count(),
+                14,
+                "every row must have 15 fields: {line}"
+            );
         }
         std::fs::remove_file(&path).unwrap();
     }
@@ -1393,7 +1630,10 @@ mod persisted_slot_tests {
     use trader::worker::PersistedWorkerState;
 
     fn scratch_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("poly_rust_test_state_{name}_{}.json", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "poly_rust_test_state_{name}_{}.json",
+            std::process::id()
+        ))
     }
 
     fn sample_slot() -> PersistedSlot {
@@ -1434,7 +1674,10 @@ mod persisted_slot_tests {
         let loaded = load_persisted_slot(path_str).expect("must parse a file it just wrote");
         assert!(loaded.worker.entry_suppressed);
         assert_eq!(loaded.worker.halt_losses, 2);
-        assert_eq!(loaded.worker.halt_last_session, snap.worker.halt_last_session);
+        assert_eq!(
+            loaded.worker.halt_last_session,
+            snap.worker.halt_last_session
+        );
         assert_eq!(loaded.stats.wins, 3);
         assert_eq!(loaded.stats.losses, 5);
         assert_eq!(loaded.stats.stoplosses, 1);
@@ -1566,8 +1809,14 @@ mod exchange_latency_tests {
         let confirmed_ts = 101.751;
         let signal_latency_ms = latency_ms(signal_ts, received_ts);
         let process_latency_ms = latency_ms(signal_ts, confirmed_ts);
-        assert!((signal_latency_ms - 1.0).abs() < 1e-9, "got {signal_latency_ms}");
-        assert!((process_latency_ms - 1751.0).abs() < 1e-9, "got {process_latency_ms}");
+        assert!(
+            (signal_latency_ms - 1.0).abs() < 1e-9,
+            "got {signal_latency_ms}"
+        );
+        assert!(
+            (process_latency_ms - 1751.0).abs() < 1e-9,
+            "got {process_latency_ms}"
+        );
         assert!(process_latency_ms > latency_ms(received_ts, confirmed_ts));
     }
 }

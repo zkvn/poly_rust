@@ -23,7 +23,12 @@ pub struct BalanceGuard {
 
 impl BalanceGuard {
     pub fn new() -> Self {
-        Self { state: Mutex::new(GuardState { initial_balance: None, halt_fired: false }) }
+        Self {
+            state: Mutex::new(GuardState {
+                initial_balance: None,
+                halt_fired: false,
+            }),
+        }
     }
 
     /// Reset baseline so the next check adopts the current balance as the new floor

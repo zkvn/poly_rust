@@ -20,7 +20,12 @@ pub struct ReversalStrategy {
 
 impl ReversalStrategy {
     pub fn new(reversal: f64, no_enter_when_time_left: f64) -> Self {
-        Self { reversal, no_enter_when_time_left, fired: false, cycle_end_ts: 0.0 }
+        Self {
+            reversal,
+            no_enter_when_time_left,
+            fired: false,
+            cycle_end_ts: 0.0,
+        }
     }
 
     pub fn reset(&mut self, ctx: &CycleContext) {
@@ -170,12 +175,16 @@ impl HighProbStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal::Signal;
     use crate::signal::{DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal};
     use crate::types::{BinanceTick, CycleContext, PolyTick};
-    use crate::signal::Signal;
 
     fn make_ctx(end_ts: f64) -> CycleContext {
-        CycleContext { start_ts: end_ts - 300.0, end_ts, open_binance: 50000.0 }
+        CycleContext {
+            start_ts: end_ts - 300.0,
+            end_ts,
+            open_binance: 50000.0,
+        }
     }
 
     #[test]
@@ -195,11 +204,25 @@ mod tests {
         dp.reset(&ctx);
 
         // poly tick: dn=0.20 (below 0.30 threshold), in window (time_left=120)
-        sl_dn.on_poly(PolyTick { ts: 1180.0, up: 0.80, dn: 0.20 });
+        sl_dn.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.80,
+            dn: 0.20,
+        });
         // current price: dn=0.70 (> reversal 0.60), and dp < 0 (price fell)
-        lp.on_poly(PolyTick { ts: 1250.0, up: 0.30, dn: 0.70 });
-        dp.on_binance(BinanceTick { ts: 1250.0, price: open - 10.0 }); // fell → dp < 0
-        lb.on_binance(BinanceTick { ts: 1250.0, price: open - 10.0 });
+        lp.on_poly(PolyTick {
+            ts: 1250.0,
+            up: 0.30,
+            dn: 0.70,
+        });
+        dp.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: open - 10.0,
+        }); // fell → dp < 0
+        lb.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: open - 10.0,
+        });
 
         let mut strat = ReversalStrategy::new(0.60, 10.0);
         strat.reset(&ctx); // sets cycle_end_ts = 1300
@@ -221,13 +244,27 @@ mod tests {
         let mut dp = DeltaPctSignal::new();
         let mut lb = LatestBinanceSignal::new();
         dp.reset(&ctx);
-        lp.on_poly(PolyTick { ts: 1250.0, up: 0.30, dn: 0.70 });
-        dp.on_binance(BinanceTick { ts: 1250.0, price: 49_990.0 });
-        lb.on_binance(BinanceTick { ts: 1250.0, price: 49_990.0 });
+        lp.on_poly(PolyTick {
+            ts: 1250.0,
+            up: 0.30,
+            dn: 0.70,
+        });
+        dp.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: 49_990.0,
+        });
+        lb.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: 49_990.0,
+        });
 
         let mut strat = ReversalStrategy::new(0.60, 10.0);
         strat.reset(&ctx); // sets cycle_end_ts = 1300
-        assert!(strat.evaluate(1260.0, &sl_up, &sl_dn, &lp, &dp, &lb).is_none());
+        assert!(
+            strat
+                .evaluate(1260.0, &sl_up, &sl_dn, &lp, &dp, &lb)
+                .is_none()
+        );
     }
 
     #[test]
@@ -240,9 +277,19 @@ mod tests {
         dp.reset(&ctx);
 
         // UP token in band (0.80, 0.93), dp > 0
-        lp.on_poly(PolyTick { ts: 1270.0, up: 0.86, dn: 0.14 });
-        dp.on_binance(BinanceTick { ts: 1270.0, price: 50_010.0 });
-        lb.on_binance(BinanceTick { ts: 1270.0, price: 50_010.0 });
+        lp.on_poly(PolyTick {
+            ts: 1270.0,
+            up: 0.86,
+            dn: 0.14,
+        });
+        dp.on_binance(BinanceTick {
+            ts: 1270.0,
+            price: 50_010.0,
+        });
+        lb.on_binance(BinanceTick {
+            ts: 1270.0,
+            price: 50_010.0,
+        });
 
         let mut strat = HighProbStrategy::new(0.80, 0.93, 20.0, 10.0);
         strat.reset(&ctx); // sets cycle_end_ts = 1300
@@ -261,9 +308,19 @@ mod tests {
         let mut lb = LatestBinanceSignal::new();
         dp.reset(&ctx);
 
-        lp.on_poly(PolyTick { ts: 1200.0, up: 0.86, dn: 0.14 });
-        dp.on_binance(BinanceTick { ts: 1200.0, price: 50_010.0 });
-        lb.on_binance(BinanceTick { ts: 1200.0, price: 50_010.0 });
+        lp.on_poly(PolyTick {
+            ts: 1200.0,
+            up: 0.86,
+            dn: 0.14,
+        });
+        dp.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 50_010.0,
+        });
+        lb.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 50_010.0,
+        });
 
         let mut strat = HighProbStrategy::new(0.80, 0.93, 20.0, 10.0);
         strat.reset(&ctx); // sets cycle_end_ts = 1300

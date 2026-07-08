@@ -9,9 +9,10 @@
 // Fills are instant (sim venue) — no Entering/Unwinding/StopExiting needed for backtest.
 
 use crate::config::AssetParams;
-use crate::gates::{check_gates, GateParams};
-use crate::signal::{DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal,
-                    SpreadSignal};
+use crate::gates::{GateParams, check_gates};
+use crate::signal::{
+    DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
+};
 use crate::strategies::{HighProbStrategy, ReversalStrategy};
 use crate::types::{BinanceTick, CycleContext, EntryType, Outcome, PolyTick, Side, TradeRecord};
 
@@ -61,8 +62,8 @@ pub struct Machine {
     cycle_start_ts: f64,
     cycle_slug: String,
     // Cached config
-    sl: f64,        // strategy-specific absolute SL floor (0 = disabled)
-    sl_pnl: f64,    // PnL-relative SL (0 = disabled)
+    sl: f64,     // strategy-specific absolute SL floor (0 = disabled)
+    sl_pnl: f64, // PnL-relative SL (0 = disabled)
     unwind_pnl: f64,
     trade_size: f64,
     gate_params: GateParams,
@@ -322,7 +323,13 @@ impl Machine {
         matches!(self.state, TradeState::Holding(_))
     }
 
-    fn emit(&mut self, h: HoldingData, outcome: Outcome, exit_price: f64, pnl: f64) -> Option<TradeRecord> {
+    fn emit(
+        &mut self,
+        h: HoldingData,
+        outcome: Outcome,
+        exit_price: f64,
+        pnl: f64,
+    ) -> Option<TradeRecord> {
         let rec = TradeRecord {
             slug: self.cycle_slug.clone(),
             cycle_start: self.cycle_start_ts,
@@ -337,8 +344,10 @@ impl Machine {
             exit_last_error: None,
             // Backtest fills are instantaneous (no real order round-trip) —
             // latency is only meaningful for the live driver (worker.rs).
-            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
-            exit_signal_latency_ms: 0.0, exit_process_latency_ms: 0.0,
+            entry_signal_latency_ms: 0.0,
+            entry_process_latency_ms: 0.0,
+            exit_signal_latency_ms: 0.0,
+            exit_process_latency_ms: 0.0,
         };
         self.state = TradeState::Watching;
         Some(rec)
@@ -387,7 +396,11 @@ mod tests {
     }
 
     fn ctx(start: f64) -> CycleContext {
-        CycleContext { start_ts: start, end_ts: start + 300.0, open_binance: 60_000.0 }
+        CycleContext {
+            start_ts: start,
+            end_ts: start + 300.0,
+            open_binance: 60_000.0,
+        }
     }
 
     #[test]
@@ -398,26 +411,48 @@ mod tests {
         m.cycle_open(&c, "btc-updown-5m-1000", false);
 
         // Dip tick: dn=0.15 < threshold 0.20, ts=1180 → time_left=120 (within [10,120])
-        m.on_poly(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 });
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        });
 
         // Drop binance → delta_pct < 0 (required for DOWN entry)
-        m.on_binance(BinanceTick { ts: 1200.0, price: 59_900.0 });
+        m.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        });
 
         // Recovery: dn=0.70 > reversal threshold 0.60
-        m.on_poly(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 });
+        m.on_poly(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        });
 
         // Entry evaluation: time_left=50 >= no_enter=10, all gates pass
-        m.on_binance(BinanceTick { ts: 1250.0, price: 59_900.0 });
+        m.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        });
 
         assert!(m.is_holding(), "expected Holding after entry");
 
         // Now trigger the unwind: dn goes above entry + 0.03
         // entry was at dn=0.70, unwind at 0.73
-        let rec = m.on_poly(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 });
+        let rec = m.on_poly(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        });
         assert!(rec.is_some(), "expected UNWIND record");
         let rec = rec.unwrap();
         assert_eq!(rec.outcome, Outcome::Unwind);
-        assert!((rec.pnl - 0.0429).abs() < 0.0001, "pnl ≈ 1.0*0.03/0.70 = 0.0429, got {}", rec.pnl);
+        assert!(
+            (rec.pnl - 0.0429).abs() < 0.0001,
+            "pnl ≈ 1.0*0.03/0.70 = 0.0429, got {}",
+            rec.pnl
+        );
     }
 
     #[test]
@@ -428,21 +463,43 @@ mod tests {
         m.cycle_open(&c, "btc-updown-5m-1000", false);
 
         // Manually inject Holding state by triggering a reversal
-        m.on_poly(PolyTick { ts: 1180.0, up: 0.80, dn: 0.15 }); // dn dips below 0.20
-        m.on_binance(BinanceTick { ts: 1200.0, price: 59_900.0 }); // dp < 0
-        m.on_poly(PolyTick { ts: 1200.0, up: 0.25, dn: 0.75 }); // dn high
-        m.on_binance(BinanceTick { ts: 1240.0, price: 59_900.0 }); // triggers entry
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.80,
+            dn: 0.15,
+        }); // dn dips below 0.20
+        m.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        }); // dp < 0
+        m.on_poly(PolyTick {
+            ts: 1200.0,
+            up: 0.25,
+            dn: 0.75,
+        }); // dn high
+        m.on_binance(BinanceTick {
+            ts: 1240.0,
+            price: 59_900.0,
+        }); // triggers entry
 
         assert!(m.is_holding());
 
         // Fire PnL SL: dn drops to entry - 0.20 = 0.75 - 0.20 = 0.55
-        let rec = m.on_poly(PolyTick { ts: 1260.0, up: 0.45, dn: 0.55 });
+        let rec = m.on_poly(PolyTick {
+            ts: 1260.0,
+            up: 0.45,
+            dn: 0.55,
+        });
         assert!(rec.is_some());
         let rec = rec.unwrap();
         assert_eq!(rec.outcome, Outcome::StopLoss);
         // pnl = -trade_size * sl_pnl / token_price = -1.0 * 0.20 / 0.75
-        assert!((rec.pnl - (-0.20 / 0.75)).abs() < 0.0001,
-            "pnl={}, expected {}", rec.pnl, -0.20/0.75);
+        assert!(
+            (rec.pnl - (-0.20 / 0.75)).abs() < 0.0001,
+            "pnl={}, expected {}",
+            rec.pnl,
+            -0.20 / 0.75
+        );
     }
 
     /// Complementary case to `unwind_fires_on_poly_tick`: delta_pct is already
@@ -457,12 +514,26 @@ mod tests {
         let c = ctx(1_000.0);
         m.cycle_open(&c, "btc-updown-5m-1000", false);
 
-        m.on_poly(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }); // dip latches saw_low_dn
-        m.on_binance(BinanceTick { ts: 1200.0, price: 59_900.0 }); // dp < 0, cached
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }); // dip latches saw_low_dn
+        m.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        }); // dp < 0, cached
 
         // No further BinanceTick — the poly recovery tick alone must fire the entry.
-        m.on_poly(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 });
-        assert!(m.is_holding(), "expected Holding after poly-triggered entry");
+        m.on_poly(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        });
+        assert!(
+            m.is_holding(),
+            "expected Holding after poly-triggered entry"
+        );
     }
 
     /// A cached delta_pct must only be trusted within the same cycle it was set
@@ -473,14 +544,28 @@ mod tests {
         let p = btc_params();
         let mut m = Machine::new_reversal(&p);
         m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", false);
-        m.on_binance(BinanceTick { ts: 1100.0, price: 59_900.0 }); // dp < 0, this cycle
+        m.on_binance(BinanceTick {
+            ts: 1100.0,
+            price: 59_900.0,
+        }); // dp < 0, this cycle
 
         // New cycle: delta_pct is reset even though last_binance still holds the
         // old price.
         m.cycle_open(&ctx(1_500.0), "btc-updown-5m-1500", false);
-        m.on_poly(PolyTick { ts: 1680.0, up: 0.85, dn: 0.15 }); // dip latches saw_low_dn
-        m.on_poly(PolyTick { ts: 1740.0, up: 0.30, dn: 0.70 }); // recovery, no BinanceTick yet this cycle
-        assert!(!m.is_holding(), "must not fire on a delta_pct left over from the previous cycle");
+        m.on_poly(PolyTick {
+            ts: 1680.0,
+            up: 0.85,
+            dn: 0.15,
+        }); // dip latches saw_low_dn
+        m.on_poly(PolyTick {
+            ts: 1740.0,
+            up: 0.30,
+            dn: 0.70,
+        }); // recovery, no BinanceTick yet this cycle
+        assert!(
+            !m.is_holding(),
+            "must not fire on a delta_pct left over from the previous cycle"
+        );
     }
 
     #[test]
@@ -490,10 +575,24 @@ mod tests {
         let c = ctx(1_000.0);
         m.cycle_open(&c, "btc-updown-5m-1000", true); // entry_suppressed
 
-        m.on_poly(PolyTick { ts: 1180.0, up: 0.80, dn: 0.15 });
-        m.on_binance(BinanceTick { ts: 1200.0, price: 59_900.0 });
-        m.on_poly(PolyTick { ts: 1200.0, up: 0.25, dn: 0.75 });
-        m.on_binance(BinanceTick { ts: 1240.0, price: 59_900.0 });
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.80,
+            dn: 0.15,
+        });
+        m.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        });
+        m.on_poly(PolyTick {
+            ts: 1200.0,
+            up: 0.25,
+            dn: 0.75,
+        });
+        m.on_binance(BinanceTick {
+            ts: 1240.0,
+            price: 59_900.0,
+        });
 
         assert!(!m.is_holding(), "halted machine must not enter");
         assert!(m.cycle_close().is_none());
@@ -503,14 +602,32 @@ mod tests {
     fn win_at_cycle_close() {
         let p = btc_params();
         let mut m = Machine::new_reversal(&p);
-        let c = CycleContext { start_ts: 1_000.0, end_ts: 1_300.0, open_binance: 60_000.0 };
+        let c = CycleContext {
+            start_ts: 1_000.0,
+            end_ts: 1_300.0,
+            open_binance: 60_000.0,
+        };
         m.cycle_open(&c, "btc-updown-5m-1000", false);
 
         // Enter DOWN position
-        m.on_poly(PolyTick { ts: 1180.0, up: 0.80, dn: 0.15 });
-        m.on_binance(BinanceTick { ts: 1200.0, price: 59_900.0 });
-        m.on_poly(PolyTick { ts: 1200.0, up: 0.25, dn: 0.75 });
-        m.on_binance(BinanceTick { ts: 1240.0, price: 59_900.0 });
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.80,
+            dn: 0.15,
+        });
+        m.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        });
+        m.on_poly(PolyTick {
+            ts: 1200.0,
+            up: 0.25,
+            dn: 0.75,
+        });
+        m.on_binance(BinanceTick {
+            ts: 1240.0,
+            price: 59_900.0,
+        });
 
         assert!(m.is_holding());
 
@@ -520,7 +637,10 @@ mod tests {
         let rec = rec.unwrap();
         assert_eq!(rec.outcome, Outcome::Win);
         // pnl = shares*1.0 - trade_size = 1.0/0.75 - 1.0 = 0.3333
-        assert!((rec.pnl - (1.0/0.75 - 1.0)).abs() < 0.0001,
-            "pnl={}", rec.pnl);
+        assert!(
+            (rec.pnl - (1.0 / 0.75 - 1.0)).abs() < 0.0001,
+            "pnl={}",
+            rec.pnl
+        );
     }
 }

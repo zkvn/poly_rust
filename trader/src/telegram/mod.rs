@@ -13,8 +13,8 @@ pub mod render;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use commands::{parse_command, Command};
-use control::{command_to_control, ControlMsg};
+use commands::{Command, parse_command};
+use control::{ControlMsg, command_to_control};
 
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
@@ -59,30 +59,43 @@ pub fn dispatch(text: &str) -> Option<Dispatch> {
     let reply = match &cmd {
         Command::Help => Some(render::HELP_TEXT.to_string()),
         Command::Invalid(msg) => Some(msg.clone()),
-        Command::Set { param, key, value } => Some(format!(
-            "✅ Sent: set {param}[{key}] = {value}"
-        )),
+        Command::Set { param, key, value } => {
+            Some(format!("✅ Sent: set {param}[{key}] = {value}"))
+        }
         Command::Halt { asset } => Some(format!(
             "🛑 Sent halt for {}",
-            if asset.is_empty() { "all assets".to_string() } else { asset.clone() }
+            if asset.is_empty() {
+                "all assets".to_string()
+            } else {
+                asset.clone()
+            }
         )),
         Command::Resume { asset } => Some(format!(
             "▶️ Sent resume for {}",
-            if asset.is_empty() { "all assets".to_string() } else { asset.clone() }
+            if asset.is_empty() {
+                "all assets".to_string()
+            } else {
+                asset.clone()
+            }
         )),
         Command::ResetLosses { asset } => Some(format!(
             "🔄 reset_losses sent for {}",
-            if asset.is_empty() { "all assets".to_string() } else { asset.clone() }
+            if asset.is_empty() {
+                "all assets".to_string()
+            } else {
+                asset.clone()
+            }
         )),
         Command::StrategiesSet { asset, strategies } => Some(format!(
-            "✅ Sent: {asset} strategies = {}", strategies.join(", ")
+            "✅ Sent: {asset} strategies = {}",
+            strategies.join(", ")
         )),
-        Command::TradeAssetsSet(assets) => Some(format!(
-            "✅ Sent: trade_assets = {}", assets.join(",")
-        )),
-        Command::DeltaSet { key, value, .. } => Some(format!(
-            "✅ Sent: set delta[{key}] = {value}"
-        )),
+        Command::TradeAssetsSet(assets) => {
+            Some(format!("✅ Sent: trade_assets = {}", assets.join(",")))
+        }
+        Command::DeltaSet { key, value, .. } => {
+            Some(format!("✅ Sent: set delta[{key}] = {value}"))
+        }
         // Display-only / reporting commands: the caller (worker/render layer)
         // fills in the actual reply from live state; no canned text here.
         _ => None,
@@ -137,7 +150,12 @@ impl TelegramBot {
     pub fn new(auth: AuthConfig) -> Result<Self> {
         let http = reqwest::Client::builder().build().context("http client")?;
         let api_base = format!("https://api.telegram.org/bot{}", auth.token);
-        Ok(Self { auth, http, api_base, offset: 0 })
+        Ok(Self {
+            auth,
+            http,
+            api_base,
+            offset: 0,
+        })
     }
 
     pub async fn send(&self, text: &str) -> Result<()> {
@@ -164,7 +182,10 @@ impl TelegramBot {
         let resp: GetUpdatesResponse = self
             .http
             .get(format!("{}/getUpdates", self.api_base))
-            .query(&[("offset", self.offset.to_string()), ("timeout", "30".to_string())])
+            .query(&[
+                ("offset", self.offset.to_string()),
+                ("timeout", "30".to_string()),
+            ])
             .timeout(std::time::Duration::from_secs(35))
             .send()
             .await
@@ -181,7 +202,11 @@ impl TelegramBot {
             let chat_id = msg.chat.id;
             let from_id = msg.from.map(|f| f.id).unwrap_or(0);
             if self.auth.is_authorized(chat_id, from_id) {
-                out.push(IncomingMessage { text, chat_id, from_id });
+                out.push(IncomingMessage {
+                    text,
+                    chat_id,
+                    from_id,
+                });
             }
         }
         Ok(out)
@@ -193,14 +218,18 @@ impl TelegramBot {
     ///
     /// NOT invoked anywhere yet — requires a real `TELEGRAM_BOT_TOKEN` +
     /// `TELEGRAM_CHAT_ID` and the user's go-ahead before running live.
-    pub async fn run_loop(&mut self, control_tx: tokio::sync::mpsc::UnboundedSender<ControlMsg>) -> Result<()> {
+    pub async fn run_loop(
+        &mut self,
+        control_tx: tokio::sync::mpsc::UnboundedSender<ControlMsg>,
+    ) -> Result<()> {
         loop {
             match self.poll_once().await {
                 Ok(messages) => {
                     for m in messages {
                         if let Some(d) = dispatch(&m.text) {
                             if let Some(control) = d.control
-                                && control_tx.send(control).is_err() {
+                                && control_tx.send(control).is_err()
+                            {
                                 return Ok(()); // receiver dropped — worker shut down
                             }
                             if let Some(reply) = d.reply {
@@ -223,7 +252,11 @@ mod tests {
     use super::*;
 
     fn auth() -> AuthConfig {
-        AuthConfig { token: "dummy".to_string(), chat_id: 12345, user_id: 999 }
+        AuthConfig {
+            token: "dummy".to_string(),
+            chat_id: 12345,
+            user_id: 999,
+        }
     }
 
     #[test]
@@ -250,14 +283,23 @@ mod tests {
 
     #[test]
     fn discovery_mode_rejects_everything_until_chat_id_configured() {
-        let a = AuthConfig { token: "dummy".to_string(), chat_id: 0, user_id: 0 };
+        let a = AuthConfig {
+            token: "dummy".to_string(),
+            chat_id: 0,
+            user_id: 0,
+        };
         assert!(!a.is_authorized(12345, 999));
     }
 
     #[test]
     fn dispatch_halt_produces_control_and_reply() {
         let d = dispatch("/halt BTC").unwrap();
-        assert_eq!(d.control, Some(ControlMsg::Halt { asset: "BTC".to_string() }));
+        assert_eq!(
+            d.control,
+            Some(ControlMsg::Halt {
+                asset: "BTC".to_string()
+            })
+        );
         assert!(d.reply.unwrap().contains("BTC"));
     }
 

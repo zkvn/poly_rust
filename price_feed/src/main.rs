@@ -49,7 +49,11 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     match Cli::parse().command {
         None => chainlink::run().await,
-        Some(Cmd::Markets { assets, no_custom_features, probe }) => {
+        Some(Cmd::Markets {
+            assets,
+            no_custom_features,
+            probe,
+        }) => {
             let custom_features = !no_custom_features;
             if probe {
                 markets::probe(assets, custom_features).await
@@ -57,6 +61,10 @@ async fn main() -> anyhow::Result<()> {
                 markets::run(assets, custom_features).await
             }
         }
-        Some(Cmd::Collect { assets, raw_dir, nats_url }) => collect::run(assets, &raw_dir, nats_url).await,
+        Some(Cmd::Collect {
+            assets,
+            raw_dir,
+            nats_url,
+        }) => collect::run(assets, &raw_dir, nats_url).await,
     }
 }

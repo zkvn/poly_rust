@@ -18,7 +18,10 @@ impl Default for DeltaPctSignal {
 
 impl DeltaPctSignal {
     pub fn new() -> Self {
-        Self { price: 0.0, open: 0.0 }
+        Self {
+            price: 0.0,
+            open: 0.0,
+        }
     }
 
     pub fn value(&self) -> f64 {
@@ -30,7 +33,9 @@ impl DeltaPctSignal {
 }
 
 impl Signal for DeltaPctSignal {
-    fn name(&self) -> &str { "delta_pct" }
+    fn name(&self) -> &str {
+        "delta_pct"
+    }
 
     fn reset(&mut self, ctx: &CycleContext) {
         self.open = ctx.open_binance;
@@ -55,14 +60,21 @@ mod tests {
     use crate::types::CycleContext;
 
     fn ctx(open: f64) -> CycleContext {
-        CycleContext { start_ts: 0.0, end_ts: 300.0, open_binance: open }
+        CycleContext {
+            start_ts: 0.0,
+            end_ts: 300.0,
+            open_binance: open,
+        }
     }
 
     #[test]
     fn computes_delta_pct() {
         let mut s = DeltaPctSignal::new();
         s.reset(&ctx(50_000.0));
-        s.on_binance(BinanceTick { ts: 1.0, price: 50_100.0 });
+        s.on_binance(BinanceTick {
+            ts: 1.0,
+            price: 50_100.0,
+        });
         let expected = 100.0 / 50_000.0;
         assert!((s.value() - expected).abs() < 1e-12);
     }
@@ -77,11 +89,18 @@ mod tests {
     fn reset_clears_stale_price_from_previous_cycle() {
         let mut s = DeltaPctSignal::new();
         s.reset(&ctx(50_000.0));
-        s.on_binance(BinanceTick { ts: 1.0, price: 49_000.0 });
+        s.on_binance(BinanceTick {
+            ts: 1.0,
+            price: 49_000.0,
+        });
         assert!(s.value() < 0.0, "sanity: price is set before reset");
 
         // A new cycle must not evaluate against last cycle's leftover Binance price.
         s.reset(&ctx(60_000.0));
-        assert_eq!(s.value(), 0.0, "price must be cleared on reset, not carried over");
+        assert_eq!(
+            s.value(),
+            0.0,
+            "price must be cleared on reset, not carried over"
+        );
     }
 }

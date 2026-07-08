@@ -36,7 +36,10 @@ impl Default for TickBus {
 
 impl TickBus {
     pub fn new() -> Self {
-        Self { binance: Vec::new(), poly: Vec::new() }
+        Self {
+            binance: Vec::new(),
+            poly: Vec::new(),
+        }
     }
 
     pub fn subscribe_binance(&mut self, cb: impl FnMut(BinanceTick) + 'static) {

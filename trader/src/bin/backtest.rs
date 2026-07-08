@@ -3,7 +3,10 @@ use trader::backtest::{load_price_data, run_backtest};
 use trader::config::load_latest;
 
 #[derive(Parser, Debug)]
-#[command(name = "backtest", about = "Rust backtest — mirrors Python bot.backtest bt1")]
+#[command(
+    name = "backtest",
+    about = "Rust backtest — mirrors Python bot.backtest bt1"
+)]
 struct Args {
     #[arg(long, help = "Asset (e.g. BTC, ETH)")]
     asset: String,
@@ -11,12 +14,18 @@ struct Args {
     #[arg(long, help = "Date YYYY-MM-DD (HKT)")]
     date: String,
 
-    #[arg(long, default_value = "/home/kev/apps/btc_5mins/prices",
-          help = "Directory containing <ASSET>_binance.parquet / <ASSET>_poly.parquet")]
+    #[arg(
+        long,
+        default_value = "/home/kev/apps/btc_5mins/prices",
+        help = "Directory containing <ASSET>_binance.parquet / <ASSET>_poly.parquet"
+    )]
     prices_dir: String,
 
-    #[arg(long, default_value = "/home/kev/apps/btc_5mins/config",
-          help = "Directory containing strategy_*.toml")]
+    #[arg(
+        long,
+        default_value = "/home/kev/apps/btc_5mins/config",
+        help = "Directory containing strategy_*.toml"
+    )]
     config_dir: String,
 
     #[arg(long, help = "Disable halt (sets halt_rev=halt_prob=0)")]
@@ -42,8 +51,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Header
-    println!("{:<35} {:<10} {:<5} {:>10} {:>14} {:<10} {:>8}",
-        "slug", "strategy", "side", "token_px", "exit_token_px", "outcome", "pnl");
+    println!(
+        "{:<35} {:<10} {:<5} {:>10} {:>14} {:<10} {:>8}",
+        "slug", "strategy", "side", "token_px", "exit_token_px", "outcome", "pnl"
+    );
     println!("{}", "-".repeat(100));
 
     let mut total_pnl = 0.0_f64;
@@ -51,8 +62,16 @@ fn main() -> anyhow::Result<()> {
 
     for t in &trades {
         let outcome_str = t.outcome.as_str();
-        println!("{:<35} {:<10} {:<5} {:>10.3} {:>14.3} {:<10} {:>8.4}",
-            t.slug, t.strategy, t.side.as_str(), t.token_price, t.exit_price, outcome_str, t.pnl);
+        println!(
+            "{:<35} {:<10} {:<5} {:>10.3} {:>14.3} {:<10} {:>8.4}",
+            t.slug,
+            t.strategy,
+            t.side.as_str(),
+            t.token_price,
+            t.exit_price,
+            outcome_str,
+            t.pnl
+        );
         total_pnl += t.pnl;
         match t.outcome {
             trader::types::Outcome::Win => wins += 1,
@@ -67,8 +86,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     let total_pnl = (total_pnl * 10_000.0).round() / 10_000.0;
-    println!("\nTotal: trades={} wins={} losses={} stoplosses={} unwinds={} timeouts={} pnl={}",
-        trades.len(), wins, losses, stoplosses, unwinds, timeouts, total_pnl);
+    println!(
+        "\nTotal: trades={} wins={} losses={} stoplosses={} unwinds={} timeouts={} pnl={}",
+        trades.len(),
+        wins,
+        losses,
+        stoplosses,
+        unwinds,
+        timeouts,
+        total_pnl
+    );
 
     Ok(())
 }

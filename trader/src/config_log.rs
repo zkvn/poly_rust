@@ -61,17 +61,25 @@ pub fn build_snapshot(
     event: &str,
     strategies: &[String],
 ) -> ConfigSnapshot {
-    let ts = Utc::now().timestamp() as f64
-        + (Utc::now().timestamp_subsec_millis() as f64 / 1000.0);
+    let ts = Utc::now().timestamp() as f64 + (Utc::now().timestamp_subsec_millis() as f64 / 1000.0);
     let dt = hkt().timestamp_opt(ts as i64, 0).unwrap();
     let hkt_str = format!("{} HKT", dt.format("%Y-%m-%d %H:%M:%S"));
 
     let mut band: HashMap<String, [f64; 2]> = HashMap::new();
-    let keys: std::collections::BTreeSet<&String> =
-        toml.price_low.keys().chain(toml.price_high.keys()).collect();
+    let keys: std::collections::BTreeSet<&String> = toml
+        .price_low
+        .keys()
+        .chain(toml.price_high.keys())
+        .collect();
     for k in keys {
-        let low = *toml.price_low.get(k).unwrap_or_else(|| &toml.price_low["default"]);
-        let high = *toml.price_high.get(k).unwrap_or_else(|| &toml.price_high["default"]);
+        let low = *toml
+            .price_low
+            .get(k)
+            .unwrap_or_else(|| &toml.price_low["default"]);
+        let high = *toml
+            .price_high
+            .get(k)
+            .unwrap_or_else(|| &toml.price_high["default"]);
         band.insert(k.clone(), [low, high]);
     }
 
@@ -151,7 +159,11 @@ pub fn read_all_snapshots(log_path: &str) -> Result<Vec<ConfigSnapshot>> {
 }
 
 /// Latest snapshot for `asset` where entry.ts <= `ts` (matches Python read_latest_snapshot).
-pub fn read_latest_snapshot(log_path: &str, asset: &str, ts: f64) -> Result<Option<ConfigSnapshot>> {
+pub fn read_latest_snapshot(
+    log_path: &str,
+    asset: &str,
+    ts: f64,
+) -> Result<Option<ConfigSnapshot>> {
     let mut result = None;
     for entry in read_all_snapshots(log_path)? {
         if entry.asset == asset && entry.ts <= ts {

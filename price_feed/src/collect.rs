@@ -5,12 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
-use arrow::array::{ArrayRef, Float32Builder, Float64Array, Float64Builder, ListBuilder, StringArray};
+use arrow::array::{
+    ArrayRef, Float32Builder, Float64Array, Float64Builder, ListBuilder, StringArray,
+};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::{Duration as ChronoDuration, FixedOffset, Utc};
 use futures::StreamExt as _;
-use tokio_tungstenite::tungstenite::Message;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
@@ -20,6 +21,7 @@ use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
 use polymarket_client_sdk_v2::types::U256;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+use tokio_tungstenite::tungstenite::Message;
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
@@ -28,15 +30,24 @@ fn hkt() -> FixedOffset {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 fn now_secs_f64() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 fn current_slot_for(interval: u64) -> u64 {
@@ -85,7 +96,10 @@ fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
 
 // One sealed file per (asset, type, hour) instead of per day — see `ParquetBuf::seal_and_rename`.
 fn hkt_hour_string() -> String {
-    Utc::now().with_timezone(&hkt()).format("%Y-%m-%d_%H").to_string()
+    Utc::now()
+        .with_timezone(&hkt())
+        .format("%Y-%m-%d_%H")
+        .to_string()
 }
 
 // ── Shared per-asset state ────────────────────────────────────────────────────
@@ -117,8 +131,7 @@ struct BbaSample {
 // ── Gamma asset discovery ─────────────────────────────────────────────────────
 
 async fn discover_assets(http: &reqwest::Client) -> Result<Vec<String>> {
-    let start_min = (Utc::now() - ChronoDuration::hours(1))
-        .format("%Y-%m-%dT%H:%M:%SZ");
+    let start_min = (Utc::now() - ChronoDuration::hours(1)).format("%Y-%m-%dT%H:%M:%SZ");
     let url = format!(
         "https://gamma-api.polymarket.com/events?tag_id=102127&active=true&closed=false&start_date_min={start_min}&limit=100"
     );
@@ -182,8 +195,7 @@ async fn fetch_meta(
 
     let token_ids: Vec<String> =
         serde_json::from_str(market["clobTokenIds"].as_str().unwrap_or("[]"))?;
-    let outcomes: Vec<String> =
-        serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
+    let outcomes: Vec<String> = serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
 
     let find = |target: &str| -> Result<U256> {
         outcomes
@@ -207,7 +219,7 @@ fn poly_schema() -> Schema {
         Field::new("up", DataType::Float64, false),
         Field::new("dn", DataType::Float64, false),
         Field::new("slug", DataType::Utf8, false),
-        Field::new("server_ts", DataType::Float64, true),  // ms; null for carried rows pre-schema
+        Field::new("server_ts", DataType::Float64, true), // ms; null for carried rows pre-schema
         Field::new("latency_ms", DataType::Float64, true), // receive_ms - server_ts; null for old rows
     ])
 }
@@ -217,7 +229,7 @@ fn binance_schema() -> Schema {
         Field::new("ts", DataType::Float64, false),
         Field::new("binance", DataType::Float64, false),
         Field::new("slug", DataType::Utf8, false),
-        Field::new("server_ts", DataType::Float64, true),  // Binance `E` field (ms)
+        Field::new("server_ts", DataType::Float64, true), // Binance `E` field (ms)
         Field::new("latency_ms", DataType::Float64, true), // receive_ms - server_ts
     ])
 }
@@ -279,7 +291,8 @@ impl ParquetBuf {
             .truncate(true)
             .open(&path)
             .with_context(|| format!("open {path:?}"))?;
-        let writer = ArrowWriter::try_new(file, Arc::new(schema), Some(props)).context("ArrowWriter")?;
+        let writer =
+            ArrowWriter::try_new(file, Arc::new(schema), Some(props)).context("ArrowWriter")?;
         Ok(Self {
             path,
             writer,
@@ -308,7 +321,10 @@ impl ParquetBuf {
         let mut buf = Self::open(tmp_path, schema)?;
         if let Some(batches) = carry {
             let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-            eprintln!("  carry: loaded {rows} rows from {:?}", carry_source.unwrap());
+            eprintln!(
+                "  carry: loaded {rows} rows from {:?}",
+                carry_source.unwrap()
+            );
             for batch in batches {
                 buf.writer.write(&batch).context("carry write")?;
             }
@@ -396,7 +412,9 @@ fn seal_orphaned_tmp(raw_dir: &Path, current_hour_key: &str) -> Result<()> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         if !name.ends_with(".parquet.tmp") || name.contains(current_hour_key) {
             continue;
         }
@@ -412,7 +430,9 @@ fn seal_orphaned_tmp(raw_dir: &Path, current_hour_key: &str) -> Result<()> {
         let final_name = &name[..name.len() - 4]; // strip ".tmp"
         let final_path = raw_dir.join(final_name);
         if final_path.exists() {
-            eprintln!("startup: {final_name} already sealed, leaving orphaned {name} for manual review");
+            eprintln!(
+                "startup: {final_name} already sealed, leaving orphaned {name} for manual review"
+            );
             continue;
         }
         eprintln!("startup: recovering orphaned {name} -> {final_name}");
@@ -616,15 +636,32 @@ impl AssetWriters {
         if current_hour == self.hour_key {
             return Ok(());
         }
-        eprintln!("[{}] sealing hour {} → {}", self.asset, self.hour_key, current_hour);
-        let poly_final = self.raw_dir.join(format!("{}_poly_{}.parquet", self.asset, self.hour_key));
-        let book_final = self.raw_dir.join(format!("{}_book_{}.parquet", self.asset, self.hour_key));
-        let poly_tmp = self.raw_dir.join(format!("{}_poly_{current_hour}.parquet.tmp", self.asset));
-        let book_tmp = self.raw_dir.join(format!("{}_book_{current_hour}.parquet.tmp", self.asset));
+        eprintln!(
+            "[{}] sealing hour {} → {}",
+            self.asset, self.hour_key, current_hour
+        );
+        let poly_final = self
+            .raw_dir
+            .join(format!("{}_poly_{}.parquet", self.asset, self.hour_key));
+        let book_final = self
+            .raw_dir
+            .join(format!("{}_book_{}.parquet", self.asset, self.hour_key));
+        let poly_tmp = self
+            .raw_dir
+            .join(format!("{}_poly_{current_hour}.parquet.tmp", self.asset));
+        let book_tmp = self
+            .raw_dir
+            .join(format!("{}_book_{current_hour}.parquet.tmp", self.asset));
 
-        let old_poly = std::mem::replace(&mut self.poly, ParquetBuf::open(poly_tmp, self.poly_schema.clone())?);
+        let old_poly = std::mem::replace(
+            &mut self.poly,
+            ParquetBuf::open(poly_tmp, self.poly_schema.clone())?,
+        );
         old_poly.seal_and_rename(&poly_final)?;
-        let old_book = std::mem::replace(&mut self.book, ParquetBuf::open(book_tmp, self.book_schema.clone())?);
+        let old_book = std::mem::replace(
+            &mut self.book,
+            ParquetBuf::open(book_tmp, self.book_schema.clone())?,
+        );
         old_book.seal_and_rename(&book_final)?;
         self.hour_key = current_hour;
         Ok(())
@@ -731,8 +768,12 @@ impl AssetWriters {
     // Seal the in-progress hour on shutdown too — otherwise the final partial
     // hour stays as a footerless .tmp forever, never becoming a real .parquet.
     fn finish(self) -> Result<()> {
-        let poly_final = self.raw_dir.join(format!("{}_poly_{}.parquet", self.asset, self.hour_key));
-        let book_final = self.raw_dir.join(format!("{}_book_{}.parquet", self.asset, self.hour_key));
+        let poly_final = self
+            .raw_dir
+            .join(format!("{}_poly_{}.parquet", self.asset, self.hour_key));
+        let book_final = self
+            .raw_dir
+            .join(format!("{}_book_{}.parquet", self.asset, self.hour_key));
         self.poly.seal_and_rename(&poly_final)?;
         self.book.seal_and_rename(&book_final)
     }
@@ -778,30 +819,57 @@ impl BinanceWriters {
         if current_hour == self.hour_key {
             return Ok(());
         }
-        eprintln!("[{}] sealing binance hour {} → {}", self.asset, self.hour_key, current_hour);
-        let final_path = self.raw_dir.join(format!("{}_binance_{}.parquet", self.asset, self.hour_key));
-        let tmp = self.raw_dir.join(format!("{}_binance_{current_hour}.parquet.tmp", self.asset));
+        eprintln!(
+            "[{}] sealing binance hour {} → {}",
+            self.asset, self.hour_key, current_hour
+        );
+        let final_path = self
+            .raw_dir
+            .join(format!("{}_binance_{}.parquet", self.asset, self.hour_key));
+        let tmp = self
+            .raw_dir
+            .join(format!("{}_binance_{current_hour}.parquet.tmp", self.asset));
         let old = std::mem::replace(&mut self.buf, ParquetBuf::open(tmp, self.schema.clone())?);
         old.seal_and_rename(&final_path)?;
         self.hour_key = current_hour;
         Ok(())
     }
 
-    fn write_sample(&mut self, ts: f64, price: f64, slug: &str, server_ts_ms: i64, received_at_ms: i64) -> Result<()> {
+    fn write_sample(
+        &mut self,
+        ts: f64,
+        price: f64,
+        slug: &str,
+        server_ts_ms: i64,
+        received_at_ms: i64,
+    ) -> Result<()> {
         if price <= 0.0 {
             return Ok(());
         }
-        let server_ts = if server_ts_ms > 0 { Some(server_ts_ms as f64) } else { None };
+        let server_ts = if server_ts_ms > 0 {
+            Some(server_ts_ms as f64)
+        } else {
+            None
+        };
         let latency_ms = if received_at_ms > 0 && server_ts_ms > 0 {
             Some((received_at_ms - server_ts_ms) as f64)
         } else {
             None
         };
-        self.buf.write(binance_row(&self.schema, ts, price, slug, server_ts, latency_ms)?)
+        self.buf.write(binance_row(
+            &self.schema,
+            ts,
+            price,
+            slug,
+            server_ts,
+            latency_ms,
+        )?)
     }
 
     fn finish(self) -> Result<()> {
-        let final_path = self.raw_dir.join(format!("{}_binance_{}.parquet", self.asset, self.hour_key));
+        let final_path = self
+            .raw_dir
+            .join(format!("{}_binance_{}.parquet", self.asset, self.hour_key));
         self.buf.seal_and_rename(&final_path)
     }
 }
@@ -830,7 +898,11 @@ fn spawn_binance_task(asset: String, idx: usize, state: Arc<Mutex<Vec<BinanceSta
                                         let received_at_ms = now_ms();
                                         let mut st = state.lock().unwrap();
                                         if idx < st.len() {
-                                            st[idx] = BinanceState { price, server_ts_ms, received_at_ms };
+                                            st[idx] = BinanceState {
+                                                price,
+                                                server_ts_ms,
+                                                received_at_ms,
+                                            };
                                         }
                                     }
                                 }
@@ -1019,8 +1091,9 @@ fn spawn_bba_task(
                         (Ok(bba), Ok(pc)) => {
                             // Unify both feeds into (asset_id, best_bid, best_ask, server_ts_ms).
                             let bba_u = bba.filter_map(|r| async move {
-                                r.ok()
-                                    .map(|m| (m.asset_id, d2f(&m.best_bid), d2f(&m.best_ask), m.timestamp))
+                                r.ok().map(|m| {
+                                    (m.asset_id, d2f(&m.best_bid), d2f(&m.best_ask), m.timestamp)
+                                })
                             });
                             let pc_u = pc.flat_map(|r| {
                                 let items: Vec<(U256, f64, f64, i64)> = match r {
@@ -1043,11 +1116,14 @@ fn spawn_bba_task(
 
                             let mut merged =
                                 futures::stream::select(Box::pin(bba_u), Box::pin(pc_u));
-                            while let Some((asset_id, bid, ask, server_ts_ms)) = merged.next().await {
-                                if !bid.is_finite() || !ask.is_finite() || bid <= 0.0 || ask <= 0.0 {
+                            while let Some((asset_id, bid, ask, server_ts_ms)) = merged.next().await
+                            {
+                                if !bid.is_finite() || !ask.is_finite() || bid <= 0.0 || ask <= 0.0
+                                {
                                     continue;
                                 }
-                                if let Some(&(_, idx)) = map.iter().find(|(id, _)| *id == asset_id) {
+                                if let Some(&(_, idx)) = map.iter().find(|(id, _)| *id == asset_id)
+                                {
                                     let received_at_ms = now_ms();
                                     // Release lock before any await.
                                     {
@@ -1064,9 +1140,15 @@ fn spawn_bba_task(
                                     if let Some(ref nc) = nats {
                                         if idx < assets.len() {
                                             let up_mid = (bid + ask) / 2.0;
-                                            let payload = poly_nats_payload(received_at_ms, up_mid, server_ts_ms);
+                                            let payload = poly_nats_payload(
+                                                received_at_ms,
+                                                up_mid,
+                                                server_ts_ms,
+                                            );
                                             let subject = format!("price.poly.{}", assets[idx]);
-                                            let _ = nc.publish(subject, payload.into_bytes().into()).await;
+                                            let _ = nc
+                                                .publish(subject, payload.into_bytes().into())
+                                                .await;
                                         }
                                     }
                                 }
@@ -1156,7 +1238,14 @@ fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
     st.iter()
         .map(|s| {
             s.latest_book.clone().map(|b| {
-                (b, s.book_server_ts_ms, s.book_received_at_ms, s.latest_trade, s.slug.clone(), s.latest_bba)
+                (
+                    b,
+                    s.book_server_ts_ms,
+                    s.book_received_at_ms,
+                    s.latest_trade,
+                    s.slug.clone(),
+                    s.latest_bba,
+                )
             })
         })
         .collect()
@@ -1172,7 +1261,7 @@ fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
 /// Binance + 5m Poly ticks so the trader can subscribe instead of opening its
 /// own duplicate feeds (README.md "Oracle infra: NATS price bridge").
 pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<String>) -> Result<()> {
-    let raw_5m  = PathBuf::from(raw_dir_base);
+    let raw_5m = PathBuf::from(raw_dir_base);
     let raw_15m = PathBuf::from(format!("{raw_dir_base}_15_mins"));
     let raw_4hr = PathBuf::from(format!("{raw_dir_base}_4hr"));
     fs::create_dir_all(&raw_5m).with_context(|| format!("create {raw_5m:?}"))?;
@@ -1212,7 +1301,8 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
     // instead of opening its own duplicate Binance/Poly WS connections.
     let nats: Option<async_nats::Client> = match nats_url {
         Some(ref url) => {
-            let nc = async_nats::connect(url).await
+            let nc = async_nats::connect(url)
+                .await
                 .with_context(|| format!("connect to NATS at {url}"))?;
             eprintln!("NATS connected: {url}");
             Some(nc)
@@ -1225,26 +1315,65 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
     // ── 5-min Polymarket feed ────────────────────────────────────────────────
     let state_5m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_5m, slot_rx_5m) = watch::channel(vec![None; n]);
-    spawn_meta_task(assets.clone(), Arc::clone(&state_5m), slot_tx_5m, Arc::clone(&http), 300, "5m");
+    spawn_meta_task(
+        assets.clone(),
+        Arc::clone(&state_5m),
+        slot_tx_5m,
+        Arc::clone(&http),
+        300,
+        "5m",
+    );
     spawn_book_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone());
     // 5m bba task also publishes to NATS when enabled (trader piggybacks on this feed).
-    spawn_bba_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m.clone(), nats.clone(), assets.clone());
+    spawn_bba_task(
+        clob.clone(),
+        Arc::clone(&state_5m),
+        slot_rx_5m.clone(),
+        nats.clone(),
+        assets.clone(),
+    );
     spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
 
     // ── 15-min Polymarket feed ───────────────────────────────────────────────
     let state_15m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_15m, slot_rx_15m) = watch::channel(vec![None; n]);
-    spawn_meta_task(assets.clone(), Arc::clone(&state_15m), slot_tx_15m, Arc::clone(&http), 900, "15m");
+    spawn_meta_task(
+        assets.clone(),
+        Arc::clone(&state_15m),
+        slot_tx_15m,
+        Arc::clone(&http),
+        900,
+        "15m",
+    );
     spawn_book_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone());
-    spawn_bba_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m.clone(), None, vec![]);
+    spawn_bba_task(
+        clob.clone(),
+        Arc::clone(&state_15m),
+        slot_rx_15m.clone(),
+        None,
+        vec![],
+    );
     spawn_trade_task(clob.clone(), Arc::clone(&state_15m), slot_rx_15m);
 
     // ── 4-hr Polymarket feed ─────────────────────────────────────────────────
     let state_4hr = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_4hr, slot_rx_4hr) = watch::channel(vec![None; n]);
-    spawn_meta_task(assets.clone(), Arc::clone(&state_4hr), slot_tx_4hr, Arc::clone(&http), 14400, "4h");
+    spawn_meta_task(
+        assets.clone(),
+        Arc::clone(&state_4hr),
+        slot_tx_4hr,
+        Arc::clone(&http),
+        14400,
+        "4h",
+    );
     spawn_book_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone());
-    spawn_bba_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr.clone(), None, vec![]);
+    spawn_bba_task(
+        clob.clone(),
+        Arc::clone(&state_4hr),
+        slot_rx_4hr.clone(),
+        None,
+        vec![],
+    );
     spawn_trade_task(clob.clone(), Arc::clone(&state_4hr), slot_rx_4hr);
 
     // ── Binance feed (asset-level, period-independent — one WS + one writer
@@ -1253,13 +1382,24 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
     for (i, asset) in assets.iter().enumerate() {
         spawn_binance_task(asset.clone(), i, Arc::clone(&binance_state));
     }
-    let mut binance_writers: Vec<BinanceWriters> =
-        assets.iter().map(|a| BinanceWriters::new(a, &raw_5m)).collect::<Result<_>>()?;
+    let mut binance_writers: Vec<BinanceWriters> = assets
+        .iter()
+        .map(|a| BinanceWriters::new(a, &raw_5m))
+        .collect::<Result<_>>()?;
 
     // ── Writers ──────────────────────────────────────────────────────────────
-    let mut writers_5m:  Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_5m)).collect::<Result<_>>()?;
-    let mut writers_15m: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_15m)).collect::<Result<_>>()?;
-    let mut writers_4hr: Vec<AssetWriters> = assets.iter().map(|a| AssetWriters::new(a, &raw_4hr)).collect::<Result<_>>()?;
+    let mut writers_5m: Vec<AssetWriters> = assets
+        .iter()
+        .map(|a| AssetWriters::new(a, &raw_5m))
+        .collect::<Result<_>>()?;
+    let mut writers_15m: Vec<AssetWriters> = assets
+        .iter()
+        .map(|a| AssetWriters::new(a, &raw_15m))
+        .collect::<Result<_>>()?;
+    let mut writers_4hr: Vec<AssetWriters> = assets
+        .iter()
+        .map(|a| AssetWriters::new(a, &raw_4hr))
+        .collect::<Result<_>>()?;
 
     // ── Samplers ──────────────────────────────────────────────────────────────
     let mut ticker_200ms = tokio::time::interval(Duration::from_millis(200));
@@ -1347,11 +1487,7 @@ fn flush_all(
     writers_4hr: Vec<AssetWriters>,
     binance_writers: Vec<BinanceWriters>,
 ) {
-    for w in writers_5m
-        .into_iter()
-        .chain(writers_15m)
-        .chain(writers_4hr)
-    {
+    for w in writers_5m.into_iter().chain(writers_15m).chain(writers_4hr) {
         if let Err(e) = w.finish() {
             eprintln!("close error: {e:#}");
         }
@@ -1376,13 +1512,19 @@ mod tests {
         // 1751234567.123s, deliberately not aligned to any 0.25s/0.2s grid point.
         let received_at_ms: i64 = 1_751_234_567_123;
         let payload = binance_nats_payload(received_at_ms, 42.5, 1_751_234_567_010);
-        assert_eq!(payload, r#"{"ts":1751234567.123,"price":42.500000,"server_ts":1751234567.010}"#);
+        assert_eq!(
+            payload,
+            r#"{"ts":1751234567.123,"price":42.500000,"server_ts":1751234567.010}"#
+        );
     }
 
     #[test]
     fn binance_nats_payload_formats_price_with_six_decimals() {
         let payload = binance_nats_payload(1_000, 0.1, 900);
-        assert_eq!(payload, r#"{"ts":1.000,"price":0.100000,"server_ts":0.900}"#);
+        assert_eq!(
+            payload,
+            r#"{"ts":1.000,"price":0.100000,"server_ts":0.900}"#
+        );
     }
 
     /// Binance's `E` field defaults to 0 when missing from the WS message
@@ -1398,12 +1540,18 @@ mod tests {
     #[test]
     fn poly_nats_payload_includes_server_ts_and_complement_dn() {
         let payload = poly_nats_payload(1_751_234_567_123, 0.65, 1_751_234_567_010);
-        assert_eq!(payload, r#"{"ts":1751234567.123,"up":0.650000,"dn":0.350000,"server_ts":1751234567.010}"#);
+        assert_eq!(
+            payload,
+            r#"{"ts":1751234567.123,"up":0.650000,"dn":0.350000,"server_ts":1751234567.010}"#
+        );
     }
 
     #[test]
     fn poly_nats_payload_omits_server_ts_when_unavailable() {
         let payload = poly_nats_payload(1_000, 0.5, -1);
-        assert_eq!(payload, r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"server_ts":null}"#);
+        assert_eq!(
+            payload,
+            r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"server_ts":null}"#
+        );
     }
 }

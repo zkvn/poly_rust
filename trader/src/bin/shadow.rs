@@ -15,12 +15,15 @@ use tokio::sync::mpsc;
 use trader::config::load_latest;
 use trader::machine::Machine;
 use trader::marketdata::{
-    clob_client, current_slot, fetch_meta, http_client, make_slug, spawn_binance_task, PolySub,
+    PolySub, clob_client, current_slot, fetch_meta, http_client, make_slug, spawn_binance_task,
 };
 use trader::types::CycleContext;
 
 #[derive(Parser, Debug)]
-#[command(name = "shadow", about = "Shadow-live trader: logs would-be trades from live feeds, no CLOB writes")]
+#[command(
+    name = "shadow",
+    about = "Shadow-live trader: logs would-be trades from live feeds, no CLOB writes"
+)]
 struct Args {
     #[arg(long, help = "Asset (e.g. BTC)")]
     asset: String,
@@ -42,8 +45,15 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
     if std::path::Path::new(path).exists() {
         return Ok(());
     }
-    let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
-    writeln!(f, "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl")?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    writeln!(
+        f,
+        "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl"
+    )?;
     Ok(())
 }
 
@@ -75,11 +85,15 @@ async fn main() -> Result<()> {
     let toml = load_latest(&args.config_dir)?;
     let params = toml.resolve(&args.asset)?;
 
-    let mut machines: Vec<Machine> = params.strategies.iter().map(|name| match name.as_str() {
-        "reversal" => Machine::new_reversal(&params),
-        "high_prob" => Machine::new_high_prob(&params),
-        _ => Machine::new_reversal(&params),
-    }).collect();
+    let mut machines: Vec<Machine> = params
+        .strategies
+        .iter()
+        .map(|name| match name.as_str() {
+            "reversal" => Machine::new_reversal(&params),
+            "high_prob" => Machine::new_high_prob(&params),
+            _ => Machine::new_reversal(&params),
+        })
+        .collect();
 
     eprintln!(
         "[shadow] asset={} strategies={:?} suffix={} period={}s log={}",

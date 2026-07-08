@@ -10,11 +10,24 @@ use crate::telegram::commands::{Command, DeltaStrat};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlMsg {
-    SetParam { param: String, key: String, value: String },
-    SetStrategies { asset: String, strategies: Vec<String> },
-    ResetLosses { asset: String }, // "" = all
-    Halt { asset: String },        // "" = all
-    Resume { asset: String },      // "" = all
+    SetParam {
+        param: String,
+        key: String,
+        value: String,
+    },
+    SetStrategies {
+        asset: String,
+        strategies: Vec<String>,
+    },
+    ResetLosses {
+        asset: String,
+    }, // "" = all
+    Halt {
+        asset: String,
+    }, // "" = all
+    Resume {
+        asset: String,
+    }, // "" = all
 }
 
 /// Convert a parsed `Command` into a `ControlMsg`, if that command mutates state.
@@ -32,19 +45,30 @@ pub fn command_to_control(cmd: &Command) -> Option<ControlMsg> {
                 DeltaStrat::HighProb => "delta_pct_hp",
                 DeltaStrat::Reversal => "delta_pct_rev",
             };
-            Some(ControlMsg::SetParam { param: param.to_string(), key: key.clone(), value: value.clone() })
+            Some(ControlMsg::SetParam {
+                param: param.to_string(),
+                key: key.clone(),
+                value: value.clone(),
+            })
         }
         Command::TradeAssetsSet(assets) => Some(ControlMsg::SetParam {
             param: "trade_assets".to_string(),
             key: "default".to_string(),
             value: assets.join(","),
         }),
-        Command::StrategiesSet { asset, strategies } => {
-            Some(ControlMsg::SetStrategies { asset: asset.clone(), strategies: strategies.clone() })
-        }
-        Command::ResetLosses { asset } => Some(ControlMsg::ResetLosses { asset: asset.clone() }),
-        Command::Halt { asset } => Some(ControlMsg::Halt { asset: asset.clone() }),
-        Command::Resume { asset } => Some(ControlMsg::Resume { asset: asset.clone() }),
+        Command::StrategiesSet { asset, strategies } => Some(ControlMsg::SetStrategies {
+            asset: asset.clone(),
+            strategies: strategies.clone(),
+        }),
+        Command::ResetLosses { asset } => Some(ControlMsg::ResetLosses {
+            asset: asset.clone(),
+        }),
+        Command::Halt { asset } => Some(ControlMsg::Halt {
+            asset: asset.clone(),
+        }),
+        Command::Resume { asset } => Some(ControlMsg::Resume {
+            asset: asset.clone(),
+        }),
         _ => None,
     }
 }
@@ -77,12 +101,16 @@ pub fn apply_control(target: &mut impl ControlTarget, msg: &ControlMsg) -> Resul
 
 /// Convenience: parse `value` as f64, mirroring the Python `/set` numeric coercion.
 pub fn parse_f64(value: &str) -> Result<f64> {
-    value.parse::<f64>().map_err(|_| anyhow::anyhow!("not a number: {value}"))
+    value
+        .parse::<f64>()
+        .map_err(|_| anyhow::anyhow!("not a number: {value}"))
 }
 
 /// Convenience: parse `value` as i64 (for halt counters / hour params).
 pub fn parse_i64(value: &str) -> Result<i64> {
-    value.parse::<i64>().map_err(|_| anyhow::anyhow!("not an integer: {value}"))
+    value
+        .parse::<i64>()
+        .map_err(|_| anyhow::anyhow!("not an integer: {value}"))
 }
 
 #[cfg(test)]
@@ -104,17 +132,23 @@ mod tests {
             if param != "trade_assets" {
                 parse_f64(value).map_err(|_| anyhow::anyhow!("bad value for {param}: {value}"))?;
             }
-            self.params.insert((param.to_string(), key.to_string()), value.to_string());
+            self.params
+                .insert((param.to_string(), key.to_string()), value.to_string());
             Ok(())
         }
         fn set_strategies(&mut self, asset: &str, strategies: &[String]) {
-            self.strategies.insert(asset.to_string(), strategies.to_vec());
+            self.strategies
+                .insert(asset.to_string(), strategies.to_vec());
         }
         fn reset_losses(&mut self, asset: &str) {
             self.losses_reset.push(asset.to_string());
         }
         fn halt(&mut self, asset: &str) {
-            let key = if asset.is_empty() { "*".to_string() } else { asset.to_string() };
+            let key = if asset.is_empty() {
+                "*".to_string()
+            } else {
+                asset.to_string()
+            };
             self.suppressed.insert(key);
         }
         fn resume(&mut self, asset: &str) {
@@ -132,12 +166,19 @@ mod tests {
         let msg = command_to_control(&cmd).expect("set_param produces a ControlMsg");
         let mut w = MockWorker::default();
         apply_control(&mut w, &msg).expect("apply succeeds");
-        assert_eq!(w.params.get(&("reversal".to_string(), "BTC".to_string())), Some(&"0.6".to_string()));
+        assert_eq!(
+            w.params.get(&("reversal".to_string(), "BTC".to_string())),
+            Some(&"0.6".to_string())
+        );
     }
 
     #[test]
     fn set_param_rejects_non_numeric_value() {
-        let msg = ControlMsg::SetParam { param: "reversal".to_string(), key: "BTC".to_string(), value: "not_a_number".to_string() };
+        let msg = ControlMsg::SetParam {
+            param: "reversal".to_string(),
+            key: "BTC".to_string(),
+            value: "not_a_number".to_string(),
+        };
         let mut w = MockWorker::default();
         assert!(apply_control(&mut w, &msg).is_err());
     }
@@ -145,28 +186,56 @@ mod tests {
     #[test]
     fn halt_is_no_entry_gate_and_resume_clears_it() {
         let mut w = MockWorker::default();
-        apply_control(&mut w, &ControlMsg::Halt { asset: "BTC".to_string() }).unwrap();
+        apply_control(
+            &mut w,
+            &ControlMsg::Halt {
+                asset: "BTC".to_string(),
+            },
+        )
+        .unwrap();
         assert!(w.suppressed.contains("BTC"));
-        apply_control(&mut w, &ControlMsg::Resume { asset: "BTC".to_string() }).unwrap();
+        apply_control(
+            &mut w,
+            &ControlMsg::Resume {
+                asset: "BTC".to_string(),
+            },
+        )
+        .unwrap();
         assert!(!w.suppressed.contains("BTC"));
     }
 
     #[test]
     fn global_halt_and_resume() {
         let mut w = MockWorker::default();
-        apply_control(&mut w, &ControlMsg::Halt { asset: "".to_string() }).unwrap();
+        apply_control(
+            &mut w,
+            &ControlMsg::Halt {
+                asset: "".to_string(),
+            },
+        )
+        .unwrap();
         assert!(w.suppressed.contains("*"));
-        apply_control(&mut w, &ControlMsg::Resume { asset: "".to_string() }).unwrap();
+        apply_control(
+            &mut w,
+            &ControlMsg::Resume {
+                asset: "".to_string(),
+            },
+        )
+        .unwrap();
         assert!(w.suppressed.is_empty());
     }
 
     #[test]
     fn set_strategies_routes_correctly() {
-        let cmd = crate::telegram::commands::parse_command("/strategies ETH high_prob,reversal").unwrap();
+        let cmd =
+            crate::telegram::commands::parse_command("/strategies ETH high_prob,reversal").unwrap();
         let msg = command_to_control(&cmd).unwrap();
         let mut w = MockWorker::default();
         apply_control(&mut w, &msg).unwrap();
-        assert_eq!(w.strategies.get("ETH"), Some(&vec!["high_prob".to_string(), "reversal".to_string()]));
+        assert_eq!(
+            w.strategies.get("ETH"),
+            Some(&vec!["high_prob".to_string(), "reversal".to_string()])
+        );
     }
 
     #[test]
@@ -190,13 +259,27 @@ mod tests {
     fn delta_set_maps_to_correct_param_name() {
         let cmd = crate::telegram::commands::parse_command("/delta rev BTC 0.0005").unwrap();
         let msg = command_to_control(&cmd).unwrap();
-        assert_eq!(msg, ControlMsg::SetParam { param: "delta_pct_rev".to_string(), key: "BTC".to_string(), value: "0.0005".to_string() });
+        assert_eq!(
+            msg,
+            ControlMsg::SetParam {
+                param: "delta_pct_rev".to_string(),
+                key: "BTC".to_string(),
+                value: "0.0005".to_string()
+            }
+        );
     }
 
     #[test]
     fn trade_assets_set_joins_into_default_key() {
         let cmd = Command::TradeAssetsSet(vec!["BTC".to_string(), "ETH".to_string()]);
         let msg = command_to_control(&cmd).unwrap();
-        assert_eq!(msg, ControlMsg::SetParam { param: "trade_assets".to_string(), key: "default".to_string(), value: "BTC,ETH".to_string() });
+        assert_eq!(
+            msg,
+            ControlMsg::SetParam {
+                param: "trade_assets".to_string(),
+                key: "default".to_string(),
+                value: "BTC,ETH".to_string()
+            }
+        );
     }
 }

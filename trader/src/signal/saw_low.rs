@@ -81,7 +81,11 @@ mod tests {
     use crate::types::CycleContext;
 
     fn ctx(start_ts: f64) -> CycleContext {
-        CycleContext { start_ts, end_ts: start_ts + 300.0, open_binance: 50000.0 }
+        CycleContext {
+            start_ts,
+            end_ts: start_ts + 300.0,
+            open_binance: 50000.0,
+        }
     }
 
     #[test]
@@ -89,7 +93,11 @@ mod tests {
         let mut s = SawLowSignal::new_up(0.30, 120.0, 10.0);
         s.reset(&ctx(1000.0));
         // ts=1190 → time_left=110s (inside [10,120])
-        s.on_poly(PolyTick { ts: 1190.0, up: 0.25, dn: 0.75 });
+        s.on_poly(PolyTick {
+            ts: 1190.0,
+            up: 0.25,
+            dn: 0.75,
+        });
         assert!(s.saw_low());
     }
 
@@ -98,7 +106,11 @@ mod tests {
         let mut s = SawLowSignal::new_up(0.30, 120.0, 10.0);
         s.reset(&ctx(1000.0));
         // ts=1050 → time_left=250s (> 120s, window not yet open)
-        s.on_poly(PolyTick { ts: 1050.0, up: 0.25, dn: 0.75 });
+        s.on_poly(PolyTick {
+            ts: 1050.0,
+            up: 0.25,
+            dn: 0.75,
+        });
         assert!(!s.saw_low());
     }
 
@@ -107,7 +119,11 @@ mod tests {
         let mut s = SawLowSignal::new_up(0.30, 120.0, 10.0);
         s.reset(&ctx(1000.0));
         // ts=1295 → time_left=5s (< 10s, window closed)
-        s.on_poly(PolyTick { ts: 1295.0, up: 0.25, dn: 0.75 });
+        s.on_poly(PolyTick {
+            ts: 1295.0,
+            up: 0.25,
+            dn: 0.75,
+        });
         assert!(!s.saw_low());
     }
 
@@ -116,7 +132,11 @@ mod tests {
         let mut s = SawLowSignal::new_up(0.30, 120.0, 10.0);
         s.reset(&ctx(1000.0));
         // inside window but price above threshold
-        s.on_poly(PolyTick { ts: 1190.0, up: 0.35, dn: 0.65 });
+        s.on_poly(PolyTick {
+            ts: 1190.0,
+            up: 0.35,
+            dn: 0.65,
+        });
         assert!(!s.saw_low());
     }
 
@@ -124,7 +144,11 @@ mod tests {
     fn reset_clears_latch() {
         let mut s = SawLowSignal::new_up(0.30, 120.0, 10.0);
         s.reset(&ctx(1000.0));
-        s.on_poly(PolyTick { ts: 1190.0, up: 0.25, dn: 0.75 });
+        s.on_poly(PolyTick {
+            ts: 1190.0,
+            up: 0.25,
+            dn: 0.75,
+        });
         assert!(s.saw_low());
         s.reset(&ctx(1300.0));
         assert!(!s.saw_low());

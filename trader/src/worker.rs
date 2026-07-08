@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::backtest::HaltTracker;
 use crate::config::AssetParams;
-use crate::execution::{choose_exit_order_kind, OrderKind, SellStatus};
-use crate::gates::{check_gates, GateParams};
+use crate::execution::{OrderKind, SellStatus, choose_exit_order_kind};
+use crate::gates::{GateParams, check_gates};
 use crate::signal::{
     DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
 };
@@ -110,22 +110,59 @@ pub enum WorkerState {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    CycleOpen { ctx: CycleContext, slug: String },
+    CycleOpen {
+        ctx: CycleContext,
+        slug: String,
+    },
     CycleClose,
     BinanceTick(BinanceTick),
     PolyTick(PolyTick),
-    OrderFilled { filled_shares: f64, cost: f64, signal_latency_ms: f64, process_latency_ms: f64 },
+    OrderFilled {
+        filled_shares: f64,
+        cost: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
     OrderRejected,
     /// Response to the `Action::PlaceLimitSell` issued right after an entry fill.
-    LimitSellPlaced { order_id: Option<String>, status: SellStatus, error: Option<String>, signal_latency_ms: f64, process_latency_ms: f64 },
-    UnwindFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
-    UnwindFailed { error: Option<String> },
-    StopSellFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
-    StopSellFailed { error: Option<String> },
-    TimeoutSellFilled { sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64 },
-    TimeoutSellFailed { error: Option<String> },
+    LimitSellPlaced {
+        order_id: Option<String>,
+        status: SellStatus,
+        error: Option<String>,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
+    UnwindFilled {
+        sold_shares: f64,
+        exit_price: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
+    UnwindFailed {
+        error: Option<String>,
+    },
+    StopSellFilled {
+        sold_shares: f64,
+        exit_price: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
+    StopSellFailed {
+        error: Option<String>,
+    },
+    TimeoutSellFilled {
+        sold_shares: f64,
+        exit_price: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
+    TimeoutSellFailed {
+        error: Option<String>,
+    },
     /// Async market-resolution confirmation (Gamma/CLOB), arriving after cycle end.
-    ApiResult { won: bool },
+    ApiResult {
+        won: bool,
+    },
     Control(ControlEvent),
     Balance(BalanceEvent),
 }
@@ -162,24 +199,46 @@ pub enum CloseReason {
 pub enum Action {
     /// `signal_ts` is the triggering tick's own timestamp — the driver uses it
     /// to compute the "Order placed" Telegram message's signal/process latency.
-    PlaceBuy { side: Side, price: f64, size_usdc: f64, signal_ts: f64 },
-    PlaceLimitSell { shares: f64, price: f64 },
+    PlaceBuy {
+        side: Side,
+        price: f64,
+        size_usdc: f64,
+        signal_ts: f64,
+    },
+    PlaceLimitSell {
+        shares: f64,
+        price: f64,
+    },
     /// `limit_price`: `Some(tp_price)` for a take-profit close (bounded — see
     /// `execution::close_position_at_price`), `None` for a stop-loss close
     /// (unbounded — a stop-loss must close regardless of price). `signal_ts`
     /// is the triggering tick's own timestamp, for the "order executed"
     /// Telegram message's latency breakdown.
-    ClosePosition { shares: f64, reason: CloseReason, limit_price: Option<f64>, signal_ts: f64 },
-    CancelLimitSell { order_id: String },
+    ClosePosition {
+        shares: f64,
+        reason: CloseReason,
+        limit_price: Option<f64>,
+        signal_ts: f64,
+    },
+    CancelLimitSell {
+        order_id: String,
+    },
     /// Write `PersistedState` to the crash-recovery file — call after every transition.
     Persist,
     LogTrade(TradeRecord),
     /// `ApiResult` flipped a Confirming (Win/Loss) record — `previous_outcome`/
     /// `previous_pnl` are the original estimate, `record` is the corrected one.
-    LogTradeCorrection { previous_outcome: Outcome, previous_pnl: f64, record: TradeRecord },
+    LogTradeCorrection {
+        previous_outcome: Outcome,
+        previous_pnl: f64,
+        record: TradeRecord,
+    },
     /// `ApiResult` resolved a StopLoss `EnrichOnly` record — counterfactual verdict
     /// only, never touches pnl/result/halt (unlike `LogTradeCorrection`).
-    StopLossVerdict { record: TradeRecord, would_have_won: bool },
+    StopLossVerdict {
+        record: TradeRecord,
+        would_have_won: bool,
+    },
     /// The loss-streak halt (`halt_rev`/`halt_prob`, distinct from manual `/halt`
     /// and the balance drawdown halt) just tripped on this worker's strategy —
     /// emitted once, on the exact trade that crossed the threshold.
@@ -326,13 +385,32 @@ impl Worker {
     // independently meaningful strategy-specific scalar, not a good fit for a
     // wrapper struct.
     #[allow(clippy::too_many_arguments)]
-    fn common(asset: &str, strategy_name: &'static str, kind: StrategyKind, p: &AssetParams, sl: f64, sl_pnl: f64, unwind_pnl: f64, unwind_time: f64, halt_max: i64, halt_reset_hour: i64) -> Self {
+    fn common(
+        asset: &str,
+        strategy_name: &'static str,
+        kind: StrategyKind,
+        p: &AssetParams,
+        sl: f64,
+        sl_pnl: f64,
+        unwind_pnl: f64,
+        unwind_time: f64,
+        halt_max: i64,
+        halt_reset_hour: i64,
+    ) -> Self {
         Self {
             asset: asset.to_string(),
             strategy_name,
             kind,
-            saw_low_up: SawLowSignal::new_up(p.reversal_low_threshold, p.reversal_start_time, p.no_enter_when_time_left),
-            saw_low_dn: SawLowSignal::new_dn(p.reversal_low_threshold, p.reversal_start_time, p.no_enter_when_time_left),
+            saw_low_up: SawLowSignal::new_up(
+                p.reversal_low_threshold,
+                p.reversal_start_time,
+                p.no_enter_when_time_left,
+            ),
+            saw_low_dn: SawLowSignal::new_dn(
+                p.reversal_low_threshold,
+                p.reversal_start_time,
+                p.no_enter_when_time_left,
+            ),
             latest_poly: LatestPolySignal::new(),
             spread: SpreadSignal::new(),
             delta_pct: DeltaPctSignal::new(),
@@ -384,7 +462,10 @@ impl Worker {
             asset,
             "high_prob",
             StrategyKind::HighProb(HighProbStrategy::new(
-                p.price_low, p.price_high, p.enter_when_time_left, p.no_enter_when_time_left,
+                p.price_low,
+                p.price_high,
+                p.enter_when_time_left,
+                p.no_enter_when_time_left,
             )),
             p,
             p.sl_high_prob,
@@ -405,7 +486,14 @@ impl Worker {
     }
 
     pub fn has_open_position(&self) -> bool {
-        matches!(self.state, WorkerState::Entering | WorkerState::Holding(_) | WorkerState::Unwinding(_) | WorkerState::StopExiting(_) | WorkerState::TimingOut(_))
+        matches!(
+            self.state,
+            WorkerState::Entering
+                | WorkerState::Holding(_)
+                | WorkerState::Unwinding(_)
+                | WorkerState::StopExiting(_)
+                | WorkerState::TimingOut(_)
+        )
     }
 
     /// Current `(latest_binance - cycle_open) / cycle_open` — the live reading
@@ -437,7 +525,9 @@ impl Worker {
             // Resolved/Confirming/EnrichOnly are not open-exposure states; a
             // crash there loses only the async-confirmation follow-up, not a
             // live position, so they persist as Watching (nothing to resume).
-            WorkerState::Confirming(_) | WorkerState::EnrichOnly(_) => PersistedWorkerState::Watching,
+            WorkerState::Confirming(_) | WorkerState::EnrichOnly(_) => {
+                PersistedWorkerState::Watching
+            }
         };
         PersistedState {
             asset: self.asset.clone(),
@@ -458,9 +548,19 @@ impl Worker {
     /// stay whatever `new_reversal`/`new_high_prob` already set from the
     /// current config, so a config change between restarts takes effect
     /// immediately rather than being shadowed by the persisted file.
-    pub fn restore_halt(&mut self, entry_suppressed: bool, halt_losses: i64, halt_last_session: Option<NaiveDate>) {
+    pub fn restore_halt(
+        &mut self,
+        entry_suppressed: bool,
+        halt_losses: i64,
+        halt_last_session: Option<NaiveDate>,
+    ) {
         self.entry_suppressed = entry_suppressed;
-        self.halt = HaltTracker::restore(self.halt.max(), self.halt.reset_hour(), halt_losses, halt_last_session);
+        self.halt = HaltTracker::restore(
+            self.halt.max(),
+            self.halt.reset_hour(),
+            halt_losses,
+            halt_last_session,
+        );
     }
 
     /// Reconcile a reloaded `PersistedState` against the live CLOB before
@@ -468,22 +568,32 @@ impl Worker {
     /// balance is still present resumes as `PriceMonitor`; a zero-balance
     /// position (already sold/redeemed) resumes as `Watching`. Pure function —
     /// testable without a live exchange by injecting the open-order/balance facts.
-    pub fn reconcile(persisted: &PersistedWorkerState, open_order_ids: &[String], token_balance: f64) -> WorkerState {
+    pub fn reconcile(
+        persisted: &PersistedWorkerState,
+        open_order_ids: &[String],
+        token_balance: f64,
+    ) -> WorkerState {
         match persisted {
             PersistedWorkerState::Watching => WorkerState::Watching,
             // The FAK either filled or didn't while we were down; with no fill
             // confirmation available, the safe default is to treat it as not
             // filled either way (no entry details to reconstruct a Holding from).
             PersistedWorkerState::Entering => WorkerState::Watching,
-            PersistedWorkerState::Holding(h) | PersistedWorkerState::Unwinding(h) | PersistedWorkerState::StopExiting(h) | PersistedWorkerState::TimingOut(h) => {
+            PersistedWorkerState::Holding(h)
+            | PersistedWorkerState::Unwinding(h)
+            | PersistedWorkerState::StopExiting(h)
+            | PersistedWorkerState::TimingOut(h) => {
                 if token_balance <= 0.0 {
                     return WorkerState::Watching; // already resolved/sold while we were down
                 }
                 let mut h = h.clone();
                 if let ExitArm::GtcResting { order_id } = &h.exit_arm
-                    && !open_order_ids.contains(order_id) {
+                    && !open_order_ids.contains(order_id)
+                {
                     // Resting order is gone but tokens remain — fall back to PriceMonitor.
-                    h.exit_arm = ExitArm::PriceMonitor { tp_price: h.token_price + 0.0 };
+                    h.exit_arm = ExitArm::PriceMonitor {
+                        tp_price: h.token_price + 0.0,
+                    };
                 }
                 WorkerState::Holding(h)
             }
@@ -502,19 +612,61 @@ impl Worker {
             Event::CycleClose => self.on_cycle_close(),
             Event::BinanceTick(t) => self.on_binance(t),
             Event::PolyTick(t) => self.on_poly(t),
-            Event::OrderFilled { filled_shares, cost, signal_latency_ms, process_latency_ms } =>
-                self.on_order_filled(filled_shares, cost, signal_latency_ms, process_latency_ms),
+            Event::OrderFilled {
+                filled_shares,
+                cost,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_order_filled(filled_shares, cost, signal_latency_ms, process_latency_ms),
             Event::OrderRejected => self.on_order_rejected(),
-            Event::LimitSellPlaced { order_id, status, error, signal_latency_ms, process_latency_ms } =>
-                self.on_limit_sell_placed(order_id, status, error, signal_latency_ms, process_latency_ms),
-            Event::UnwindFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
-                self.on_unwind_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
+            Event::LimitSellPlaced {
+                order_id,
+                status,
+                error,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_limit_sell_placed(
+                order_id,
+                status,
+                error,
+                signal_latency_ms,
+                process_latency_ms,
+            ),
+            Event::UnwindFilled {
+                sold_shares,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_unwind_filled(
+                sold_shares,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            ),
             Event::UnwindFailed { error } => self.on_unwind_failed(error),
-            Event::StopSellFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
-                self.on_stop_sell_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
+            Event::StopSellFilled {
+                sold_shares,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_stop_sell_filled(
+                sold_shares,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            ),
             Event::StopSellFailed { error } => self.on_stop_sell_failed(error),
-            Event::TimeoutSellFilled { sold_shares, exit_price, signal_latency_ms, process_latency_ms } =>
-                self.on_timeout_sell_filled(sold_shares, exit_price, signal_latency_ms, process_latency_ms),
+            Event::TimeoutSellFilled {
+                sold_shares,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_timeout_sell_filled(
+                sold_shares,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            ),
             Event::TimeoutSellFailed { error } => self.on_timeout_sell_failed(error),
             Event::ApiResult { won } => self.on_api_result(won),
             Event::Control(c) => self.on_control(c),
@@ -560,7 +712,10 @@ impl Worker {
         // exit is not an exit (invariant). Only Holding's data is needed to
         // compute the WIN/LOSS outcome.
         let holding = match &self.state {
-            WorkerState::Holding(h) | WorkerState::Unwinding(h) | WorkerState::StopExiting(h) | WorkerState::TimingOut(h) => Some(h.clone()),
+            WorkerState::Holding(h)
+            | WorkerState::Unwinding(h)
+            | WorkerState::StopExiting(h)
+            | WorkerState::TimingOut(h) => Some(h.clone()),
             _ => None,
         };
         let Some(h) = holding else {
@@ -589,9 +744,11 @@ impl Worker {
             pnl,
             exit_attempts: h.exit_attempts,
             exit_last_error: h.exit_last_error.clone(),
-            entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
+            entry_signal_latency_ms: h.entry_signal_latency_ms,
+            entry_process_latency_ms: h.entry_process_latency_ms,
             // No exit order was placed — the position resolved by natural market close.
-            exit_signal_latency_ms: 0.0, exit_process_latency_ms: 0.0,
+            exit_signal_latency_ms: 0.0,
+            exit_process_latency_ms: 0.0,
         };
         let halt_engaged = self.halt.record_trade(&record, self.strategy_name);
         // Held WIN/LOSS spawns Confirming — an ApiResult mismatch can still flip it.
@@ -620,17 +777,41 @@ impl Worker {
     /// on_poly too lets a poly-side crossing fire immediately using the latest
     /// cached delta_pct value (see trader/doc/latency_2026-07-04.md §8).
     fn try_enter(&mut self, now: f64) -> Vec<Action> {
-        if self.entry_suppressed || self.halt.is_halted() || !matches!(self.state, WorkerState::Watching) {
+        if self.entry_suppressed
+            || self.halt.is_halted()
+            || !matches!(self.state, WorkerState::Watching)
+        {
             return vec![];
         }
 
         let intent = match &self.kind {
-            StrategyKind::Reversal(r) => r.evaluate(now, &self.saw_low_up, &self.saw_low_dn, &self.latest_poly, &self.delta_pct, &self.latest_binance),
-            StrategyKind::HighProb(hp) => hp.evaluate(now, &self.latest_poly, &self.delta_pct, &self.latest_binance),
+            StrategyKind::Reversal(r) => r.evaluate(
+                now,
+                &self.saw_low_up,
+                &self.saw_low_dn,
+                &self.latest_poly,
+                &self.delta_pct,
+                &self.latest_binance,
+            ),
+            StrategyKind::HighProb(hp) => hp.evaluate(
+                now,
+                &self.latest_poly,
+                &self.delta_pct,
+                &self.latest_binance,
+            ),
         };
         let Some(intent) = intent else { return vec![] };
 
-        if check_gates(&intent, &self.spread, &self.latest_poly, &self.delta_pct, &self.gate_params, now).is_some() {
+        if check_gates(
+            &intent,
+            &self.spread,
+            &self.latest_poly,
+            &self.delta_pct,
+            &self.gate_params,
+            now,
+        )
+        .is_some()
+        {
             return vec![];
         }
 
@@ -641,7 +822,15 @@ impl Worker {
         self.state = WorkerState::Entering;
         // Stash the intent's side/entry_type/token_price for when the fill lands.
         self.pending_entry = Some((intent.side, intent.entry_type, intent.token_price()));
-        vec![Action::PlaceBuy { side: intent.side, price: intent.token_price(), size_usdc: self.trade_size, signal_ts: now }, Action::Persist]
+        vec![
+            Action::PlaceBuy {
+                side: intent.side,
+                price: intent.token_price(),
+                size_usdc: self.trade_size,
+                signal_ts: now,
+            },
+            Action::Persist,
+        ]
     }
 
     fn on_poly(&mut self, tick: PolyTick) -> Vec<Action> {
@@ -650,7 +839,9 @@ impl Worker {
         self.saw_low_up.on_poly(tick);
         self.saw_low_dn.on_poly(tick);
 
-        let WorkerState::Holding(h) = &self.state else { return self.try_enter(tick.ts) };
+        let WorkerState::Holding(h) = &self.state else {
+            return self.try_enter(tick.ts);
+        };
         let h = h.clone();
         let exit_price = if h.side == Side::Up { tick.up } else { tick.dn };
 
@@ -665,9 +856,16 @@ impl Worker {
             self.state = WorkerState::StopExiting(h.clone());
             let mut actions = vec![];
             if let ExitArm::GtcResting { order_id } = &h.exit_arm {
-                actions.push(Action::CancelLimitSell { order_id: order_id.clone() });
+                actions.push(Action::CancelLimitSell {
+                    order_id: order_id.clone(),
+                });
             }
-            actions.push(Action::ClosePosition { shares: h.shares, reason: CloseReason::StopLoss, limit_price: None, signal_ts: tick.ts });
+            actions.push(Action::ClosePosition {
+                shares: h.shares,
+                reason: CloseReason::StopLoss,
+                limit_price: None,
+                signal_ts: tick.ts,
+            });
             actions.push(Action::Persist);
             return actions;
         }
@@ -678,9 +876,19 @@ impl Worker {
         // acceptable sell price is automatically the take-profit target, no
         // separate config needed (see trader/doc/incident_sol_unwind_but_loss_2026-07-06.md).
         if let ExitArm::PriceMonitor { tp_price } = h.exit_arm
-            && exit_price >= tp_price && h.shares >= MIN_SELLABLE_SHARES {
+            && exit_price >= tp_price
+            && h.shares >= MIN_SELLABLE_SHARES
+        {
             self.state = WorkerState::Unwinding(h.clone());
-            return vec![Action::ClosePosition { shares: h.shares, reason: CloseReason::TakeProfit, limit_price: Some(tp_price), signal_ts: tick.ts }, Action::Persist];
+            return vec![
+                Action::ClosePosition {
+                    shares: h.shares,
+                    reason: CloseReason::TakeProfit,
+                    limit_price: Some(tp_price),
+                    signal_ts: tick.ts,
+                },
+                Action::Persist,
+            ];
         }
 
         // Max holding time — checked last, after stop-loss and take-profit both
@@ -689,13 +897,23 @@ impl Worker {
         // at whatever the current market price is, win or lose — `tick.ts` and
         // `h.entry_ts` are both wall-clock seconds from their own tick's receipt
         // (marketdata.rs), so no unit conversion is needed.
-        if self.unwind_time > 0.0 && (tick.ts - h.entry_ts) >= self.unwind_time && h.shares >= MIN_SELLABLE_SHARES {
+        if self.unwind_time > 0.0
+            && (tick.ts - h.entry_ts) >= self.unwind_time
+            && h.shares >= MIN_SELLABLE_SHARES
+        {
             self.state = WorkerState::TimingOut(h.clone());
             let mut actions = vec![];
             if let ExitArm::GtcResting { order_id } = &h.exit_arm {
-                actions.push(Action::CancelLimitSell { order_id: order_id.clone() });
+                actions.push(Action::CancelLimitSell {
+                    order_id: order_id.clone(),
+                });
             }
-            actions.push(Action::ClosePosition { shares: h.shares, reason: CloseReason::Timeout, limit_price: None, signal_ts: tick.ts });
+            actions.push(Action::ClosePosition {
+                shares: h.shares,
+                reason: CloseReason::Timeout,
+                limit_price: None,
+                signal_ts: tick.ts,
+            });
             actions.push(Action::Persist);
             return actions;
         }
@@ -703,11 +921,19 @@ impl Worker {
         vec![]
     }
 
-    fn on_order_filled(&mut self, filled_shares: f64, cost: f64, entry_signal_latency_ms: f64, entry_process_latency_ms: f64) -> Vec<Action> {
+    fn on_order_filled(
+        &mut self,
+        filled_shares: f64,
+        cost: f64,
+        entry_signal_latency_ms: f64,
+        entry_process_latency_ms: f64,
+    ) -> Vec<Action> {
         if !matches!(self.state, WorkerState::Entering) {
             return vec![];
         }
-        let Some((side, entry_type, _intent_price)) = self.pending_entry.take() else { return vec![] };
+        let Some((side, entry_type, _intent_price)) = self.pending_entry.take() else {
+            return vec![];
+        };
         if filled_shares <= 0.0 {
             self.state = WorkerState::Watching;
             return vec![Action::Persist];
@@ -722,16 +948,30 @@ impl Worker {
             // Attempt a resting GTC; the actual order_id/status comes back via
             // LimitSellPlaced. Use PriceMonitor as the provisional arm so a
             // stop-loss can still fire correctly if that response is slow.
-            (ExitArm::PriceMonitor { tp_price }, vec![Action::PlaceLimitSell { shares: filled_shares, price: tp_price }])
+            (
+                ExitArm::PriceMonitor { tp_price },
+                vec![Action::PlaceLimitSell {
+                    shares: filled_shares,
+                    price: tp_price,
+                }],
+            )
         } else {
             (ExitArm::PriceMonitor { tp_price }, vec![])
         };
 
         let holding = HoldingData {
-            side, entry_type, token_price: cost, entry_ts: self.last_binance_ts(), shares: filled_shares, exit_arm,
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0,
+            side,
+            entry_type,
+            token_price: cost,
+            entry_ts: self.last_binance_ts(),
+            shares: filled_shares,
+            exit_arm,
+            exit_attempts: 0,
+            exit_last_error: None,
+            realized_pnl: 0.0,
             fees: taker_fee(filled_shares, cost),
-            entry_signal_latency_ms, entry_process_latency_ms,
+            entry_signal_latency_ms,
+            entry_process_latency_ms,
         };
         self.state = WorkerState::Holding(holding);
         actions.push(Action::Persist);
@@ -746,8 +986,17 @@ impl Worker {
         vec![Action::Persist]
     }
 
-    fn on_limit_sell_placed(&mut self, order_id: Option<String>, status: SellStatus, error: Option<String>, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
-        let WorkerState::Holding(h) = &mut self.state else { return vec![] };
+    fn on_limit_sell_placed(
+        &mut self,
+        order_id: Option<String>,
+        status: SellStatus,
+        error: Option<String>,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    ) -> Vec<Action> {
+        let WorkerState::Holding(h) = &mut self.state else {
+            return vec![];
+        };
         match status {
             SellStatus::Live => {
                 if let Some(id) = order_id {
@@ -762,12 +1011,21 @@ impl Worker {
                 h.fees += taker_fee(h.shares, exit_price);
                 let pnl = settle_pnl(&h, exit_price);
                 let record = TradeRecord {
-                    slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
-                    strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
-                    token_price: h.token_price, exit_price, outcome: Outcome::Unwind, pnl,
-                    exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
-                    entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
-                    exit_signal_latency_ms: signal_latency_ms, exit_process_latency_ms: process_latency_ms,
+                    slug: self.cycle_slug.clone(),
+                    cycle_start: self.cycle_start_ts,
+                    strategy: self.strategy_name,
+                    side: h.side,
+                    entry_ts: h.entry_ts,
+                    token_price: h.token_price,
+                    exit_price,
+                    outcome: Outcome::Unwind,
+                    pnl,
+                    exit_attempts: h.exit_attempts,
+                    exit_last_error: h.exit_last_error.clone(),
+                    entry_signal_latency_ms: h.entry_signal_latency_ms,
+                    entry_process_latency_ms: h.entry_process_latency_ms,
+                    exit_signal_latency_ms: signal_latency_ms,
+                    exit_process_latency_ms: process_latency_ms,
                 };
                 self.halt.record_trade(&record, self.strategy_name);
                 self.state = WorkerState::EnrichOnly(record.clone());
@@ -784,10 +1042,25 @@ impl Worker {
         }
     }
 
-    fn on_unwind_filled(&mut self, sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
-        let WorkerState::Unwinding(h) = &self.state else { return vec![] };
+    fn on_unwind_filled(
+        &mut self,
+        sold_shares: f64,
+        exit_price: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    ) -> Vec<Action> {
+        let WorkerState::Unwinding(h) = &self.state else {
+            return vec![];
+        };
         let h = h.clone();
-        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::Unwind, signal_latency_ms, process_latency_ms)
+        self.finalize_or_hold_residual(
+            h,
+            sold_shares,
+            exit_price,
+            Outcome::Unwind,
+            signal_latency_ms,
+            process_latency_ms,
+        )
     }
 
     /// Shared tail of `on_unwind_filled`/`on_stop_sell_filled`: bank this fill's
@@ -814,7 +1087,12 @@ impl Worker {
 
         if leftover >= MIN_SELLABLE_SHARES {
             // Genuine partial fill — residual continues to be managed.
-            let residual = HoldingData { shares: leftover, realized_pnl, fees, ..h };
+            let residual = HoldingData {
+                shares: leftover,
+                realized_pnl,
+                fees,
+                ..h
+            };
             self.state = WorkerState::Holding(residual);
             return vec![Action::Persist];
         }
@@ -823,12 +1101,21 @@ impl Worker {
         // off (excluded — not added as a `leftover * (exit_price - cost)` term).
         let pnl = round4(realized_pnl - fees);
         let record = TradeRecord {
-            slug: self.cycle_slug.clone(), cycle_start: self.cycle_start_ts,
-            strategy: self.strategy_name, side: h.side, entry_ts: h.entry_ts,
-            token_price: h.token_price, exit_price, outcome, pnl,
-            exit_attempts: h.exit_attempts, exit_last_error: h.exit_last_error.clone(),
-            entry_signal_latency_ms: h.entry_signal_latency_ms, entry_process_latency_ms: h.entry_process_latency_ms,
-            exit_signal_latency_ms: signal_latency_ms, exit_process_latency_ms: process_latency_ms,
+            slug: self.cycle_slug.clone(),
+            cycle_start: self.cycle_start_ts,
+            strategy: self.strategy_name,
+            side: h.side,
+            entry_ts: h.entry_ts,
+            token_price: h.token_price,
+            exit_price,
+            outcome,
+            pnl,
+            exit_attempts: h.exit_attempts,
+            exit_last_error: h.exit_last_error.clone(),
+            entry_signal_latency_ms: h.entry_signal_latency_ms,
+            entry_process_latency_ms: h.entry_process_latency_ms,
+            exit_signal_latency_ms: signal_latency_ms,
+            exit_process_latency_ms: process_latency_ms,
         };
         let halt_engaged = self.halt.record_trade(&record, self.strategy_name);
         self.state = WorkerState::EnrichOnly(record.clone());
@@ -857,21 +1144,38 @@ impl Worker {
             let mut h = h.clone();
             h.exit_attempts += 1;
             h.exit_last_error = error;
-            h.exit_arm = ExitArm::PriceMonitor { tp_price: h.token_price + self.unwind_pnl };
+            h.exit_arm = ExitArm::PriceMonitor {
+                tp_price: h.token_price + self.unwind_pnl,
+            };
             self.state = WorkerState::Holding(h);
         }
         vec![Action::Persist]
     }
 
-    fn on_stop_sell_filled(&mut self, sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
-        let WorkerState::StopExiting(h) = &self.state else { return vec![] };
+    fn on_stop_sell_filled(
+        &mut self,
+        sold_shares: f64,
+        exit_price: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    ) -> Vec<Action> {
+        let WorkerState::StopExiting(h) = &self.state else {
+            return vec![];
+        };
         let h = h.clone();
         // Absolute-SL-style pnl (proceeds − cost basis of whatever's still
         // held, plus anything already realized from an earlier partial
         // fill) — PnL-SL is computed at trigger time in on_poly in a live
         // system, but here we use the realized exit price uniformly,
         // matching the sim/backtest STOPLOSS formula.
-        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::StopLoss, signal_latency_ms, process_latency_ms)
+        self.finalize_or_hold_residual(
+            h,
+            sold_shares,
+            exit_price,
+            Outcome::StopLoss,
+            signal_latency_ms,
+            process_latency_ms,
+        )
     }
 
     fn on_stop_sell_failed(&mut self, error: Option<String>) -> Vec<Action> {
@@ -884,10 +1188,25 @@ impl Worker {
         vec![Action::Persist]
     }
 
-    fn on_timeout_sell_filled(&mut self, sold_shares: f64, exit_price: f64, signal_latency_ms: f64, process_latency_ms: f64) -> Vec<Action> {
-        let WorkerState::TimingOut(h) = &self.state else { return vec![] };
+    fn on_timeout_sell_filled(
+        &mut self,
+        sold_shares: f64,
+        exit_price: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    ) -> Vec<Action> {
+        let WorkerState::TimingOut(h) = &self.state else {
+            return vec![];
+        };
         let h = h.clone();
-        self.finalize_or_hold_residual(h, sold_shares, exit_price, Outcome::Timeout, signal_latency_ms, process_latency_ms)
+        self.finalize_or_hold_residual(
+            h,
+            sold_shares,
+            exit_price,
+            Outcome::Timeout,
+            signal_latency_ms,
+            process_latency_ms,
+        )
     }
 
     fn on_timeout_sell_failed(&mut self, error: Option<String>) -> Vec<Action> {
@@ -922,8 +1241,17 @@ impl Worker {
                 record.exit_price = exit_price;
                 // Resolution/redemption itself is fee-free (§2 of the incident doc) —
                 // only the original entry BUY's taker fee applies here.
-                record.pnl = round4(shares * exit_price - self.trade_size - taker_fee(shares, record.token_price));
-                vec![Action::LogTradeCorrection { previous_outcome, previous_pnl, record }, Action::Persist]
+                record.pnl = round4(
+                    shares * exit_price - self.trade_size - taker_fee(shares, record.token_price),
+                );
+                vec![
+                    Action::LogTradeCorrection {
+                        previous_outcome,
+                        previous_pnl,
+                        record,
+                    },
+                    Action::Persist,
+                ]
             }
             WorkerState::EnrichOnly(record) => {
                 // Column-only enrichment: never rewrites pnl/result/halt. A
@@ -935,7 +1263,10 @@ impl Worker {
                 // convention as the Confirming branch above), so no further
                 // relativizing against `record.side` here.
                 let verdict = if record.outcome == Outcome::StopLoss {
-                    Some(Action::StopLossVerdict { record: record.clone(), would_have_won: won })
+                    Some(Action::StopLossVerdict {
+                        record: record.clone(),
+                        would_have_won: won,
+                    })
                 } else {
                     None
                 };
@@ -1016,7 +1347,11 @@ mod tests {
     }
 
     fn ctx(start: f64) -> CycleContext {
-        CycleContext { start_ts: start, end_ts: start + 300.0, open_binance: 60_000.0 }
+        CycleContext {
+            start_ts: start,
+            end_ts: start + 300.0,
+            open_binance: 60_000.0,
+        }
     }
 
     /// Drives a worker from cycle-open through a filled DOWN reversal entry,
@@ -1025,27 +1360,74 @@ mod tests {
     /// BinanceTick) — see `entry_fires_on_poly_tick_using_cached_delta` for the
     /// complementary case where poly is last and delta_pct is already cached.
     fn enter_down_position(w: &mut Worker, filled_shares: f64) {
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // recovery > reversal 0.60; delta_pct not yet known, no fire
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // dp < 0 -> fires entry
-        assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]), "expected entry to fire: {actions:?}");
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        })); // dip latches saw_low_dn
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        })); // recovery > reversal 0.60; delta_pct not yet known, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        })); // dp < 0 -> fires entry
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [Action::PlaceBuy { .. }, Action::Persist]
+            ),
+            "expected entry to fire: {actions:?}"
+        );
         assert!(matches!(w.state, WorkerState::Entering));
-        w.step(Event::OrderFilled { filled_shares, cost: 0.70, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        w.step(Event::OrderFilled {
+            filled_shares,
+            cost: 0.70,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
     }
 
     #[test]
     fn entry_fires_and_transitions_to_entering() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 })); // delta_pct not yet known, no fire
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 })); // dp < 0 -> fires
-        assert_eq!(actions, vec![
-            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0, signal_ts: 1250.0 },
-            Action::Persist,
-        ]);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        })); // delta_pct not yet known, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        })); // dp < 0 -> fires
+        assert_eq!(
+            actions,
+            vec![
+                Action::PlaceBuy {
+                    side: Side::Down,
+                    price: 0.70,
+                    size_usdc: 1.0,
+                    signal_ts: 1250.0
+                },
+                Action::Persist,
+            ]
+        );
         assert!(matches!(w.state, WorkerState::Entering));
     }
 
@@ -1058,15 +1440,37 @@ mod tests {
     fn entry_fires_on_poly_tick_using_cached_delta() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
-        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 })); // dp < 0, cached
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        })); // dip latches saw_low_dn
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        })); // dp < 0, cached
         // No further BinanceTick — the poly recovery tick alone must fire the entry.
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
-        assert_eq!(actions, vec![
-            Action::PlaceBuy { side: Side::Down, price: 0.70, size_usdc: 1.0, signal_ts: 1240.0 },
-            Action::Persist,
-        ]);
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        assert_eq!(
+            actions,
+            vec![
+                Action::PlaceBuy {
+                    side: Side::Down,
+                    price: 0.70,
+                    size_usdc: 1.0,
+                    signal_ts: 1240.0
+                },
+                Action::Persist,
+            ]
+        );
         assert!(matches!(w.state, WorkerState::Entering));
     }
 
@@ -1077,16 +1481,36 @@ mod tests {
     fn poly_tick_does_not_fire_using_stale_cross_cycle_delta() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::BinanceTick(BinanceTick { ts: 1100.0, price: 59_900.0 })); // dp < 0, this cycle
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1100.0,
+            price: 59_900.0,
+        })); // dp < 0, this cycle
 
         // New cycle: delta_pct is reset, even though the old Binance price is
         // still the most recent one this worker has ever seen.
-        w.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1680.0, up: 0.85, dn: 0.15 })); // dip latches saw_low_dn
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_500.0),
+            slug: "btc-updown-5m-1500".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1680.0,
+            up: 0.85,
+            dn: 0.15,
+        })); // dip latches saw_low_dn
         // Recovery with NO BinanceTick yet this cycle — must not fire off stale dp.
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1740.0, up: 0.30, dn: 0.70 }));
-        assert!(actions.is_empty(), "must not fire on a delta_pct left over from the previous cycle: {actions:?}");
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1740.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        assert!(
+            actions.is_empty(),
+            "must not fire on a delta_pct left over from the previous cycle: {actions:?}"
+        );
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
@@ -1098,7 +1522,11 @@ mod tests {
         match &w.state {
             WorkerState::Holding(h) => {
                 assert_eq!(h.shares, 3.0);
-                assert!(matches!(h.exit_arm, ExitArm::PriceMonitor { .. }), "expected PriceMonitor arm, got {:?}", h.exit_arm);
+                assert!(
+                    matches!(h.exit_arm, ExitArm::PriceMonitor { .. }),
+                    "expected PriceMonitor arm, got {:?}",
+                    h.exit_arm
+                );
             }
             _ => panic!("expected Holding"),
         }
@@ -1109,15 +1537,41 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         let actions = {
-            w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-            w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
-            w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
-            w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
-            w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
-            w.step(Event::OrderFilled { filled_shares: 10.0, cost: 0.70, signal_latency_ms: 0.0, process_latency_ms: 0.0 })
+            w.step(Event::CycleOpen {
+                ctx: ctx(1_000.0),
+                slug: "btc-updown-5m-1000".to_string(),
+            });
+            w.step(Event::PolyTick(PolyTick {
+                ts: 1180.0,
+                up: 0.85,
+                dn: 0.15,
+            }));
+            w.step(Event::BinanceTick(BinanceTick {
+                ts: 1200.0,
+                price: 59_900.0,
+            }));
+            w.step(Event::PolyTick(PolyTick {
+                ts: 1240.0,
+                up: 0.30,
+                dn: 0.70,
+            }));
+            w.step(Event::BinanceTick(BinanceTick {
+                ts: 1250.0,
+                price: 59_900.0,
+            }));
+            w.step(Event::OrderFilled {
+                filled_shares: 10.0,
+                cost: 0.70,
+                signal_latency_ms: 0.0,
+                process_latency_ms: 0.0,
+            })
         };
-        assert!(actions.iter().any(|a| matches!(a, Action::PlaceLimitSell { shares, .. } if *shares == 10.0)),
-            "expected a PlaceLimitSell action for a >=5 share fill: {actions:?}");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::PlaceLimitSell { shares, .. } if *shares == 10.0)),
+            "expected a PlaceLimitSell action for a >=5 share fill: {actions:?}"
+        );
     }
 
     #[test]
@@ -1125,9 +1579,20 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: Some("order-123".to_string()), status: SellStatus::Live, error: None, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        w.step(Event::LimitSellPlaced {
+            order_id: Some("order-123".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
         match &w.state {
-            WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::GtcResting { order_id: "order-123".to_string() }),
+            WorkerState::Holding(h) => assert_eq!(
+                h.exit_arm,
+                ExitArm::GtcResting {
+                    order_id: "order-123".to_string()
+                }
+            ),
             _ => panic!("expected Holding"),
         }
     }
@@ -1137,7 +1602,13 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: None, status: SellStatus::Failed, error: Some("test error".to_string()), signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        w.step(Event::LimitSellPlaced {
+            order_id: None,
+            status: SellStatus::Failed,
+            error: Some("test error".to_string()),
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
         match &w.state {
             WorkerState::Holding(h) => assert!(matches!(h.exit_arm, ExitArm::PriceMonitor { .. })),
             _ => panic!("expected Holding"),
@@ -1161,45 +1632,126 @@ mod tests {
 
         // Loss 1 (same session as ctx(1_000.0) inside enter_down_position).
         enter_down_position(&mut w, 10.0);
-        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 })); // now above open -> DOWN loses
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        })); // now above open -> DOWN loses
         let actions = w.step(Event::CycleClose);
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::Loss);
         assert!(!w.is_halted(), "1 loss must not halt yet (halt_rev=2)");
-        assert!(!actions.contains(&Action::HaltEngaged), "1st loss must not emit HaltEngaged yet: {actions:?}");
+        assert!(
+            !actions.contains(&Action::HaltEngaged),
+            "1st loss must not emit HaltEngaged yet: {actions:?}"
+        );
 
         // Loss 2, same session (enter_down_position reopens the same
         // ctx(1_000.0) cycle) -> hits halt_rev's threshold of 2.
         enter_down_position(&mut w, 10.0);
-        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
         let actions = w.step(Event::CycleClose);
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::Loss);
         assert!(w.is_halted(), "2nd loss must trip halt_rev=2");
-        assert!(actions.contains(&Action::HaltEngaged), "2nd loss must emit HaltEngaged: {actions:?}");
+        assert!(
+            actions.contains(&Action::HaltEngaged),
+            "2nd loss must emit HaltEngaged: {actions:?}"
+        );
 
         // A new cycle in the *same* session must not clear it, and entries
         // must actually be suppressed now (not just is_halted() reporting true).
-        let actions = w.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
-        assert!(w.is_halted(), "halt must survive a same-session cycle boundary");
-        assert!(!actions.contains(&Action::HaltReset), "same-session cycle open must not emit HaltReset: {actions:?}");
-        w.step(Event::PolyTick(PolyTick { ts: 1680.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1700.0, price: 59_900.0 }));
-        w.step(Event::PolyTick(PolyTick { ts: 1740.0, up: 0.30, dn: 0.70 }));
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1750.0, price: 59_900.0 }));
-        assert!(actions.is_empty(), "entry must be suppressed while halted, got {actions:?}");
+        let actions = w.step(Event::CycleOpen {
+            ctx: ctx(1_500.0),
+            slug: "btc-updown-5m-1500".to_string(),
+        });
+        assert!(
+            w.is_halted(),
+            "halt must survive a same-session cycle boundary"
+        );
+        assert!(
+            !actions.contains(&Action::HaltReset),
+            "same-session cycle open must not emit HaltReset: {actions:?}"
+        );
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1680.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1700.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1740.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1750.0,
+            price: 59_900.0,
+        }));
+        assert!(
+            actions.is_empty(),
+            "entry must be suppressed while halted, got {actions:?}"
+        );
 
         // A cycle opening in the *next* HKT session (start_ts +100_000s, well
         // over a day later, guaranteed to cross halt_reset_hour_rev's boundary
         // regardless of time-of-day) must clear the halt.
-        let actions = w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
-        assert!(!w.is_halted(), "halt must clear once a new HKT session opens");
-        assert!(actions.contains(&Action::HaltReset), "session rollover clearing an active halt must emit HaltReset: {actions:?}");
-        w.step(Event::PolyTick(PolyTick { ts: 101_180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::PolyTick(PolyTick { ts: 101_240.0, up: 0.30, dn: 0.70 })); // delta_pct not yet known this cycle, no fire
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 101_250.0, price: 59_900.0 })); // dp < 0 -> fires
-        assert!(matches!(actions.as_slice(), [Action::PlaceBuy { .. }, Action::Persist]),
-            "entry must fire again once the halt has cleared for the new session: {actions:?}");
+        let actions = w.step(Event::CycleOpen {
+            ctx: ctx(101_000.0),
+            slug: "btc-updown-5m-101000".to_string(),
+        });
+        assert!(
+            !w.is_halted(),
+            "halt must clear once a new HKT session opens"
+        );
+        assert!(
+            actions.contains(&Action::HaltReset),
+            "session rollover clearing an active halt must emit HaltReset: {actions:?}"
+        );
+        w.step(Event::PolyTick(PolyTick {
+            ts: 101_180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 101_240.0,
+            up: 0.30,
+            dn: 0.70,
+        })); // delta_pct not yet known this cycle, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 101_250.0,
+            price: 59_900.0,
+        })); // dp < 0 -> fires
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [Action::PlaceBuy { .. }, Action::Persist]
+            ),
+            "entry must fire again once the halt has cleared for the new session: {actions:?}"
+        );
     }
 
     /// A cycle opening in a fresh HKT session must not emit `Action::HaltReset`
@@ -1212,10 +1764,15 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         assert!(!w.is_halted());
 
-        let actions = w.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
+        let actions = w.step(Event::CycleOpen {
+            ctx: ctx(101_000.0),
+            slug: "btc-updown-5m-101000".to_string(),
+        });
         assert!(!w.is_halted());
-        assert!(!actions.contains(&Action::HaltReset),
-            "session rollover with nothing to clear must stay silent: {actions:?}");
+        assert!(
+            !actions.contains(&Action::HaltReset),
+            "session rollover with nothing to clear must stay silent: {actions:?}"
+        );
     }
 
     #[test]
@@ -1231,9 +1788,17 @@ mod tests {
         assert!(matches!(w.state, WorkerState::Holding(_)));
 
         // Stop-loss still fires while halted (SL floor: entry 0.70 - sl_pnl 0.20 = 0.50).
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.55, dn: 0.45 }));
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.55,
+            dn: 0.45,
+        }));
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
-        assert!(actions.iter().any(|a| matches!(a, Action::ClosePosition { .. })));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::ClosePosition { .. }))
+        );
     }
 
     #[test]
@@ -1241,12 +1806,32 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         w.step(Event::Control(ControlEvent::Halt));
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
-        let actions = w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
-        assert!(actions.is_empty(), "halted worker must not enter: {actions:?}");
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }));
+        assert!(
+            actions.is_empty(),
+            "halted worker must not enter: {actions:?}"
+        );
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
@@ -1288,9 +1873,18 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
 
-        assert_eq!(w.step(Event::Control(ControlEvent::Halt)), vec![Action::Persist]);
-        assert_eq!(w.step(Event::Control(ControlEvent::Resume)), vec![Action::Persist]);
-        assert_eq!(w.step(Event::Balance(BalanceEvent::DrawdownHalt)), vec![Action::Persist]);
+        assert_eq!(
+            w.step(Event::Control(ControlEvent::Halt)),
+            vec![Action::Persist]
+        );
+        assert_eq!(
+            w.step(Event::Control(ControlEvent::Resume)),
+            vec![Action::Persist]
+        );
+        assert_eq!(
+            w.step(Event::Balance(BalanceEvent::DrawdownHalt)),
+            vec![Action::Persist]
+        );
     }
 
     /// A process restart rebuilds every `Worker` from scratch via
@@ -1310,15 +1904,24 @@ mod tests {
         // untouched (false) so this also exercises halt_losses/halt_last_session
         // independently of the manual-halt flag.
         enter_down_position(&mut w, 10.0);
-        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
         w.step(Event::CycleClose);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::BinanceTick(BinanceTick { ts: 1290.0, price: 60_100.0 }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
         w.step(Event::CycleClose);
         assert!(w.is_halted(), "sanity: halt_rev=2 should have tripped");
 
         let persisted = w.to_persisted();
-        assert!(!persisted.entry_suppressed, "loss-streak halt must not touch entry_suppressed");
+        assert!(
+            !persisted.entry_suppressed,
+            "loss-streak halt must not touch entry_suppressed"
+        );
         assert_eq!(persisted.halt_losses, 2);
         assert!(persisted.halt_last_session.is_some());
 
@@ -1326,16 +1929,35 @@ mod tests {
         let mut restarted = Worker::new_reversal("BTC", &p);
         assert!(!restarted.is_halted());
         // ...until restore_halt replays what was persisted just before shutdown.
-        restarted.restore_halt(persisted.entry_suppressed, persisted.halt_losses, persisted.halt_last_session);
-        assert!(restarted.is_halted(), "restored worker must come back halted");
+        restarted.restore_halt(
+            persisted.entry_suppressed,
+            persisted.halt_losses,
+            persisted.halt_last_session,
+        );
+        assert!(
+            restarted.is_halted(),
+            "restored worker must come back halted"
+        );
 
         // Behaves exactly like the pre-restart worker from here: survives a
         // same-session cycle boundary, clears on the next HKT session.
-        let actions = restarted.step(Event::CycleOpen { ctx: ctx(1_500.0), slug: "btc-updown-5m-1500".to_string() });
-        assert!(restarted.is_halted(), "halt must survive a same-session cycle boundary post-restart");
+        let actions = restarted.step(Event::CycleOpen {
+            ctx: ctx(1_500.0),
+            slug: "btc-updown-5m-1500".to_string(),
+        });
+        assert!(
+            restarted.is_halted(),
+            "halt must survive a same-session cycle boundary post-restart"
+        );
         assert!(!actions.contains(&Action::HaltReset));
-        let actions = restarted.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
-        assert!(!restarted.is_halted(), "halt must still clear on the next daily reset post-restart");
+        let actions = restarted.step(Event::CycleOpen {
+            ctx: ctx(101_000.0),
+            slug: "btc-updown-5m-101000".to_string(),
+        });
+        assert!(
+            !restarted.is_halted(),
+            "halt must still clear on the next daily reset post-restart"
+        );
         assert!(actions.contains(&Action::HaltReset));
     }
 
@@ -1355,14 +1977,30 @@ mod tests {
         assert!(persisted.halt_last_session.is_none());
 
         let mut restarted = Worker::new_reversal("BTC", &p);
-        restarted.restore_halt(persisted.entry_suppressed, persisted.halt_losses, persisted.halt_last_session);
-        assert!(restarted.is_halted(), "restored worker must come back halted");
+        restarted.restore_halt(
+            persisted.entry_suppressed,
+            persisted.halt_losses,
+            persisted.halt_last_session,
+        );
+        assert!(
+            restarted.is_halted(),
+            "restored worker must come back halted"
+        );
 
-        restarted.step(Event::CycleOpen { ctx: ctx(101_000.0), slug: "btc-updown-5m-101000".to_string() });
-        assert!(restarted.is_halted(), "manual halt must not be cleared by a daily reset, restored or not");
+        restarted.step(Event::CycleOpen {
+            ctx: ctx(101_000.0),
+            slug: "btc-updown-5m-101000".to_string(),
+        });
+        assert!(
+            restarted.is_halted(),
+            "manual halt must not be cleared by a daily reset, restored or not"
+        );
 
         restarted.step(Event::Control(ControlEvent::Resume));
-        assert!(!restarted.is_halted(), "/resume must still clear a restored manual halt");
+        assert!(
+            !restarted.is_halted(),
+            "/resume must still clear a restored manual halt"
+        );
     }
 
     #[test]
@@ -1373,15 +2011,27 @@ mod tests {
         // Trigger unwind via PriceMonitor (small-fill style arm stays PriceMonitor
         // until a GTC confirms; force via direct state mutation isn't available,
         // so drive through the natural TP-cross path.)
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // entry 0.70 + unwind 0.03
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        })); // entry 0.70 + unwind 0.03
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
-        let actions = w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        let actions = w.step(Event::UnwindFilled {
+            sold_shares: 6.0,
+            exit_price: 0.73,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
         match &w.state {
             WorkerState::Holding(h) => assert_eq!(h.shares, 4.0, "residual = 10 - 6"),
             _ => panic!("expected residual Holding"),
         }
-        assert!(!actions.iter().any(|a| matches!(a, Action::LogTrade(_))), "partial fill must not log a trade yet");
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::LogTrade(_))),
+            "partial fill must not log a trade yet"
+        );
     }
 
     #[test]
@@ -1389,10 +2039,25 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 }));
-        let actions = w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        }));
+        let actions = w.step(Event::UnwindFilled {
+            sold_shares: 10.0,
+            exit_price: 0.73,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
 
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None });
+        let record = actions.iter().find_map(|a| {
+            if let Action::LogTrade(r) = a {
+                Some(r.clone())
+            } else {
+                None
+            }
+        });
         let record = record.expect("expected a LogTrade action");
         assert_eq!(record.outcome, Outcome::Unwind);
         assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
@@ -1416,23 +2081,68 @@ mod tests {
     fn dust_residual_below_min_sellable_is_written_off_not_chased() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
-        w.step(Event::OrderFilled { filled_shares: 1.2048, cost: 0.83, signal_latency_ms: 0.0, process_latency_ms: 0.0 }); // tp_price = 0.83 + 0.03 = 0.86
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::OrderFilled {
+            filled_shares: 1.2048,
+            cost: 0.83,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        }); // tp_price = 0.83 + 0.03 = 0.86
 
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.12, dn: 0.88 })); // crosses tp -> Unwinding
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.12,
+            dn: 0.88,
+        })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
-        let actions = w.step(Event::UnwindFilled { sold_shares: 1.20, exit_price: 0.88, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None });
-        let record = record.expect("dust leftover (0.0048 < MIN_SELLABLE_SHARES) must finalize now, not stay Holding");
+        let actions = w.step(Event::UnwindFilled {
+            sold_shares: 1.20,
+            exit_price: 0.88,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let record = actions.iter().find_map(|a| {
+            if let Action::LogTrade(r) = a {
+                Some(r.clone())
+            } else {
+                None
+            }
+        });
+        let record = record.expect(
+            "dust leftover (0.0048 < MIN_SELLABLE_SHARES) must finalize now, not stay Holding",
+        );
         assert_eq!(record.outcome, Outcome::Unwind);
-        assert!((record.pnl - 0.0392).abs() < 1e-4,
-            "expected ~0.0392 net (0.06 realized - ~0.0207 fees, dust excluded), got {}", record.pnl);
-        assert!(matches!(w.state, WorkerState::EnrichOnly(_)), "must not linger in Holding chasing unsellable dust");
+        assert!(
+            (record.pnl - 0.0392).abs() < 1e-4,
+            "expected ~0.0392 net (0.06 realized - ~0.0207 fees, dust excluded), got {}",
+            record.pnl
+        );
+        assert!(
+            matches!(w.state, WorkerState::EnrichOnly(_)),
+            "must not linger in Holding chasing unsellable dust"
+        );
     }
 
     /// Reproduces the pnl bug from the 2026-07-03 ETH `high_prob` Telegram
@@ -1455,15 +2165,28 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0); // 10 shares @ cost 0.70
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // crosses tp -> Unwinding
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
         // Partial fill: 6 of 10 shares sold at 0.73 (the tp price).
-        w.step(Event::UnwindFilled { sold_shares: 6.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        w.step(Event::UnwindFilled {
+            sold_shares: 6.0,
+            exit_price: 0.73,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
         match &w.state {
             WorkerState::Holding(h) => {
                 assert_eq!(h.shares, 4.0);
-                assert!((h.realized_pnl - 0.18).abs() < 1e-9, "6*(0.73-0.70) = 0.18, got {}", h.realized_pnl);
+                assert!(
+                    (h.realized_pnl - 0.18).abs() < 1e-9,
+                    "6*(0.73-0.70) = 0.18, got {}",
+                    h.realized_pnl
+                );
             }
             _ => panic!("expected residual Holding"),
         }
@@ -1471,10 +2194,22 @@ mod tests {
         // Binance stayed below open (59_900 < 60_000 from enter_down_position),
         // so the DOWN side wins the residual at cycle close.
         let actions = w.step(Event::CycleClose);
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::Win);
-        assert!((record.pnl - 1.1502).abs() < 1e-9,
-            "expected +1.1502 net (1.38 gross - 0.229782 fees), got {}", record.pnl);
+        assert!(
+            (record.pnl - 1.1502).abs() < 1e-9,
+            "expected +1.1502 net (1.38 gross - 0.229782 fees), got {}",
+            record.pnl
+        );
     }
 
     /// Reproduces the 2026-07-03 ETH audit scenario (trader/doc/audit_trades_2026-07-03.md):
@@ -1487,10 +2222,16 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // crosses tp -> Unwinding
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
-        w.step(Event::UnwindFailed { error: Some("balance: 0".to_string()) });
+        w.step(Event::UnwindFailed {
+            error: Some("balance: 0".to_string()),
+        });
         match &w.state {
             WorkerState::Holding(h) => {
                 assert_eq!(h.exit_attempts, 1);
@@ -1501,9 +2242,21 @@ mod tests {
 
         // Price stayed below open (59900 < 60000) -> DOWN wins at cycle close.
         let actions = w.step(Event::CycleClose);
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::Win);
-        assert_eq!(record.exit_attempts, 1, "WIN record must show the failed unwind attempt, not look like a clean hold");
+        assert_eq!(
+            record.exit_attempts, 1,
+            "WIN record must show the failed unwind attempt, not look like a clean hold"
+        );
         assert_eq!(record.exit_last_error.as_deref(), Some("balance: 0"));
     }
 
@@ -1521,18 +2274,30 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 })); // crosses tp -> Unwinding
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
-        w.step(Event::UnwindFailed { error: Some("no market price".to_string()) });
+        w.step(Event::UnwindFailed {
+            error: Some("no market price".to_string()),
+        });
         match &w.state {
-            WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::PriceMonitor { tp_price: 0.73 }),
+            WorkerState::Holding(h) => {
+                assert_eq!(h.exit_arm, ExitArm::PriceMonitor { tp_price: 0.73 })
+            }
             _ => panic!("expected Holding re-armed at tp_price"),
         }
 
         // Price stays above tp (0.73) on the next tick -> retries the close,
         // bounded at the same tp_price (not an unbounded worse fill).
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1261.0, up: 0.20, dn: 0.80 }));
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1261.0,
+            up: 0.20,
+            dn: 0.80,
+        }));
         assert!(
             actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::TakeProfit, limit_price: Some(tp), .. } if (*tp - 0.73).abs() < 1e-9)),
             "must retry the take-profit close, bounded at tp_price, on the next qualifying tick: {actions:?}"
@@ -1545,16 +2310,36 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::LimitSellPlaced { order_id: Some("order-1".to_string()), status: SellStatus::Live, error: None, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
+        w.step(Event::LimitSellPlaced {
+            order_id: Some("order-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
 
         // dn drops below entry(0.70) - sl_pnl(0.20) = 0.50 (use 0.49 to clear the
         // f64 boundary cleanly: 0.70 - 0.20 == 0.4999999999999999 in f64).
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.45, dn: 0.49 }));
-        assert_eq!(actions, vec![
-            Action::CancelLimitSell { order_id: "order-1".to_string() },
-            Action::ClosePosition { shares: 10.0, reason: CloseReason::StopLoss, limit_price: None, signal_ts: 1260.0 },
-            Action::Persist,
-        ]);
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.45,
+            dn: 0.49,
+        }));
+        assert_eq!(
+            actions,
+            vec![
+                Action::CancelLimitSell {
+                    order_id: "order-1".to_string()
+                },
+                Action::ClosePosition {
+                    shares: 10.0,
+                    reason: CloseReason::StopLoss,
+                    limit_price: None,
+                    signal_ts: 1260.0
+                },
+                Action::Persist,
+            ]
+        );
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
     }
 
@@ -1563,11 +2348,20 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.45, dn: 0.49 })); // triggers StopExiting
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.45,
+            dn: 0.49,
+        })); // triggers StopExiting
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
 
-        w.step(Event::StopSellFailed { error: Some("test error".to_string()) });
-        assert!(matches!(w.state, WorkerState::Holding(_)), "failed exit is not an exit — reclassified as held");
+        w.step(Event::StopSellFailed {
+            error: Some("test error".to_string()),
+        });
+        assert!(
+            matches!(w.state, WorkerState::Holding(_)),
+            "failed exit is not an exit — reclassified as held"
+        );
     }
 
     /// unwind_time (max holding time) — see trader/doc/plan_unwind_time_2026-07-08.md.
@@ -1582,11 +2376,23 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
 
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // 1250 + 30
-        assert_eq!(actions, vec![
-            Action::ClosePosition { shares: 10.0, reason: CloseReason::Timeout, limit_price: None, signal_ts: 1280.0 },
-            Action::Persist,
-        ]);
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1280.0,
+            up: 0.40,
+            dn: 0.60,
+        })); // 1250 + 30
+        assert_eq!(
+            actions,
+            vec![
+                Action::ClosePosition {
+                    shares: 10.0,
+                    reason: CloseReason::Timeout,
+                    limit_price: None,
+                    signal_ts: 1280.0
+                },
+                Action::Persist,
+            ]
+        );
         assert!(matches!(w.state, WorkerState::TimingOut(_)));
     }
 
@@ -1597,7 +2403,11 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
 
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1279.0, up: 0.40, dn: 0.60 })); // 1250 + 29
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1279.0,
+            up: 0.40,
+            dn: 0.60,
+        })); // 1250 + 29
         assert_eq!(actions, vec![], "must not fire 1s before the threshold");
         assert!(matches!(w.state, WorkerState::Holding(_)));
     }
@@ -1609,8 +2419,16 @@ mod tests {
         enter_down_position(&mut w, 10.0);
 
         // Enormous elapsed time — would fire at any positive threshold.
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 100_000.0, up: 0.40, dn: 0.60 }));
-        assert_eq!(actions, vec![], "0.0 must mean disabled regardless of elapsed time");
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 100_000.0,
+            up: 0.40,
+            dn: 0.60,
+        }));
+        assert_eq!(
+            actions,
+            vec![],
+            "0.0 must mean disabled regardless of elapsed time"
+        );
         assert!(matches!(w.state, WorkerState::Holding(_)));
     }
 
@@ -1624,12 +2442,27 @@ mod tests {
         // Both conditions true simultaneously: 30s elapsed AND dn(0.49) crosses
         // the stop-loss floor (0.50) — matches the backtest's fixed exit-chain
         // order (stop-loss, then take-profit, then timeout last).
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.45, dn: 0.49 }));
-        assert_eq!(actions, vec![
-            Action::ClosePosition { shares: 10.0, reason: CloseReason::StopLoss, limit_price: None, signal_ts: 1280.0 },
-            Action::Persist,
-        ]);
-        assert!(matches!(w.state, WorkerState::StopExiting(_)), "stop-loss must win over timeout on the same tick");
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1280.0,
+            up: 0.45,
+            dn: 0.49,
+        }));
+        assert_eq!(
+            actions,
+            vec![
+                Action::ClosePosition {
+                    shares: 10.0,
+                    reason: CloseReason::StopLoss,
+                    limit_price: None,
+                    signal_ts: 1280.0
+                },
+                Action::Persist,
+            ]
+        );
+        assert!(
+            matches!(w.state, WorkerState::StopExiting(_)),
+            "stop-loss must win over timeout on the same tick"
+        );
     }
 
     #[test]
@@ -1638,19 +2471,40 @@ mod tests {
         p.unwind_time_rev = 30.0;
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // triggers TimingOut
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1280.0,
+            up: 0.40,
+            dn: 0.60,
+        })); // triggers TimingOut
         assert!(matches!(w.state, WorkerState::TimingOut(_)));
 
-        w.step(Event::TimeoutSellFailed { error: Some("test error".to_string()) });
-        assert!(matches!(w.state, WorkerState::Holding(_)), "failed exit is not an exit — reclassified as held");
+        w.step(Event::TimeoutSellFailed {
+            error: Some("test error".to_string()),
+        });
+        assert!(
+            matches!(w.state, WorkerState::Holding(_)),
+            "failed exit is not an exit — reclassified as held"
+        );
 
         // Threshold condition is still true (more true, as time passes) — the
         // next PolyTick naturally re-fires, no separate retry-counter needed.
-        let actions = w.step(Event::PolyTick(PolyTick { ts: 1281.0, up: 0.40, dn: 0.60 }));
-        assert_eq!(actions, vec![
-            Action::ClosePosition { shares: 10.0, reason: CloseReason::Timeout, limit_price: None, signal_ts: 1281.0 },
-            Action::Persist,
-        ]);
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1281.0,
+            up: 0.40,
+            dn: 0.60,
+        }));
+        assert_eq!(
+            actions,
+            vec![
+                Action::ClosePosition {
+                    shares: 10.0,
+                    reason: CloseReason::Timeout,
+                    limit_price: None,
+                    signal_ts: 1281.0
+                },
+                Action::Persist,
+            ]
+        );
         assert!(matches!(w.state, WorkerState::TimingOut(_)));
     }
 
@@ -1660,10 +2514,28 @@ mod tests {
         p.unwind_time_rev = 30.0;
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // triggers TimingOut
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1280.0,
+            up: 0.40,
+            dn: 0.60,
+        })); // triggers TimingOut
 
-        let actions = w.step(Event::TimeoutSellFilled { sold_shares: 10.0, exit_price: 0.60, signal_latency_ms: 0.0, process_latency_ms: 0.0 });
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let actions = w.step(Event::TimeoutSellFilled {
+            sold_shares: 10.0,
+            exit_price: 0.60,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::Timeout);
         assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
     }
@@ -1674,7 +2546,11 @@ mod tests {
         p.unwind_time_rev = 30.0;
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1280.0, up: 0.40, dn: 0.60 })); // triggers TimingOut
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1280.0,
+            up: 0.40,
+            dn: 0.60,
+        })); // triggers TimingOut
 
         let snap = w.to_persisted();
         match &snap.state {
@@ -1695,7 +2571,16 @@ mod tests {
 
         // Price fell below open (60000 -> 59900) so DOWN wins at cycle close.
         let actions = w.step(Event::CycleClose);
-        let record = actions.iter().find_map(|a| if let Action::LogTrade(r) = a { Some(r.clone()) } else { None }).unwrap();
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::Win);
         assert!(matches!(w.state, WorkerState::Confirming(_)));
     }
@@ -1708,18 +2593,33 @@ mod tests {
         w.step(Event::CycleClose); // -> Confirming(WIN)
 
         let actions = w.step(Event::ApiResult { won: false }); // API says it actually lost
-        let (previous_outcome, previous_pnl, record) = actions.iter().find_map(|a| {
-            if let Action::LogTradeCorrection { previous_outcome, previous_pnl, record } = a {
-                Some((*previous_outcome, *previous_pnl, record.clone()))
-            } else {
-                None
-            }
-        }).unwrap();
+        let (previous_outcome, previous_pnl, record) = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTradeCorrection {
+                    previous_outcome,
+                    previous_pnl,
+                    record,
+                } = a
+                {
+                    Some((*previous_outcome, *previous_pnl, record.clone()))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(previous_outcome, Outcome::Win);
-        assert!(previous_pnl > 0.0, "original estimate should have been a WIN pnl, got {previous_pnl}");
+        assert!(
+            previous_pnl > 0.0,
+            "original estimate should have been a WIN pnl, got {previous_pnl}"
+        );
         assert_eq!(record.outcome, Outcome::Loss);
         // -trade_size(1.0) - buy_fee(shares(1/0.7) * 0.07 * 0.7 * 0.3 = trade_size * 0.07 * 0.3 = 0.021)
-        assert!((record.pnl - (-1.021)).abs() < 1e-9, "LOSS pnl should be -trade_size - entry fee, got {}", record.pnl);
+        assert!(
+            (record.pnl - (-1.021)).abs() < 1e-9,
+            "LOSS pnl should be -trade_size - entry fee, got {}",
+            record.pnl
+        );
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
@@ -1728,13 +2628,29 @@ mod tests {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.27, dn: 0.73 }));
-        w.step(Event::UnwindFilled { sold_shares: 10.0, exit_price: 0.73, signal_latency_ms: 0.0, process_latency_ms: 0.0 }); // -> EnrichOnly(Unwind)
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        }));
+        w.step(Event::UnwindFilled {
+            sold_shares: 10.0,
+            exit_price: 0.73,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        }); // -> EnrichOnly(Unwind)
 
         let actions = w.step(Event::ApiResult { won: true });
-        assert!(!actions.iter().any(|a| matches!(a, Action::LogTrade(_))), "EnrichOnly must never re-log a trade");
-        assert!(!actions.iter().any(|a| matches!(a, Action::StopLossVerdict { .. })),
-            "an UNWIND exit gets no counterfactual verdict, matching Python's is_unwind skip");
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::LogTrade(_))),
+            "EnrichOnly must never re-log a trade"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::StopLossVerdict { .. })),
+            "an UNWIND exit gets no counterfactual verdict, matching Python's is_unwind skip"
+        );
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
@@ -1744,32 +2660,68 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         enter_down_position(&mut w, 10.0);
         // DOWN position; poly tick crosses the stop-loss floor -> StopExiting.
-        w.step(Event::PolyTick(PolyTick { ts: 1260.0, up: 0.55, dn: 0.45 }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.55,
+            dn: 0.45,
+        }));
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
-        w.step(Event::StopSellFilled { sold_shares: 10.0, exit_price: 0.45, signal_latency_ms: 0.0, process_latency_ms: 0.0 }); // -> EnrichOnly(StopLoss)
+        w.step(Event::StopSellFilled {
+            sold_shares: 10.0,
+            exit_price: 0.45,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        }); // -> EnrichOnly(StopLoss)
 
         // `won` is already relative to the record's own side (matches the Confirming
         // branch's convention) — `true` here means the position's side actually won,
         // i.e. the stop-loss was costly (holding would have won instead).
         let actions = w.step(Event::ApiResult { won: true });
-        let (record, would_have_won) = actions.iter().find_map(|a| {
-            if let Action::StopLossVerdict { record, would_have_won } = a { Some((record.clone(), *would_have_won)) } else { None }
-        }).unwrap();
+        let (record, would_have_won) = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::StopLossVerdict {
+                    record,
+                    would_have_won,
+                } = a
+                {
+                    Some((record.clone(), *would_have_won))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(record.outcome, Outcome::StopLoss);
-        assert!(would_have_won, "API says the position's side actually won -> stop was costly");
-        assert!(!actions.iter().any(|a| matches!(a, Action::LogTrade(_) | Action::LogTradeCorrection { .. })),
-            "verdict never rewrites pnl/result");
+        assert!(
+            would_have_won,
+            "API says the position's side actually won -> stop was costly"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::LogTrade(_) | Action::LogTradeCorrection { .. })),
+            "verdict never rewrites pnl/result"
+        );
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
     #[test]
     fn reconcile_holding_with_missing_gtc_order_falls_back_to_price_monitor() {
         let holding = HoldingData {
-            side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
-            entry_ts: 1250.0, shares: 10.0,
-            exit_arm: ExitArm::GtcResting { order_id: "gone-order".to_string() },
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
-            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
+            side: Side::Down,
+            entry_type: EntryType::Reversal,
+            token_price: 0.70,
+            entry_ts: 1250.0,
+            shares: 10.0,
+            exit_arm: ExitArm::GtcResting {
+                order_id: "gone-order".to_string(),
+            },
+            exit_attempts: 0,
+            exit_last_error: None,
+            realized_pnl: 0.0,
+            fees: 0.0,
+            entry_signal_latency_ms: 0.0,
+            entry_process_latency_ms: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
 
@@ -1784,16 +2736,30 @@ mod tests {
     #[test]
     fn reconcile_holding_with_live_gtc_order_keeps_it_armed() {
         let holding = HoldingData {
-            side: Side::Down, entry_type: EntryType::Reversal, token_price: 0.70,
-            entry_ts: 1250.0, shares: 10.0,
-            exit_arm: ExitArm::GtcResting { order_id: "still-live".to_string() },
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
-            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
+            side: Side::Down,
+            entry_type: EntryType::Reversal,
+            token_price: 0.70,
+            entry_ts: 1250.0,
+            shares: 10.0,
+            exit_arm: ExitArm::GtcResting {
+                order_id: "still-live".to_string(),
+            },
+            exit_attempts: 0,
+            exit_last_error: None,
+            realized_pnl: 0.0,
+            fees: 0.0,
+            entry_signal_latency_ms: 0.0,
+            entry_process_latency_ms: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &["still-live".to_string()], 10.0);
         match resumed {
-            WorkerState::Holding(h) => assert_eq!(h.exit_arm, ExitArm::GtcResting { order_id: "still-live".to_string() }),
+            WorkerState::Holding(h) => assert_eq!(
+                h.exit_arm,
+                ExitArm::GtcResting {
+                    order_id: "still-live".to_string()
+                }
+            ),
             _ => panic!("expected Holding"),
         }
     }
@@ -1801,11 +2767,18 @@ mod tests {
     #[test]
     fn reconcile_zero_balance_position_resumes_as_watching() {
         let holding = HoldingData {
-            side: Side::Up, entry_type: EntryType::Reversal, token_price: 0.70,
-            entry_ts: 1250.0, shares: 10.0,
+            side: Side::Up,
+            entry_type: EntryType::Reversal,
+            token_price: 0.70,
+            entry_ts: 1250.0,
+            shares: 10.0,
             exit_arm: ExitArm::PriceMonitor { tp_price: 0.73 },
-            exit_attempts: 0, exit_last_error: None, realized_pnl: 0.0, fees: 0.0,
-            entry_signal_latency_ms: 0.0, entry_process_latency_ms: 0.0,
+            exit_attempts: 0,
+            exit_last_error: None,
+            realized_pnl: 0.0,
+            fees: 0.0,
+            entry_signal_latency_ms: 0.0,
+            entry_process_latency_ms: 0.0,
         };
         let persisted = PersistedWorkerState::Holding(holding);
         let resumed = Worker::reconcile(&persisted, &[], 0.0);
@@ -1835,11 +2808,28 @@ mod tests {
     fn rejected_order_returns_to_watching() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
-        w.step(Event::CycleOpen { ctx: ctx(1_000.0), slug: "btc-updown-5m-1000".to_string() });
-        w.step(Event::PolyTick(PolyTick { ts: 1180.0, up: 0.85, dn: 0.15 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1200.0, price: 59_900.0 }));
-        w.step(Event::PolyTick(PolyTick { ts: 1240.0, up: 0.30, dn: 0.70 }));
-        w.step(Event::BinanceTick(BinanceTick { ts: 1250.0, price: 59_900.0 }));
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }));
         assert!(matches!(w.state, WorkerState::Entering));
 
         w.step(Event::OrderRejected);

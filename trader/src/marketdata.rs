@@ -14,7 +14,10 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::types::{BinanceTick, PolyTick};
 
 pub fn now_secs_f64() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
 }
 
 pub fn current_slot(interval: u64) -> u64 {
@@ -54,8 +57,7 @@ pub async fn fetch_meta(http: &reqwest::Client, slug: &str) -> Result<(U256, U25
 
     let token_ids: Vec<String> =
         serde_json::from_str(market["clobTokenIds"].as_str().unwrap_or("[]"))?;
-    let outcomes: Vec<String> =
-        serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
+    let outcomes: Vec<String> = serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
 
     let find = |target: &str| -> Result<U256> {
         outcomes
@@ -114,16 +116,21 @@ pub fn spawn_binance_task(asset: &str, tx: mpsc::UnboundedSender<BinanceTick>) {
                     // 30 s timeout: Binance @trade can go silent on low-volume assets
                     // and TCP drops are often silent (no Close/Err frame). Without a
                     // timeout, read.next() hangs forever and last_binance stagnates.
-                    while let Ok(Some(msg)) = tokio::time::timeout(
-                        std::time::Duration::from_secs(30),
-                        read.next(),
-                    ).await {
+                    while let Ok(Some(msg)) =
+                        tokio::time::timeout(std::time::Duration::from_secs(30), read.next()).await
+                    {
                         match msg {
                             Ok(Message::Text(txt)) => {
                                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
                                     let price = v["p"].as_str().and_then(|s| s.parse::<f64>().ok());
                                     if let Some(price) = price
-                                        && tx.send(BinanceTick { ts: now_secs_f64(), price }).is_err() {
+                                        && tx
+                                            .send(BinanceTick {
+                                                ts: now_secs_f64(),
+                                                price,
+                                            })
+                                            .is_err()
+                                    {
                                         return; // receiver dropped
                                     }
                                 }
@@ -189,7 +196,14 @@ pub fn spawn_poly_task(
                             continue;
                         }
                         let up = (bid + ask) / 2.0;
-                        if tx.send(PolyTick { ts: now_secs_f64(), up, dn: 1.0 - up }).is_err() {
+                        if tx
+                            .send(PolyTick {
+                                ts: now_secs_f64(),
+                                up,
+                                dn: 1.0 - up,
+                            })
+                            .is_err()
+                        {
                             return;
                         }
                     }
@@ -220,7 +234,9 @@ pub struct PolySub {
 
 impl PolySub {
     pub fn start(clob: &ClobWsClient, up_id: U256, tx: mpsc::UnboundedSender<PolyTick>) -> Self {
-        Self { handle: spawn_poly_task(clob.clone(), up_id, tx) }
+        Self {
+            handle: spawn_poly_task(clob.clone(), up_id, tx),
+        }
     }
 }
 

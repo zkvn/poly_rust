@@ -18,7 +18,10 @@ use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
 use polymarket_client_sdk_v2::clob::{Client, Config};
 use polymarket_client_sdk_v2::types::Address;
 
-use trader::execution::{ExecutionEngine, LiveConfig, LiveExecutionEngine, local_signer_from_key, signature_type_from_env};
+use trader::execution::{
+    ExecutionEngine, LiveConfig, LiveExecutionEngine, local_signer_from_key,
+    signature_type_from_env,
+};
 use trader::marketdata::{clob_client, current_slot, fetch_meta, http_client, make_slug};
 
 const DEFAULT_FUND_ADDRESS: &str = "0x9FC2A777C26CCA2C218D8E7BBC340D14058CC13A";
@@ -29,7 +32,10 @@ const DEFAULT_FUND_ADDRESS: &str = "0x9FC2A777C26CCA2C218D8E7BBC340D14058CC13A";
 const CLOB_HOST: &str = "https://clob.polymarket.com";
 
 #[derive(Parser, Debug)]
-#[command(name = "api_probe", about = "Live CLOB validation probe (B2) — real orders, tiny size")]
+#[command(
+    name = "api_probe",
+    about = "Live CLOB validation probe (B2) — real orders, tiny size"
+)]
 struct Args {
     #[arg(long, default_value = "/home/kev/apps/btc_5mins/.env")]
     env_file: String,
@@ -83,7 +89,8 @@ async fn main() -> Result<()> {
     // Route CLOB writes through the EC2 HTTP proxy when running from a geo-restricted
     // region (same var that Python's _patch_clob_proxy reads; empty = direct connect).
     if let Ok(proxy_url) = std::env::var("CLOB_PROXY_URL")
-        && !proxy_url.is_empty() {
+        && !proxy_url.is_empty()
+    {
         // Safety: single-threaded here — tokio runtime not yet spawning work.
         unsafe { std::env::set_var("HTTPS_PROXY", &proxy_url) };
         println!("[probe] routing CLOB writes via proxy: {proxy_url}");
@@ -98,12 +105,20 @@ async fn main() -> Result<()> {
                 .authenticate()
                 .await?;
             let resp = client
-                .balance_allowance(BalanceAllowanceRequest::builder().asset_type(AssetType::Collateral).build())
+                .balance_allowance(
+                    BalanceAllowanceRequest::builder()
+                        .asset_type(AssetType::Collateral)
+                        .build(),
+                )
                 .await?;
             // API returns collateral balance in base units (6 decimals), matching
             // Python's `float(raw) / 1e6` in BalanceGuard._fetch_balance.
             let raw: f64 = resp.balance.to_string().parse().unwrap_or(0.0);
-            println!("balance: {:.4} USDC (raw base units: {})", raw / 1e6, resp.balance);
+            println!(
+                "balance: {:.4} USDC (raw base units: {})",
+                raw / 1e6,
+                resp.balance
+            );
             println!("allowances: {} contract(s)", resp.allowances.len());
         }
 
@@ -140,12 +155,20 @@ async fn main() -> Result<()> {
                  (a few cents), not the full size.\n"
             );
 
-            let engine =
-                LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, LiveConfig::default()).await?;
+            let engine = LiveExecutionEngine::connect(
+                CLOB_HOST,
+                signer,
+                funder,
+                signature_type,
+                LiveConfig::default(),
+            )
+            .await?;
 
             let buy = engine.place(up_id, price, size_usdc, 0.99).await;
-            println!("BUY result: placed={} filled_shares={:.4} cost/share={:.4} error={:?}",
-                buy.placed, buy.filled_shares, buy.cost, buy.error);
+            println!(
+                "BUY result: placed={} filled_shares={:.4} cost/share={:.4} error={:?}",
+                buy.placed, buy.filled_shares, buy.cost, buy.error
+            );
 
             if !buy.placed || buy.filled_shares <= 0.0 {
                 println!("BUY did not fill — stopping before attempting a close.");
@@ -153,11 +176,15 @@ async fn main() -> Result<()> {
             }
 
             let close = engine.close_position(up_id, buy.filled_shares).await;
-            println!("CLOSE result: status={:?} shares_sold={:.4} filled_usdc={:.4}",
-                close.status, close.shares_sold, close.filled_usdc);
+            println!(
+                "CLOSE result: status={:?} shares_sold={:.4} filled_usdc={:.4}",
+                close.status, close.shares_sold, close.filled_usdc
+            );
 
             let net = close.filled_usdc - (buy.filled_shares * buy.cost);
-            println!("\nNet cost of round trip: ${net:.4} (negative = spread cost paid, as expected)");
+            println!(
+                "\nNet cost of round trip: ${net:.4} (negative = spread cost paid, as expected)"
+            );
         }
     }
 

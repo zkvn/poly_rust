@@ -112,29 +112,36 @@ pub struct AssetParams {
 }
 
 pub fn get_asset<T: Copy>(map: &HashMap<String, T>, asset: &str) -> Option<T> {
-    map.get(asset)
-        .or_else(|| map.get("default"))
-        .copied()
+    map.get(asset).or_else(|| map.get("default")).copied()
 }
 
 fn req<T: Copy>(map: &HashMap<String, T>, asset: &str, field: &str) -> Result<T> {
-    get_asset(map, asset)
-        .with_context(|| format!("config field `{field}` missing default and no entry for `{asset}`"))
+    get_asset(map, asset).with_context(|| {
+        format!("config field `{field}` missing default and no entry for `{asset}`")
+    })
 }
 
 impl StrategyToml {
     pub fn resolve(&self, asset: &str) -> Result<AssetParams> {
         Ok(AssetParams {
             asset: asset.to_string(),
-            strategies: self.strategies.get(asset)
+            strategies: self
+                .strategies
+                .get(asset)
                 .or_else(|| self.strategies.get("default"))
                 .cloned()
                 .unwrap_or_default(),
-            enter_when_time_left: req(&self.enter_when_time_left, asset, "enter_when_time_left")? as f64,
+            enter_when_time_left: req(&self.enter_when_time_left, asset, "enter_when_time_left")?
+                as f64,
             no_enter_when_time_left: self.no_enter_when_time_left as f64,
             reversal: req(&self.reversal, asset, "reversal")?,
-            reversal_low_threshold: req(&self.reversal_low_threshold, asset, "reversal_low_threshold")?,
-            reversal_start_time: req(&self.reversal_start_time, asset, "reversal_start_time")? as f64,
+            reversal_low_threshold: req(
+                &self.reversal_low_threshold,
+                asset,
+                "reversal_low_threshold",
+            )?,
+            reversal_start_time: req(&self.reversal_start_time, asset, "reversal_start_time")?
+                as f64,
             price_high_rev: req(&self.price_high_rev, asset, "price_high_rev")?,
             delta_pct_rev: req(&self.delta_pct_rev, asset, "delta_pct_rev")?,
             sl_reversal: req(&self.sl_reversal, asset, "sl_reversal")?,
@@ -179,8 +186,7 @@ pub fn load_latest(config_dir: &str) -> Result<StrategyToml> {
     }
     paths.sort();
     let latest = paths.pop().unwrap();
-    let raw = std::fs::read_to_string(&latest)
-        .with_context(|| format!("read {latest:?}"))?;
+    let raw = std::fs::read_to_string(&latest).with_context(|| format!("read {latest:?}"))?;
     toml::from_str(&raw).with_context(|| format!("parse {latest:?}"))
 }
 

@@ -49,13 +49,20 @@ pub fn format_params(asset: &str, params: &crate::config::AssetParams) -> String
          halt_rev: {}  halt_prob: {}\n\
          trade_size_usdc: {}",
         params.strategies,
-        params.reversal, params.reversal_low_threshold, params.reversal_start_time,
+        params.reversal,
+        params.reversal_low_threshold,
+        params.reversal_start_time,
         params.price_high_rev,
-        params.delta_pct_rev, params.delta_pct_hp,
-        params.sl_reversal, params.sl_high_prob,
-        params.sl_pnl_rev, params.unwind_pnl_rev,
-        params.sl_pnl_hp, params.unwind_pnl_hp,
-        params.halt_rev, params.halt_prob,
+        params.delta_pct_rev,
+        params.delta_pct_hp,
+        params.sl_reversal,
+        params.sl_high_prob,
+        params.sl_pnl_rev,
+        params.unwind_pnl_rev,
+        params.sl_pnl_hp,
+        params.unwind_pnl_hp,
+        params.halt_rev,
+        params.halt_prob,
         params.trade_size_usdc,
     )
 }
@@ -85,14 +92,28 @@ mod tests {
     #[test]
     fn status_golden_two_assets() {
         let mut snaps = BTreeMap::new();
-        snaps.insert("BTC".to_string(), AssetStatus {
-            wins: 3, losses: 1, stoplosses: 2, unwinds: 1, halted: false,
-            last_trade: Some("14:32:10 DOWN STOPLOSS -0.2235".to_string()),
-        });
-        snaps.insert("ETH".to_string(), AssetStatus {
-            wins: 0, losses: 0, stoplosses: 0, unwinds: 0, halted: true,
-            last_trade: None,
-        });
+        snaps.insert(
+            "BTC".to_string(),
+            AssetStatus {
+                wins: 3,
+                losses: 1,
+                stoplosses: 2,
+                unwinds: 1,
+                halted: false,
+                last_trade: Some("14:32:10 DOWN STOPLOSS -0.2235".to_string()),
+            },
+        );
+        snaps.insert(
+            "ETH".to_string(),
+            AssetStatus {
+                wins: 0,
+                losses: 0,
+                stoplosses: 0,
+                unwinds: 0,
+                halted: true,
+                last_trade: None,
+            },
+        );
 
         let expected = "\
 📊 <b>Status</b>

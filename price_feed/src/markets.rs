@@ -7,18 +7,18 @@ use chrono::{FixedOffset, TimeZone as _};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::StreamExt as _;
 use polymarket_client_sdk_v2::clob::ws::Client as ClobWsClient;
 use polymarket_client_sdk_v2::rtds::Client as RtdsClient;
 use polymarket_client_sdk_v2::types::U256;
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::Constraint,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Row, Table},
-    Terminal,
 };
 use tokio::sync::mpsc;
 
@@ -67,11 +67,17 @@ impl Default for MarketData {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 fn current_slot() -> u64 {
@@ -108,27 +114,38 @@ async fn fetch_meta(http: &reqwest::Client, asset: &str, slot: u64) -> Result<Sl
     let url = format!("https://gamma-api.polymarket.com/events?slug={slug}");
     let resp: serde_json::Value = http.get(&url).send().await?.json().await?;
 
-    let event = resp.as_array().and_then(|a| a.first())
+    let event = resp
+        .as_array()
+        .and_then(|a| a.first())
         .ok_or_else(|| anyhow::anyhow!("no event for {slug}"))?;
-    let market = event["markets"].as_array().and_then(|a| a.first())
+    let market = event["markets"]
+        .as_array()
+        .and_then(|a| a.first())
         .ok_or_else(|| anyhow::anyhow!("no market in event"))?;
 
     let token_ids: Vec<String> =
         serde_json::from_str(market["clobTokenIds"].as_str().unwrap_or("[]"))?;
-    let outcomes: Vec<String> =
-        serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
+    let outcomes: Vec<String> = serde_json::from_str(market["outcomes"].as_str().unwrap_or("[]"))?;
 
-    let up_token_id = outcomes.iter().zip(token_ids.iter())
+    let up_token_id = outcomes
+        .iter()
+        .zip(token_ids.iter())
         .find(|(o, _)| o.to_lowercase() == "up")
         .map(|(_, tid)| tid.clone())
         .ok_or_else(|| anyhow::anyhow!("no Up token found"))?;
 
-    let volume = market["volumeNum"].as_f64()
+    let volume = market["volumeNum"]
+        .as_f64()
         .or_else(|| market["volume"].as_f64())
         .or_else(|| market["volume"].as_str().and_then(|s| s.parse().ok()))
         .unwrap_or(0.0);
 
-    Ok(SlotMeta { slot, up_token_id, volume, fetched_at: Instant::now() })
+    Ok(SlotMeta {
+        slot,
+        up_token_id,
+        volume,
+        fetched_at: Instant::now(),
+    })
 }
 
 /// Watchdog for the first best_bid_ask message. If the custom-feature feed does not
@@ -222,7 +239,9 @@ async fn drive_feed(
 /// Headless probe: subscribe to each asset's current-slot Up token and print midpoints
 /// to stdout for 30s. Used to verify the feed is live (prices move off 0.5) without the TUI.
 pub async fn probe(assets: Vec<String>, custom_features: bool) -> Result<()> {
-    let http = reqwest::Client::builder().user_agent("Mozilla/5.0").build()?;
+    let http = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .build()?;
     let clob = ClobWsClient::default();
     let (tx, mut rx) = mpsc::channel::<(usize, f64, i64)>(128);
     let slot = current_slot();
@@ -237,7 +256,13 @@ pub async fn probe(assets: Vec<String>, custom_features: bool) -> Result<()> {
             slot_label(slot),
             meta.up_token_id,
         );
-        tokio::spawn(drive_feed(clob.clone(), id, idx, custom_features, tx.clone()));
+        tokio::spawn(drive_feed(
+            clob.clone(),
+            id,
+            idx,
+            custom_features,
+            tx.clone(),
+        ));
     }
     drop(tx);
 
@@ -317,9 +342,10 @@ async fn run_app(
 
             loop {
                 let slot = current_slot();
-                let stale = meta.as_ref().map(|m| {
-                    m.slot != slot || m.fetched_at.elapsed() > Duration::from_secs(30)
-                }).unwrap_or(true);
+                let stale = meta
+                    .as_ref()
+                    .map(|m| m.slot != slot || m.fetched_at.elapsed() > Duration::from_secs(30))
+                    .unwrap_or(true);
 
                 if stale {
                     if let Ok(new_meta) = fetch_meta(&http, &asset, slot).await {
@@ -359,7 +385,9 @@ async fn run_app(
         let tx = cl_tx;
         tokio::spawn(async move {
             let client = RtdsClient::default();
-            let Ok(stream) = client.subscribe_chainlink_prices(None) else { return };
+            let Ok(stream) = client.subscribe_chainlink_prices(None) else {
+                return;
+            };
             let mut stream = Box::pin(stream);
             while let Some(Ok(price)) = stream.next().await {
                 let sym = price.symbol.to_lowercase();
@@ -367,7 +395,9 @@ async fn run_app(
                     continue;
                 };
                 let value: f64 = price.value.try_into().unwrap_or(f64::NAN);
-                if !value.is_finite() { continue; }
+                if !value.is_finite() {
+                    continue;
+                }
                 let _ = tx.send((asset.to_string(), value, price.timestamp)).await;
             }
         });
@@ -459,56 +489,67 @@ fn draw(f: &mut ratatui::Frame, state: &[MarketData], secs_left: u64) {
     ])
     .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
 
-    let rows: Vec<Row> = state.iter().map(|d| {
-        let slot_cell = Cell::from(slot_label(current_slot()));
-        let cl_price_cell = match d.cl_price {
-            Some(p) => Cell::from(format!("${p:.2}")),
-            None => Cell::from("…").style(Style::default().fg(Color::DarkGray)),
-        };
+    let rows: Vec<Row> = state
+        .iter()
+        .map(|d| {
+            let slot_cell = Cell::from(slot_label(current_slot()));
+            let cl_price_cell = match d.cl_price {
+                Some(p) => Cell::from(format!("${p:.2}")),
+                None => Cell::from("…").style(Style::default().fg(Color::DarkGray)),
+            };
 
-        if let Some(ref err) = d.error {
-            Row::new([
-                slot_cell,
-                Cell::from(d.asset.clone()),
-                Cell::from(err.as_str()).style(Style::default().fg(Color::Red)),
-                Cell::from(""),
-                cl_price_cell,
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from("● stale")
-                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                latency_cell(d.cl_latency_ms),
-            ])
-        } else if d.last_updated.is_empty() {
-            Row::new([
-                slot_cell,
-                Cell::from(d.asset.clone()),
-                Cell::from("loading…").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(""),
-                cl_price_cell,
-                Cell::from(""),
-                Cell::from(""),
-                latency_cell(-1.0),
-                latency_cell(d.cl_latency_ms),
-            ])
-        } else {
-            let up_color = if d.up_price >= 0.5 { Color::Green } else { Color::Red };
-            let dn_color = if d.down_price >= 0.5 { Color::Green } else { Color::Red };
-            Row::new([
-                slot_cell,
-                Cell::from(d.asset.clone()),
-                Cell::from(format!("{:.1}%", d.up_price * 100.0))
-                    .style(Style::default().fg(up_color)),
-                Cell::from(format!("{:.1}%", d.down_price * 100.0))
-                    .style(Style::default().fg(dn_color)),
-                cl_price_cell,
-                Cell::from(format!("${:.0}", d.volume)),
-                Cell::from(d.last_updated.clone()),
-                latency_cell(d.poly_latency_ms),
-                latency_cell(d.cl_latency_ms),
-            ])
-        }
-    }).collect();
+            if let Some(ref err) = d.error {
+                Row::new([
+                    slot_cell,
+                    Cell::from(d.asset.clone()),
+                    Cell::from(err.as_str()).style(Style::default().fg(Color::Red)),
+                    Cell::from(""),
+                    cl_price_cell,
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from("● stale")
+                        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    latency_cell(d.cl_latency_ms),
+                ])
+            } else if d.last_updated.is_empty() {
+                Row::new([
+                    slot_cell,
+                    Cell::from(d.asset.clone()),
+                    Cell::from("loading…").style(Style::default().fg(Color::DarkGray)),
+                    Cell::from(""),
+                    cl_price_cell,
+                    Cell::from(""),
+                    Cell::from(""),
+                    latency_cell(-1.0),
+                    latency_cell(d.cl_latency_ms),
+                ])
+            } else {
+                let up_color = if d.up_price >= 0.5 {
+                    Color::Green
+                } else {
+                    Color::Red
+                };
+                let dn_color = if d.down_price >= 0.5 {
+                    Color::Green
+                } else {
+                    Color::Red
+                };
+                Row::new([
+                    slot_cell,
+                    Cell::from(d.asset.clone()),
+                    Cell::from(format!("{:.1}%", d.up_price * 100.0))
+                        .style(Style::default().fg(up_color)),
+                    Cell::from(format!("{:.1}%", d.down_price * 100.0))
+                        .style(Style::default().fg(dn_color)),
+                    cl_price_cell,
+                    Cell::from(format!("${:.0}", d.volume)),
+                    Cell::from(d.last_updated.clone()),
+                    latency_cell(d.poly_latency_ms),
+                    latency_cell(d.cl_latency_ms),
+                ])
+            }
+        })
+        .collect();
 
     let widths = [
         Constraint::Length(15), // "13:50-13:55 HKT"
