@@ -169,6 +169,19 @@ on the remote before the nightly sync runs.
   after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
   confirmed clean end-to-end with the pin in place.
 
+- **DOGE WIN/LOSS mismatch (2026-07-09) — two fixes not yet implemented, doc-only pass so
+  far.** Full root cause in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`. (1)
+  `worker.rs::on_cycle_close`'s fallback unconditionally resets `self.state` to `Watching`
+  on every 5-minute cycle boundary, including when a worker is still `Confirming` an
+  async Gamma resolution from the *previous* cycle's trade — so any correction that takes
+  longer than one cycle (~5 min) to arrive is silently dropped, and the wrong provisional
+  WIN/LOSS + pnl stands uncorrected. Needs to ship together with a fix to the resolution
+  watcher's give-up path (`bin/live.rs:147`), otherwise a worker whose confirmation times
+  out entirely gets stuck unable to trade that asset/strategy again. (2)
+  `trade_reconcile.py`'s daily Gamma cross-check already catches these mismatches
+  correctly (see the doc's §1) but only commits+pushes the finding to git — no Telegram
+  alert — so a caught mismatch is still invisible same-day unless someone reads the report.
+
 </details>
 
 <details>
@@ -1449,5 +1462,43 @@ live price crossing a trigger band and need to grab the current price immediatel
 GTC buy would risk missing the entry window entirely if price moves away before a passive limit
 fills. `../btc_5mins` makes the same choice (`TradingEngine.place()` is always a market order for
 entries).
+
+</details>
+
+<details>
+<summary><strong>DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09, root-caused, not yet fixed)</strong></summary>
+
+## DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09)
+
+Full writeup: `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`.
+
+`✅ DOGE TRADE WIN | 04:50:00 | DOWN ↓ | high_prob ... pnl=+$0.0704` was sent, but the
+daily `trade_reconcile.py` Gamma cross-check independently confirmed the real Polymarket
+resolution was the opposite outcome (a loss). Two separate causes, both confirmed from
+`live.log` and the CSV/recon report:
+
+1. **The pnl itself was only ever a provisional estimate.** `worker.rs::on_cycle_close`
+   scores WIN/LOSS from the trader's own Binance tick stream (`last_binance >
+   cycle_open_binance`) at cycle close, not from Polymarket's actual settlement — a
+   deliberate design (the async `Confirming` → `ApiResult` flow exists specifically to
+   correct it), but the Telegram message reports it with no "estimated" qualifier, so it
+   reads as final.
+2. **The correction that should have caught it was silently dropped.** `live.log` shows
+   the Gamma resolution watcher polling normally (7 logged attempts) then going silent
+   with no timeout message and no correction — because `on_cycle_close`'s fallback
+   unconditionally resets `self.state` to `Watching` on *every* cycle boundary, including
+   while a worker is still `Confirming` a previous trade's async Gamma result. The next
+   cycle boundary (~5 min later, inside the watcher's own ~10-min polling window) clobbers
+   `Confirming(record)` before the eventual correct answer arrives, so `on_api_result`
+   silently no-ops on a state it no longer recognizes. Separately, the *daily* Python
+   reconciliation did catch this mismatch correctly, but only commits the finding to git —
+   no Telegram alert wired up — so it stayed invisible same-day either way.
+
+Proposed fixes (not yet implemented — see the doc's §4 and the `## TODO` entry above):
+don't let `on_cycle_close` clobber an in-flight `Confirming`/`EnrichOnly` state (paired
+with a timeout/give-up path so a worker can't get stuck forever if Gamma never resolves);
+wire `trade_reconcile.py`'s Gamma mismatches into a Telegram alert instead of git-only;
+log the silent-drop arms in `on_api_result` so this class of bug is diagnosable from
+`live.log` alone next time.
 
 </details>
