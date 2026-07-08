@@ -444,6 +444,14 @@ Full study: `trader/doc/latency_2026-07-04.md` (data + method: `price_feed/analy
 over `price_feed/raw/*.parquet`, plus a source read of the SDK's own WS subscription/broadcast
 code). Summary:
 
+> **Quick definitions** (both timestamps below are our own local clock — see the `2026-07-07`
+> bullet for why neither is ever an exchange-side timestamp): **`signal_latency`** = the
+> triggering tick's own timestamp → the local time our driver starts handling it (usually
+> sub-millisecond). **`process_latency`** = the local time our driver starts the order-placement
+> call (`received_ts`) → the local time it gets the exchange's response back for that same call
+> (`confirmed_ts`) — i.e. how long the order round-trip itself took, including any internal
+> retries/backoff (see the two bullets below).
+
 - **CLOB (Poly) price feed latency is not a concern** — p50 ≈ 4–5ms, p95 ≈ 15–17ms,
   Polymarket-server-timestamp to Oracle-box-receive, consistent across every asset. Every
   `poly`/`book` parquet row already carries this as `latency_ms` (see "Data Files" above).
@@ -497,17 +505,41 @@ code). Summary:
   `collect::tests::binance_nats_payload_uses_exact_received_at_ms_unrounded`.
 - **`process_latency_ms` swings (e.g. 314ms vs. 1716ms) are retry sleeps, not network jitter
   (2026-07-06)** — `LiveExecutionEngine::place` (entries) and `::close_position` (stop-loss exits)
-  in `trader/src/execution.rs` each retry internally on failure, sleeping a full second between
-  attempts (`tokio::time::sleep(Duration::from_secs(1))`). A `process_latency_ms` reading that
-  swallowed even one retry is therefore `(attempts − 1) × ~1s sleep + actual CLOB round-trip time`,
-  not raw network latency. `close_position_at_price` (used specifically for take-profit exits) is
-  the one exception — single-attempt by design, no retry sleep — which is why take-profit exit
-  process-latency numbers read tighter and lower than entry/stop-loss ones. `CloseResult` now
-  carries an `attempts: u32` field (mirroring `TradeResult.attempts`, which already existed but was
-  never logged), and both the console `[ORDER]` line and the Telegram "Order placed" /
+  in `trader/src/execution.rs` each retry internally on failure. A `process_latency_ms` reading
+  that swallowed even one retry is therefore `(retry sleeps incurred) + actual CLOB round-trip
+  time`, not raw network latency (see the next bullet for exactly when a retry does vs. doesn't
+  sleep). `close_position_at_price` (used specifically for take-profit exits) is the one exception
+  — single-attempt by design, no retry loop at all — which is why take-profit exit process-latency
+  numbers read tighter and lower than entry/stop-loss ones. `CloseResult` now carries an
+  `attempts: u32` field (mirroring `TradeResult.attempts`, which already existed but was never
+  logged), and both the console `[ORDER]` line and the Telegram "Order placed" /
   "... order executed" messages in `bin/live.rs` now print `n_attempts=N` (renamed from the
   ambiguous `attempts=N` — see next bullet) alongside `process_latency`, so a slow reading is
   explainable at a glance instead of looking like unexplained network variance.
+- **Why the retry sleep exists, and why entries always pay it but exits sometimes don't
+  (2026-07-08)** — the flat 1-second backoff (`tokio::time::sleep(Duration::from_secs(1))`) was not
+  an arbitrary choice: it's the direct fix for the 2026-07-03 DOGE incident
+  (`trader/doc/incident_doge_2026-07-03.md` §3), where an *uncontrolled* exit retry loop (no
+  backoff at all) hammered the CLOB at up to one attempt per real tick — 284 attempts in ~9-10
+  seconds — which the incident write-up flags as risking tripping exchange rate limits and burning
+  the exit window doing nothing productive. The rule that came out of it: any internal retry loop
+  against the live exchange needs a backoff between attempts. `LiveExecutionEngine::place`
+  (entries) applies this uniformly — every retry sleeps the full 1s, regardless of *why* the
+  previous attempt failed — which is a direct, intentional port of the Python reference bot's own
+  `_place_order` (`../btc_5mins/bot/trading.py:376,407`, same unconditional `time.sleep(1.0)` on
+  every retry). `close_position` (stop-loss exits) later got a smarter split (2026-07-04,
+  `0ad6cd6`, "matches `bot/trading.py`'s retry cadence"): a FAK "no orders found to match" is
+  retried **immediately**, since the order book can change tick-to-tick and waiting doesn't help
+  and only costs exit-side urgency, while "not enough balance" (meaning the entry BUY's fill hasn't
+  settled on-chain yet) keeps the 1s sleep, since that specifically *is* a fixed settlement delay
+  that an instant retry can't shortcut (`execution.rs:530-536`). **This same fast-path was never
+  back-ported to entries** — `place()` has no equivalent branch, so an entry retry sleeps the full
+  1s even for a "no orders found to match" rejection, where (per the exit side's own reasoning)
+  waiting doesn't actually help the fill. This is exactly what happened in
+  `trader/doc/audit_trade_eth_2026-07-08.md`: the first entry attempt was killed with "no orders
+  found to match," and the bot slept the full second anyway before the (successful) second attempt
+  — not a bug, but a real, identified asymmetry between the entry and exit retry paths that's worth
+  revisiting if entry latency ever becomes a binding constraint.
 - **`signal_latency_ms` replaced by real per-feed exchange latency (`clob_latency`/
   `binance_latency`), and `attempts` renamed to `n_attempts` (2026-07-06)** — the previous
   `signal_latency_ms` (`received_ts − signal_ts`, where `signal_ts` was `tick.ts`, price_feed's
