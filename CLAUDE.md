@@ -5,6 +5,7 @@
 - **Don't code too fast.** Avoid jumping straight to edits or patches.
 - **Ask for confirmation before ANY file change and before ANY git commit. Push by default: once a commit is made, push it immediately without asking.**
 - **Exception — Markdown docs (`.md`): always commit and push these automatically, without asking first.** This covers audit/plan docs (`trader/doc/*.md`), study summaries, and README updates. The pushed doc/diff *is* the review mechanism — don't hold it back waiting for in-chat confirmation. This exception is scoped to `.md` files only; actual code (`.rs`), config (`.toml`), and scripts still require confirmation before every file change and commit per the rule above.
+- **Flag deferred/skipped items in README's `## TODO` section, one line each.** Any time work surfaces something important that isn't being fixed right now — a pre-existing bug found but out of scope, a fix deliberately skipped (e.g. a risk/tradeoff not worth taking in the moment), a known gap discovered mid-task — add a one-line dated entry to README's `## TODO` section (not just buried in a commit message or a "known incidents" writeup) so it stays tracked and doesn't get lost. Example: the 2026-07-08 `price_feed` clippy errors and the skipped `rust-toolchain.toml` pin, both found while fixing an unrelated `cargo fmt` issue.
 - Prefer diagnosing over patching — verify the actual cause (logs, processes, config) before proposing a fix.
 
 ## Project notes
