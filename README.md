@@ -169,19 +169,26 @@ on the remote before the nightly sync runs.
   after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
   confirmed clean end-to-end with the pin in place.
 
-- ~~DOGE WIN/LOSS mismatch (2026-07-09) — fix direction given, implementing.~~ Full root
-  cause and accepted design in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4.
-  Both `on_cycle_open` and `on_cycle_close` unconditionally reset a worker's state to
-  `Watching` on every cycle boundary, including while it's still `Confirming` an async
-  Gamma resolution — `on_cycle_open` fires within about a second of `Confirming` being
-  set (right after `CycleClose`, same ticker tick), so the correction path silently drops
-  its answer essentially every time under normal operation. Direction: halt over guess —
-  poll Gamma every 1s (free, since neither strategy can enter near a fresh cycle's start
-  anyway) until either it resolves or the asset's own `reversal_start_time` deadline
-  elapses, in which case halt new entries (existing `entry_suppressed`/`/resume`
-  mechanism) and alert, rather than silently keep the unverified result. Explicitly not
-  wiring `trade_reconcile.py`'s Gamma mismatches into Telegram (kept Python out of the
-  live Rust path, per direction).
+- ~~DOGE WIN/LOSS mismatch (2026-07-09).~~ **Done, same day**: full root cause, accepted
+  design, and Q&A in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4/§6.
+  `on_cycle_open`/`on_cycle_close` no longer clobber `Confirming`/`EnrichOnly` on a cycle
+  boundary; the resolution watcher now retries Gamma every 1s and halts new entries
+  (existing `entry_suppressed`/`/resume` mechanism) rather than guessing if it doesn't
+  resolve within the asset's own `reversal_start_time`. 7 new `worker.rs` unit tests
+  (`cargo test --lib worker::` 45/45); `cargo clippy --all-targets --all-features -D
+  warnings` and `cargo fmt --all --check` both clean. Deployed to Oracle via
+  `./scripts/deploy_trader.sh` — `trader-live.service` restarted clean, no open position
+  at restart time (checked `live_state_*.json` for any Holding-family state first).
+
+- **Pre-existing `config.rs`/`config_log.rs` test drift — found 2026-07-09, not fixed
+  (out of scope for that task).** `cargo test --lib` fails 4 tests unrelated to any recent
+  change: `config::tests::{default_fallback,load_and_resolve_btc,
+  unwind_time_falls_back_to_default_and_resolves_asset_override}` and
+  `config_log::tests::write_and_read_roundtrip`. The first three load the *latest*
+  `strategy_*.toml` from disk (`load_latest`) and assert hardcoded values pinned to a
+  specific historical calibration (comments cite 2026-07-05/07/08 dates) — the actual
+  config file has since been recalibrated, so the hardcoded expected numbers no longer
+  match. Confirmed pre-existing via `git stash` (same 4 failures on a clean checkout).
 
 </details>
 
@@ -1467,7 +1474,7 @@ entries).
 </details>
 
 <details>
-<summary><strong>DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09, root-caused, not yet fixed)</strong></summary>
+<summary><strong>DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09, fixed same day)</strong></summary>
 
 ## DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09)
 

@@ -117,34 +117,52 @@ fn arrow_side(side: Side) -> &'static str {
     }
 }
 
-/// Poll Gamma for `slug`'s resolution until it settles, then report the result relative
-/// to `side` (the position's own side) back on `tx` as `(asset, strategy, won)`. Mirrors
-/// `bot/worker.py::_api_result_watcher`'s cadence: up to 20 attempts, 30s apart (~10 min
-/// ceiling), giving up silently (just a log line) if it never resolves in that window.
+/// Poll Gamma for `slug`'s resolution every 1s until either it settles or `deadline_secs`
+/// has elapsed since the position closed, then report back on `tx` as
+/// `(asset, strategy, Some(won))` (relative to `side`, the position's own side) or
+/// `(asset, strategy, None)` on a deadline timeout.
+///
+/// `deadline_secs` is the asset's own `reversal_start_time` — the earliest either
+/// strategy could possibly want to open a new position this cycle anyway (`reversal` is
+/// gated by that exact config value; `high_prob` only fires in the last
+/// `enter_when_time_left` seconds of a cycle, i.e. far later), so blocking new entries on
+/// this asset+strategy until then costs nothing. A 1s cadence is safe for the same
+/// reason: Gamma "usually won't give you anything until 20-60s after cycle end," and
+/// there's no entry signal to miss by polling in the meantime. See
+/// trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4.
 fn spawn_resolution_watcher(
     http: reqwest::Client,
     slug: String,
     side: Side,
     asset: String,
     strategy: &'static str,
-    tx: mpsc::UnboundedSender<(String, &'static str, bool)>,
+    deadline_secs: f64,
+    tx: mpsc::UnboundedSender<(String, &'static str, Option<bool>)>,
 ) {
     tokio::spawn(async move {
-        for attempt in 1..=20 {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs_f64(deadline_secs);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             match fetch_gamma_resolution(&http, &slug).await {
                 Some(went_up) => {
                     let won = match side {
                         Side::Up => went_up,
                         Side::Down => !went_up,
                     };
-                    let _ = tx.send((asset, strategy, won));
+                    let _ = tx.send((asset, strategy, Some(won)));
                     return;
                 }
-                None => println!("[live] API pending (attempt {attempt}/20) for {slug}"),
+                None if tokio::time::Instant::now() >= deadline => {
+                    println!(
+                        "[live] gave up waiting for API resolution of {slug} after {deadline_secs:.0}s — halting {asset} ({strategy}) for manual review"
+                    );
+                    let _ = tx.send((asset, strategy, None));
+                    return;
+                }
+                None => {}
             }
         }
-        println!("[live] gave up waiting for API resolution of {slug} after 20 attempts (~10 min)");
     });
 }
 
@@ -460,7 +478,7 @@ struct Driver<'a> {
     engine: &'a LiveExecutionEngine<Signer>,
     telegram: Option<Arc<TelegramBot>>,
     http: reqwest::Client,
-    api_result_tx: mpsc::UnboundedSender<(String, &'static str, bool)>,
+    api_result_tx: mpsc::UnboundedSender<(String, &'static str, Option<bool>)>,
 }
 
 impl Driver<'_> {
@@ -856,7 +874,9 @@ impl Driver<'_> {
             | Action::LogTradeCorrection { .. }
             | Action::StopLossVerdict { .. }
             | Action::HaltEngaged
-            | Action::HaltReset => None, // handled by process_actions directly
+            | Action::HaltReset
+            | Action::GammaHaltEngaged { .. }
+            | Action::ApiResultNote(_) => None, // handled by process_actions directly
         }
     }
 
@@ -930,6 +950,7 @@ impl Driver<'_> {
                             rec.side,
                             slot.worker.asset.clone(),
                             slot.worker.strategy_name,
+                            slot.params.reversal_start_time,
                             self.api_result_tx.clone(),
                         );
                     }
@@ -1006,6 +1027,25 @@ impl Driver<'_> {
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }
+                    // Gamma never resolved within reversal_start_time of the position
+                    // closing — halt over guess (trader/doc/incident_DOGE_wrong_result_2026-07-09.md
+                    // §4): the provisional record stands as logged, unverified, and new
+                    // entries are suppressed until a human checks it and /resumes.
+                    Action::GammaHaltEngaged { record } => {
+                        println!(
+                            "[live] {} gave up waiting for Gamma resolution of {} — halting new entries ({})",
+                            slot.worker.asset, record.slug, slot.worker.strategy_name
+                        );
+                        self.notify(&format!(
+                            "🔴 <b>{} GAMMA UNRESOLVED — HALTED</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). New entries suppressed until /resume; please verify manually.",
+                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
+                            record.slug, slot.params.reversal_start_time, record.outcome.as_str(),
+                            if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
+                        )).await;
+                    }
+                    // Diagnostic-only — see the Action's own doc comment. No Telegram
+                    // spam for "everything's fine," just a trace in live.log.
+                    Action::ApiResultNote(note) => println!("[live] {note}"),
                     _ => {
                         if let Some(followup) = self.execute(slot, action, feed).await {
                             let more = slot.worker.step(followup);
@@ -1127,10 +1167,11 @@ async fn main() -> Result<()> {
     let (binance_tx, mut binance_rx) =
         mpsc::unbounded_channel::<(String, BinanceTick, Option<f64>)>();
     let (poly_tx, mut poly_rx) = mpsc::unbounded_channel::<(String, PolyTick, Option<f64>)>();
-    // (asset, strategy, won) handoff from background Gamma-resolution watchers
-    // (spawned per closed trade) back into the single-threaded step() loop.
+    // (asset, strategy, Some(won)/None-on-timeout) handoff from background
+    // Gamma-resolution watchers (spawned per closed trade) back into the
+    // single-threaded step() loop.
     let (api_result_tx, mut api_result_rx) =
-        mpsc::unbounded_channel::<(String, &'static str, bool)>();
+        mpsc::unbounded_channel::<(String, &'static str, Option<bool>)>();
 
     // One `AssetSlot` per (asset, strategy) pair — strategy list always comes from
     // the shared TOML's `AssetParams.strategies` (e.g. ETH -> [high_prob, reversal]),
@@ -1528,10 +1569,14 @@ async fn main() -> Result<()> {
                 }
             }
 
-            Some((asset, strategy, won)) = api_result_rx.recv() => {
+            Some((asset, strategy, result)) = api_result_rx.recv() => {
                 if let Some(slot) = assets.iter_mut().find(|s| s.worker.asset == asset && s.worker.strategy_name == strategy) {
-                    let actions = slot.worker.step(Event::ApiResult { won });
-                    // ApiResult never produces PlaceBuy/ClosePosition either — see note above.
+                    let event = match result {
+                        Some(won) => Event::ApiResult { won },
+                        None => Event::ApiResultTimeout,
+                    };
+                    let actions = slot.worker.step(event);
+                    // ApiResult(Timeout) never produces PlaceBuy/ClosePosition either — see note above.
                     driver.process_actions(slot, actions, Feed::Clob).await;
                 }
             }

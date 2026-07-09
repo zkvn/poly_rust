@@ -163,6 +163,12 @@ pub enum Event {
     ApiResult {
         won: bool,
     },
+    /// Gamma never resolved within the retry deadline (`reversal_start_time` seconds
+    /// after the position closed) — see `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`
+    /// §4. A `Confirming` worker halts new entries rather than keep an unverified
+    /// result silently; an `EnrichOnly` worker just gives up the counterfactual verdict
+    /// (it never affected pnl/halt to begin with).
+    ApiResultTimeout,
     Control(ControlEvent),
     Balance(BalanceEvent),
 }
@@ -247,6 +253,19 @@ pub enum Action {
     /// just cleared an *active* halt on this worker's strategy — not emitted on a
     /// session rollover that had nothing to clear.
     HaltReset,
+    /// `ApiResultTimeout` hit a `Confirming` (Win/Loss) record — Gamma never resolved
+    /// within the deadline, so the provisional record stands as final (unverified) and
+    /// new entries are suppressed until `/resume`. Distinct from `HaltEngaged` (loss
+    /// streak) and the balance-drawdown halt (`bin/live.rs`'s own message) — this one
+    /// means "we don't know if this was right," not "too many/too much lost."
+    GammaHaltEngaged {
+        record: TradeRecord,
+    },
+    /// Diagnostic-only: an `ApiResult`/`ApiResultTimeout` arrived but there was nothing
+    /// to do — either the provisional call was already correct, or the event arrived in
+    /// a state that no longer expects it (stale). `bin/live.rs` prints this to `live.log`;
+    /// no Telegram notification (not actionable) and no CSV/state write.
+    ApiResultNote(String),
 }
 
 // ── Persisted state (crash recovery) ──────────────────────────────────────────
@@ -669,6 +688,7 @@ impl Worker {
             ),
             Event::TimeoutSellFailed { error } => self.on_timeout_sell_failed(error),
             Event::ApiResult { won } => self.on_api_result(won),
+            Event::ApiResultTimeout => self.on_api_result_timeout(),
             Event::Control(c) => self.on_control(c),
             Event::Balance(b) => self.on_balance(b),
         }
@@ -693,9 +713,19 @@ impl Worker {
         self.cycle_start_ts = ctx.start_ts;
         self.cycle_end_ts = ctx.end_ts;
         self.cycle_slug = slug;
-        // A fresh cycle never inherits an in-flight position from the last one
-        // (each cycle's trade is fully resolved before the next opens).
-        self.state = WorkerState::Watching;
+        // A fresh cycle never inherits an in-flight *position* from the last one (each
+        // cycle's own hold/exit is fully resolved before the next opens) — but a pending
+        // async Gamma confirmation (Confirming/EnrichOnly) is not a position and can
+        // legitimately still be in flight here: `bin/live.rs`'s ticker fires this event
+        // immediately after `CycleClose` closes a trade into `Confirming`, so resetting
+        // unconditionally here clobbered every such confirmation within about a second of
+        // it being set — see trader/doc/incident_DOGE_wrong_result_2026-07-09.md §3a/§4.
+        if !matches!(
+            self.state,
+            WorkerState::Confirming(_) | WorkerState::EnrichOnly(_)
+        ) {
+            self.state = WorkerState::Watching;
+        }
         // Loss-streak halt's own daily reset — independent of, and never
         // touched by, entry_suppressed (halt/resume, drawdown). Matches
         // backtest.rs::run_backtest's per-cycle `reset_if_new_session` call.
@@ -719,7 +749,14 @@ impl Worker {
             _ => None,
         };
         let Some(h) = holding else {
-            self.state = WorkerState::Watching;
+            // Same rationale as on_cycle_open: don't discard a still-pending Gamma
+            // confirmation from the position that just closed (see §3a/§4 of the doc).
+            if !matches!(
+                self.state,
+                WorkerState::Confirming(_) | WorkerState::EnrichOnly(_)
+            ) {
+                self.state = WorkerState::Watching;
+            }
             return vec![];
         };
 
@@ -1228,8 +1265,12 @@ impl Worker {
             WorkerState::Confirming(original) => {
                 let flip_needed = won != (original.outcome == Outcome::Win);
                 if !flip_needed {
+                    let note = format!(
+                        "{}: Gamma confirmed provisional {:?} — no correction needed",
+                        original.slug, original.outcome
+                    );
                     self.state = WorkerState::Watching;
-                    return vec![Action::Persist];
+                    return vec![Action::ApiResultNote(note), Action::Persist];
                 }
                 let previous_outcome = original.outcome;
                 let previous_pnl = original.pnl;
@@ -1276,7 +1317,38 @@ impl Worker {
                     None => vec![Action::Persist],
                 }
             }
-            _ => vec![],
+            _ => vec![Action::ApiResultNote(format!(
+                "ApiResult arrived while state was {:?} — ignoring (stale?)",
+                self.state
+            ))],
+        }
+    }
+
+    /// Gamma never resolved within the retry deadline. `Confirming` (a Win/Loss whose
+    /// pnl/outcome are still provisional) halts new entries rather than keep an
+    /// unverified result — see trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4.
+    /// `EnrichOnly` (a StopLoss/Unwind/Timeout whose pnl/outcome are already final —
+    /// this is only for the advisory counterfactual verdict) just gives up quietly.
+    fn on_api_result_timeout(&mut self) -> Vec<Action> {
+        match &self.state {
+            WorkerState::Confirming(record) => {
+                let record = record.clone();
+                self.state = WorkerState::Watching;
+                self.entry_suppressed = true;
+                vec![Action::GammaHaltEngaged { record }, Action::Persist]
+            }
+            WorkerState::EnrichOnly(record) => {
+                let note = format!(
+                    "{}: gave up waiting for Gamma resolution — no counterfactual verdict",
+                    record.slug
+                );
+                self.state = WorkerState::Watching;
+                vec![Action::ApiResultNote(note), Action::Persist]
+            }
+            _ => vec![Action::ApiResultNote(format!(
+                "ApiResultTimeout arrived while state was {:?} — ignoring (stale?)",
+                self.state
+            ))],
         }
     }
 
@@ -1654,6 +1726,12 @@ mod tests {
             "1st loss must not emit HaltEngaged yet: {actions:?}"
         );
 
+        // Confirming now legitimately survives a cycle boundary (see
+        // trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4) — resolve it
+        // (API agrees, no flip) before the next entry so it isn't still blocking
+        // try_enter for this test's unrelated loss-streak assertion.
+        w.step(Event::ApiResult { won: false });
+
         // Loss 2, same session (enter_down_position reopens the same
         // ctx(1_000.0) cycle) -> hits halt_rev's threshold of 2.
         enter_down_position(&mut w, 10.0);
@@ -1678,6 +1756,10 @@ mod tests {
             actions.contains(&Action::HaltEngaged),
             "2nd loss must emit HaltEngaged: {actions:?}"
         );
+        // Resolve loss 2's Confirming too (see the note above) — the loss-streak
+        // halt below comes from HaltTracker/entry_suppressed, not from Confirming
+        // still being outstanding, so this doesn't affect what's being tested.
+        w.step(Event::ApiResult { won: false });
 
         // A new cycle in the *same* session must not clear it, and entries
         // must actually be suppressed now (not just is_halted() reporting true).
@@ -1909,6 +1991,10 @@ mod tests {
             price: 60_100.0,
         }));
         w.step(Event::CycleClose);
+        // Confirming now legitimately survives a cycle boundary (see
+        // trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4) — resolve it before
+        // the next entry so it isn't still blocking try_enter here.
+        w.step(Event::ApiResult { won: false });
         enter_down_position(&mut w, 10.0);
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1290.0,
@@ -2702,6 +2788,161 @@ mod tests {
                 .any(|a| matches!(a, Action::LogTrade(_) | Action::LogTradeCorrection { .. })),
             "verdict never rewrites pnl/result"
         );
+        assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    /// Regression test for trader/doc/incident_DOGE_wrong_result_2026-07-09.md §3a/§4:
+    /// `on_cycle_open` used to unconditionally reset `self.state` to `Watching`, which in
+    /// production clobbered `Confirming` within about a second of it being set (the very
+    /// next `CycleOpen`, fired right after the `CycleClose` that produced it) — silently
+    /// dropping every async Gamma correction under normal operation.
+    #[test]
+    fn confirming_survives_a_cycle_open_boundary() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+        assert!(matches!(w.state, WorkerState::Confirming(_)));
+
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_500.0),
+            slug: "btc-updown-5m-1500".to_string(),
+        });
+        assert!(
+            matches!(w.state, WorkerState::Confirming(_)),
+            "CycleOpen must not clobber an in-flight Gamma confirmation, got {:?}",
+            w.state
+        );
+    }
+
+    /// Same regression, the defense-in-depth case: a `CycleClose` with nothing currently
+    /// held (because entries are blocked while `Confirming`) must also leave `Confirming`
+    /// alone rather than reset it via the "nothing to close" fallback.
+    #[test]
+    fn confirming_survives_a_cycle_close_with_nothing_held() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+        assert!(matches!(w.state, WorkerState::Confirming(_)));
+
+        let actions = w.step(Event::CycleClose); // nothing held this time
+        assert!(actions.is_empty());
+        assert!(
+            matches!(w.state, WorkerState::Confirming(_)),
+            "a no-op CycleClose must not clobber an in-flight Gamma confirmation, got {:?}",
+            w.state
+        );
+    }
+
+    #[test]
+    fn api_result_confirms_without_flip_emits_note_and_no_correction() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+
+        let actions = w.step(Event::ApiResult { won: true }); // API agrees: DOWN did win
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::LogTradeCorrection { .. })),
+            "matching result must not emit a correction: {actions:?}"
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::ApiResultNote(_))),
+            "matching result should still leave a diagnostic trace: {actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
+        assert!(!w.entry_suppressed, "a clean confirmation must not halt");
+    }
+
+    #[test]
+    fn api_result_timeout_on_confirming_halts_and_keeps_provisional_record() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+
+        let actions = w.step(Event::ApiResultTimeout);
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::GammaHaltEngaged { record } = a {
+                    Some(record.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            record.outcome,
+            Outcome::Win,
+            "timeout must keep the original provisional outcome, not guess"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
+        assert!(
+            w.entry_suppressed,
+            "an unresolved confirmation must halt new entries"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::LogTrade(_) | Action::LogTradeCorrection { .. })),
+            "timeout must never rewrite pnl/result: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn api_result_timeout_on_enrich_only_gives_up_quietly_without_halting() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.27,
+            dn: 0.73,
+        }));
+        w.step(Event::UnwindFilled {
+            sold_shares: 10.0,
+            exit_price: 0.73,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        }); // -> EnrichOnly(Unwind), pnl/outcome already final
+        assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
+
+        let actions = w.step(Event::ApiResultTimeout);
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::GammaHaltEngaged { .. } | Action::LogTrade(_))),
+            "an EnrichOnly timeout must never halt or rewrite pnl: {actions:?}"
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::ApiResultNote(_))),
+            "should still leave a diagnostic trace: {actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
+        assert!(!w.entry_suppressed);
+    }
+
+    #[test]
+    fn api_result_and_timeout_on_stale_state_are_diagnostic_only() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        assert!(matches!(w.state, WorkerState::Watching));
+
+        let actions = w.step(Event::ApiResult { won: true });
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], Action::ApiResultNote(_)));
+
+        let actions = w.step(Event::ApiResultTimeout);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], Action::ApiResultNote(_)));
         assert!(matches!(w.state, WorkerState::Watching));
     }
 
