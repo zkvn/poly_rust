@@ -105,19 +105,24 @@ other assets) and didn't time out (no "gave up" line) — the only way to stop l
 returned `Some(...)` and the loop to `return`ed after sending on `tx`. So the correct
 answer *was* fetched — it just never took effect.
 
-**Root cause: `on_cycle_close`'s fallback unconditionally clobbers `Confirming`/`EnrichOnly`
-state on every cycle boundary, not just when a new position needs recording.**
+**Root cause: two independent unconditional state resets clobber `Confirming`/`EnrichOnly`
+on a cycle boundary — and the more severe of the two fires within about a second of the
+trade closing, not "one cycle later" as first thought (see the correction below).**
 
 ```rust
-// worker.rs:709-724
+// worker.rs:677-698 — on_cycle_open, fires for every asset/strategy on every 5-min boundary
+fn on_cycle_open(&mut self, ctx: CycleContext, slug: String) -> Vec<Action> {
+    ...
+    // A fresh cycle never inherits an in-flight position from the last one
+    // (each cycle's trade is fully resolved before the next opens).
+    self.state = WorkerState::Watching;   // <-- fires even when state == Confirming(_)
+    ...
+```
+
+```rust
+// worker.rs:709-724 — on_cycle_close's fallback, same bug, defense-in-depth case
 fn on_cycle_close(&mut self) -> Vec<Action> {
-    let holding = match &self.state {
-        WorkerState::Holding(h)
-        | WorkerState::Unwinding(h)
-        | WorkerState::StopExiting(h)
-        | WorkerState::TimingOut(h) => Some(h.clone()),
-        _ => None,
-    };
+    let holding = match &self.state { /* Holding-family */ _ => None };
     let Some(h) = holding else {
         self.state = WorkerState::Watching;   // <-- fires even when state == Confirming(_)
         return vec![];
@@ -125,27 +130,25 @@ fn on_cycle_close(&mut self) -> Vec<Action> {
     ...
 ```
 
-`CycleClose` fires for *every* asset/strategy worker on *every* 5-minute cycle boundary,
-regardless of whether that worker did anything this cycle. When a trade closes and enters
-`Confirming`, the worker correctly can't open a new position that cycle (`try_enter` requires
-`WorkerState::Watching`) — but the very next `CycleClose` event (one cycle later, i.e. up
-to 5 minutes after the trade, which is *inside* the resolution watcher's up-to-10-minute
-window) hits the `else` branch above with `holding = None` (there's nothing to close,
-correctly) and, as an unconditional side effect, stomps `Confirming(record)` back to
-`Watching`. Once that happens, the eventual `Event::ApiResult` lands in `on_api_result`
-(`worker.rs:1226`) with `self.state` no longer matching `WorkerState::Confirming(_)`, so it
-falls through to the silent `_ => vec![]` arm (line 1279) — no log line, no Telegram
-message, no CSV write, nothing observable at all. This matches the evidence exactly: the
-watcher's polling (real, 30s-spaced, independent of the cycle FSM) kept going and got an
-answer; the FSM had already discarded the place to put it.
-
-This is a race, not a guarantee-to-fail: if Gamma resolves within one cycle length (~5 min)
-of the trade closing, the correction still goes through fine — most of this bot's Win/Loss
-trades likely do get corrected successfully, which is presumably why this hadn't been
-caught by casual observation before the recon script's independent cross-check (§1) started
-running. But any resolution that takes longer than one cycle — anything at or beyond the
-~5-minute mark, well inside the watcher's own advertised 10-minute ceiling — is silently
-dropped by construction, every time.
+**Correction to the initial read of this bug:** `bin/live.rs`'s ticker (lines 1390–1448)
+fires `Event::CycleClose` for the ending cycle and then, in the same loop iteration for that
+same worker, `Event::CycleOpen` for the next one — separated only by an async `fetch_meta`
+Gamma call, typically well under a second. So `on_cycle_open`'s unconditional reset (not
+`on_cycle_close`'s) is the one that actually fires here, and it does so almost immediately
+after `Confirming` is set — long before the resolution watcher's first poll (which, at the
+old 30s-per-attempt cadence, couldn't even *ask* Gamma until 30s had passed). Read literally,
+this means the correction path should fail **every time**, not just when Gamma is slow — yet
+`live.log` also has two earlier examples of it succeeding
+(`grep 'API-corrected' trader/live_logs/live.log`, both 2026-07-03). The likely explanation:
+`bin/live.rs:1402-1405` skips `CycleOpen` entirely for a slot whose `last_binance` reads `<=
+0` that tick (a stale/gapped Binance feed) — leaving `current_slug = None`, so that worker's
+next `CycleOpen` doesn't fire until the *following* 5-minute boundary. Both surviving
+corrections coincide with retry-storm incidents already documented elsewhere in this repo
+(`exit_attempts: 284` and `exit_attempts: 3`), which independently suggests a rough patch for
+that process around then, plausibly including a feed gap. In other words, the correction path
+appears to only have ever worked *by accident*, when something else was already going wrong —
+under normal, healthy operation it silently drops every time, well within its own advertised
+10-minute ceiling, because the state it needs is gone in under a second.
 
 ### 3b. The daily Python reconciliation caught it correctly, but has no alerting
 
@@ -159,42 +162,67 @@ wrapper) has no Telegram step at all. So the one system that *did* work correctl
 a result that was only ever visible to someone who went looking at the git history or the
 file directly — which is exactly how this was found (on request), not proactively.
 
-## 4. Proposed fixes
+## 4. Decision (direction given 2026-07-09, verbatim in §6) and fix design
 
-1. **Stop `on_cycle_close` from clobbering an in-flight confirmation.** Only reset to
-   `Watching` when the current state isn't already `Confirming`/`EnrichOnly`:
-   ```rust
-   let Some(h) = holding else {
-       if !matches!(self.state, WorkerState::Confirming(_) | WorkerState::EnrichOnly(_)) {
-           self.state = WorkerState::Watching;
-       }
-       return vec![];
-   };
-   ```
-   **Caveat, needs to ship together with this:** today, a worker "stuck" in `Confirming`
-   can't enter new trades (`try_enter` requires `Watching`). If this fix ships alone, a
-   Gamma resolution that never arrives (the watcher's own 20-attempt/10-min give-up path,
-   `bin/live.rs:147`, which today just logs and does nothing else) leaves the worker
-   permanently unable to trade that asset/strategy again — trading a silent-wrong-pnl bug
-   for a silent-frozen-worker bug. The give-up path needs to also emit an event that forces
-   `self.state` back to `Watching` (leaving the original provisional record as the final
-   one) *and* sends a Telegram alert ("⚠️ never got Gamma confirmation for X, kept
-   provisional result") so a timeout is at least visible, unlike today.
+Direction: prefer **halt over guess**. If Gamma hasn't resolved by the time it would matter,
+stop trading that asset/strategy and wait for a human, rather than silently keep going on an
+unverified result. Explicitly **not** doing the `trade_reconcile.py` → Telegram wiring (§3b,
+fix 2 in the original draft) — kept out of scope, Python stays un-mixed with the live Rust
+path.
 
-2. **Wire `trade_reconcile.py`'s Gamma mismatches into Telegram**, not just git. Cheapest
-   version: after `trade_reconcile.py --today` runs in `run_daily_recon.bash`, grep the
-   generated report's "Mismatches" table and, if non-empty, POST a summary to the same
-   Telegram bot/chat the live trader already notifies (credentials likely already available
-   to whatever process configured the live trader's bot token). This path is a same-day,
-   not same-cycle, backstop — but it's a backstop that currently exists and does nothing
-   with its own findings.
+1. **Stop both `on_cycle_open` and `on_cycle_close` from clobbering an in-flight
+   confirmation.** Neither may reset `self.state` to `Watching` when it's already
+   `Confirming`/`EnrichOnly`. This alone would leave a worker permanently stuck if Gamma
+   never resolves, so it ships together with fix 2, never alone.
 
-3. **Log the drop, at minimum, even before the structural fix lands.** Both silent-discard
-   arms in `on_api_result` (`worker.rs:1230–1233`'s "no flip needed" early return and the
-   catch-all `_ => vec![]` at line 1279) currently produce zero output. Even a `println!`
-   noting "ApiResult for {asset}/{strategy} arrived while state was {:?}, ignoring" would
-   have made this incident discoverable directly from `live.log` instead of requiring
-   correlating watcher attempt counts against cycle-boundary log lines after the fact.
+2. **Replace the resolution watcher's cadence and add a hard deadline + halt.** Gamma
+   "usually won't give you anything until 20 to 60 seconds after cycle end" (direction,
+   verbatim) — until then, polling is free: nothing in either strategy can fire an entry
+   near the start of a fresh cycle anyway (`reversal` is explicitly gated by
+   `reversal_start_time`, currently 120s; `high_prob` only evaluates inside
+   `enter_when_time_left` of cycle *end*, i.e. the last ~10–20s). So: retry Gamma every
+   **1 second** (cheap, and there's no missed-trade cost to waiting) starting right after
+   the position closes, until either (a) it resolves — apply the correction if needed,
+   clear back to `Watching`, trade normally for whatever's left of the window — or (b) the
+   asset's own `reversal_start_time` deadline elapses unresolved — in which case **send a
+   Telegram alert and halt new entries for that asset/strategy** (reusing the existing
+   `entry_suppressed` / `/resume` mechanism that manual `/halt` and the balance-drawdown
+   halt already use), leaving the original provisional record as-is for manual review. No
+   further auto-retry after the deadline — a human decides when it's safe to `/resume`.
 
-Not fixed in this pass — flagged in top-level `README.md`'s `## TODO` per project
-convention.
+3. **Log the previously-silent `on_api_result` branches.** Both the "no flip needed"
+   confirmation and the new deadline/halt path get an explicit log line — this incident
+   was only diagnosable by cross-referencing watcher attempt counts against cycle-boundary
+   log lines after the fact; a direct line removes that step next time.
+
+**Implementation:** `trader/src/worker.rs` and `trader/src/bin/live.rs` — see the commit
+that follows this doc for the exact diff. New unit tests cover: `Confirming` surviving both
+a `CycleOpen` and a `CycleClose` with nothing to hold; the timeout path halting `Confirming`
+(entry suppressed, original record untouched) but *not* halting `EnrichOnly` (advisory-only,
+per its existing "never touches pnl/result/halt" contract); and the diagnostic log actions
+firing on both the no-flip-needed and stale-state branches.
+
+## 5. Not in scope
+
+- `trade_reconcile.py` → Telegram wiring (§3b) — explicitly deferred, Python stays
+  git-only; flagged in top-level `README.md`'s `## TODO`.
+
+## 6. Q&A log
+
+**Q (verbatim):** "silent-wrong-pnl bug for a silent-frozen-worker bug is great trade off
+for me, I need it to be accurate and under control, I'd rather stop than going forward
+blindly, so yes, if gamma doesn't resolve, halt the market from future cycles until it's
+clear. this part may needs further consideration, gamma API usually won't give you anything
+until 20 to 60 seconds after cycle end, you can add a retry for gamma with 1 second sleep,
+it won't affect anything as there is no signal or any chance to place a bet around beginning
+of the cycle, so it's safe to retry until that reveral_start_time config value, currently at
+120 seconds into a new cycle, if gamma returns before that, it's ok to trade the new cycle,
+otherwise send an error message to telegram and halt the market, leave it for user manual
+investigation . make sure it is super clean" / "I don't want python recon mixed, so skip
+this one" / "log is good idea, definitely we need such info"
+
+**A:** Implemented exactly as directed — §4 above. `on_cycle_open`/`on_cycle_close` no
+longer clobber `Confirming`/`EnrichOnly`; the watcher polls every 1s and gives up exactly
+at `reversal_start_time` seconds after the position closed, halting (not guessing) on
+timeout via the existing halt/`entry_suppressed`/`/resume` plumbing; `trade_reconcile.py`
+untouched, per direction; diagnostic log lines added on every previously-silent branch.

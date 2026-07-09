@@ -169,18 +169,19 @@ on the remote before the nightly sync runs.
   after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
   confirmed clean end-to-end with the pin in place.
 
-- **DOGE WIN/LOSS mismatch (2026-07-09) — two fixes not yet implemented, doc-only pass so
-  far.** Full root cause in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`. (1)
-  `worker.rs::on_cycle_close`'s fallback unconditionally resets `self.state` to `Watching`
-  on every 5-minute cycle boundary, including when a worker is still `Confirming` an
-  async Gamma resolution from the *previous* cycle's trade — so any correction that takes
-  longer than one cycle (~5 min) to arrive is silently dropped, and the wrong provisional
-  WIN/LOSS + pnl stands uncorrected. Needs to ship together with a fix to the resolution
-  watcher's give-up path (`bin/live.rs:147`), otherwise a worker whose confirmation times
-  out entirely gets stuck unable to trade that asset/strategy again. (2)
-  `trade_reconcile.py`'s daily Gamma cross-check already catches these mismatches
-  correctly (see the doc's §1) but only commits+pushes the finding to git — no Telegram
-  alert — so a caught mismatch is still invisible same-day unless someone reads the report.
+- ~~DOGE WIN/LOSS mismatch (2026-07-09) — fix direction given, implementing.~~ Full root
+  cause and accepted design in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4.
+  Both `on_cycle_open` and `on_cycle_close` unconditionally reset a worker's state to
+  `Watching` on every cycle boundary, including while it's still `Confirming` an async
+  Gamma resolution — `on_cycle_open` fires within about a second of `Confirming` being
+  set (right after `CycleClose`, same ticker tick), so the correction path silently drops
+  its answer essentially every time under normal operation. Direction: halt over guess —
+  poll Gamma every 1s (free, since neither strategy can enter near a fresh cycle's start
+  anyway) until either it resolves or the asset's own `reversal_start_time` deadline
+  elapses, in which case halt new entries (existing `entry_suppressed`/`/resume`
+  mechanism) and alert, rather than silently keep the unverified result. Explicitly not
+  wiring `trade_reconcile.py`'s Gamma mismatches into Telegram (kept Python out of the
+  live Rust path, per direction).
 
 </details>
 
@@ -1485,20 +1486,24 @@ resolution was the opposite outcome (a loss). Two separate causes, both confirme
    reads as final.
 2. **The correction that should have caught it was silently dropped.** `live.log` shows
    the Gamma resolution watcher polling normally (7 logged attempts) then going silent
-   with no timeout message and no correction — because `on_cycle_close`'s fallback
-   unconditionally resets `self.state` to `Watching` on *every* cycle boundary, including
-   while a worker is still `Confirming` a previous trade's async Gamma result. The next
-   cycle boundary (~5 min later, inside the watcher's own ~10-min polling window) clobbers
-   `Confirming(record)` before the eventual correct answer arrives, so `on_api_result`
-   silently no-ops on a state it no longer recognizes. Separately, the *daily* Python
-   reconciliation did catch this mismatch correctly, but only commits the finding to git —
-   no Telegram alert wired up — so it stayed invisible same-day either way.
+   with no timeout message and no correction — because both `on_cycle_open` and
+   `on_cycle_close`'s fallback unconditionally reset `self.state` to `Watching` on *every*
+   cycle boundary, including while a worker is still `Confirming` a previous trade's async
+   Gamma result. `on_cycle_open` is the one that actually fires here — it runs within
+   about a second of `Confirming` being set (same ticker tick as `CycleClose`, separated
+   only by an async Gamma metadata fetch), so under normal operation the correction path
+   drops its answer essentially every time, not just on a slow resolution — see the doc's
+   §3a correction. Separately, the *daily* Python reconciliation did catch this mismatch
+   correctly, but only commits the finding to git — no Telegram alert wired up — so it
+   stayed invisible same-day either way.
 
-Proposed fixes (not yet implemented — see the doc's §4 and the `## TODO` entry above):
-don't let `on_cycle_close` clobber an in-flight `Confirming`/`EnrichOnly` state (paired
-with a timeout/give-up path so a worker can't get stuck forever if Gamma never resolves);
-wire `trade_reconcile.py`'s Gamma mismatches into a Telegram alert instead of git-only;
-log the silent-drop arms in `on_api_result` so this class of bug is diagnosable from
-`live.log` alone next time.
+**Direction (2026-07-09):** halt over guess. Fix implemented (see the doc's §4/§6):
+`on_cycle_open`/`on_cycle_close` no longer clobber `Confirming`/`EnrichOnly`; the
+resolution watcher now retries Gamma every 1s (free — neither strategy can enter near a
+fresh cycle's start anyway) until either it resolves or the asset's own
+`reversal_start_time` deadline elapses, at which point it halts new entries for that
+asset/strategy (existing `entry_suppressed`/`/resume` mechanism) and alerts, leaving the
+provisional record for manual review rather than guessing. `trade_reconcile.py` → Telegram
+wiring explicitly stayed out of scope (Python kept separate from the live Rust path).
 
 </details>
