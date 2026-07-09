@@ -1513,4 +1513,36 @@ asset/strategy (existing `entry_suppressed`/`/resume` mechanism) and alerts, lea
 provisional record for manual review rather than guessing. `trade_reconcile.py` → Telegram
 wiring explicitly stayed out of scope (Python kept separate from the live Rust path).
 
+**Update (2026-07-09):** two follow-on changes to the same watcher.
+
+1. **Polling cadence is now delayed and config-driven, not an immediate hardcoded 1s
+   loop.** Gamma "usually won't give you anything until 20-60s after cycle end," so the
+   watcher now waits `gamma_poll_delay_secs` (new per-asset config, default 60s, clamped
+   to the deadline) before its first attempt, then retries every
+   `gamma_poll_interval_secs` (new per-asset config, default 3s). The overall deadline is
+   unchanged (`reversal_start_time`, still 120s default). Both new fields live in
+   `strategy_*.toml` next to `reversal_start_time`, resolved through the same
+   per-asset/`default`-fallback machinery (`config.rs`).
+2. **A balance-based override on the halt itself.** If Gamma still hasn't resolved at the
+   deadline, `bin/live.rs` now also checks a new `GammaBalanceTracker` (`balance.rs`) — a
+   rolling comparison of the account's balance at this cycle's periodic checkpoint (the
+   same fetch `BalanceGuard` already does once per cycle, no extra API calls) against the
+   previous cycle's checkpoint. If balance is up, the slot does **not** halt — the
+   provisional record still stands as logged, unverified, but new entries continue
+   (`Action::GammaUnresolvedContinued` instead of `Action::GammaHaltEngaged`, still
+   Telegram-alerted). An unknown/failed balance sample fails safe to *not* skipping the
+   halt (`Event::ApiResultTimeout`'s `balance_increased` defaults to `false`), matching
+   this doc's own "halt over guess" rule above. This never clears a halt from another
+   source (manual `/halt`, loss-streak, drawdown) — `Worker::on_api_result_timeout` only
+   ever *adds* `entry_suppressed = true` in the non-balance-increased branch, never clears
+   it in the other.
+
+   **Risk tradeoff accepted here, worth being explicit about:** this is a deliberate
+   loosening of the exact halt this incident introduced. A wrong provisional WIN/LOSS can
+   now go un-halted — and so un-flagged for manual review — if the rest of the account
+   happens to be net up that cycle. The mitigating factor is that the provisional record
+   itself is unchanged and still marked unverified in the CSV/Telegram either way, so
+   `trade_reconcile.py`'s independent daily Gamma cross-check still catches it the next
+   day even if the live halt doesn't fire same-day.
+
 </details>
