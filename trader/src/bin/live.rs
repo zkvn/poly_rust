@@ -914,8 +914,9 @@ impl Driver<'_> {
                             Outcome::Timeout => "⏱️❌",
                         };
                         let sign = if rec.pnl >= 0.0 { "+" } else { "-" };
+                        let delta_pct = slot.worker.delta_pct() * 100.0;
                         self.notify(&format!(
-                            "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | cycle: ${:.2}→${:.2} | pnl={sign}${:.4} | {}W/{}L",
+                            "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | cycle: ${:.2}→${:.2} | delta={delta_pct:+.3}% | pnl={sign}${:.4} | {}W/{}L",
                             slot.worker.asset, rec.outcome.as_str(), hkt_now().format("%H:%M:%S"),
                             arrow_side(rec.side), slot.worker.strategy_name,
                             rec.token_price, rec.exit_price,
