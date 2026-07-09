@@ -39,9 +39,10 @@ record_clob = false
 [trade_size_usdc]
 default = 1.0
 
-# All three trade assets get both strategies
+# Default to reversal only; ETH is the only asset running both strategies.
 [strategies]
-default = ["high_prob", "reversal"]
+default = ["reversal"]
+ETH = ["high_prob", "reversal"]
 
 # --- Halt ---
 [halt_rev]
