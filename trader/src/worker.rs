@@ -166,9 +166,16 @@ pub enum Event {
     /// Gamma never resolved within the retry deadline (`reversal_start_time` seconds
     /// after the position closed) — see `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`
     /// §4. A `Confirming` worker halts new entries rather than keep an unverified
-    /// result silently; an `EnrichOnly` worker just gives up the counterfactual verdict
-    /// (it never affected pnl/halt to begin with).
-    ApiResultTimeout,
+    /// result silently, *unless* `balance_increased` — see `on_api_result_timeout`.
+    /// An `EnrichOnly` worker just gives up the counterfactual verdict regardless (it
+    /// never affected pnl/halt to begin with).
+    ApiResultTimeout {
+        /// Whether the account balance grew from the previous cycle's checkpoint to
+        /// this one (`GammaBalanceTracker::increased()`, `None` collapsed to `false`
+        /// by the caller — unknown/failed-fetch fails safe to "still halt"). Set by
+        /// `bin/live.rs` right before dispatching this event (2026-07-09).
+        balance_increased: bool,
+    },
     Control(ControlEvent),
     Balance(BalanceEvent),
 }
@@ -260,6 +267,18 @@ pub enum Action {
     /// means "we don't know if this was right," not "too many/too much lost."
     GammaHaltEngaged {
         record: TradeRecord,
+    },
+    /// `ApiResultTimeout` hit a `Confirming` record, but `balance_increased` was true —
+    /// the provisional record still stands as final (unverified), same as
+    /// `GammaHaltEngaged`, but new entries are *not* suppressed on account of this
+    /// timeout (2026-07-09; see `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`
+    /// and the README's Gamma-halt section for the risk tradeoff this accepts).
+    /// `entry_suppressed` is this worker's *actual current* suppression state — still
+    /// `true` here if some other halt (manual `/halt`, loss-streak, drawdown) already
+    /// applies; this action never clears one.
+    GammaUnresolvedContinued {
+        record: TradeRecord,
+        entry_suppressed: bool,
     },
     /// Diagnostic-only: an `ApiResult`/`ApiResultTimeout` arrived but there was nothing
     /// to do — either the provisional call was already correct, or the event arrived in
@@ -688,7 +707,9 @@ impl Worker {
             ),
             Event::TimeoutSellFailed { error } => self.on_timeout_sell_failed(error),
             Event::ApiResult { won } => self.on_api_result(won),
-            Event::ApiResultTimeout => self.on_api_result_timeout(),
+            Event::ApiResultTimeout { balance_increased } => {
+                self.on_api_result_timeout(balance_increased)
+            }
             Event::Control(c) => self.on_control(c),
             Event::Balance(b) => self.on_balance(b),
         }
@@ -1326,16 +1347,29 @@ impl Worker {
 
     /// Gamma never resolved within the retry deadline. `Confirming` (a Win/Loss whose
     /// pnl/outcome are still provisional) halts new entries rather than keep an
-    /// unverified result — see trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4.
-    /// `EnrichOnly` (a StopLoss/Unwind/Timeout whose pnl/outcome are already final —
-    /// this is only for the advisory counterfactual verdict) just gives up quietly.
-    fn on_api_result_timeout(&mut self) -> Vec<Action> {
+    /// unverified result — see trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4 —
+    /// *unless* `balance_increased`, in which case the account has grown since last
+    /// cycle's checkpoint regardless of this one unresolved trade, and entries continue
+    /// instead of halting (2026-07-09). `EnrichOnly` (a StopLoss/Unwind/Timeout whose
+    /// pnl/outcome are already final — this is only for the advisory counterfactual
+    /// verdict) just gives up quietly either way; balance never enters into it.
+    fn on_api_result_timeout(&mut self, balance_increased: bool) -> Vec<Action> {
         match &self.state {
             WorkerState::Confirming(record) => {
                 let record = record.clone();
                 self.state = WorkerState::Watching;
-                self.entry_suppressed = true;
-                vec![Action::GammaHaltEngaged { record }, Action::Persist]
+                if balance_increased {
+                    vec![
+                        Action::GammaUnresolvedContinued {
+                            record,
+                            entry_suppressed: self.entry_suppressed,
+                        },
+                        Action::Persist,
+                    ]
+                } else {
+                    self.entry_suppressed = true;
+                    vec![Action::GammaHaltEngaged { record }, Action::Persist]
+                }
             }
             WorkerState::EnrichOnly(record) => {
                 let note = format!(
@@ -1393,6 +1427,8 @@ mod tests {
             reversal: 0.60,
             reversal_low_threshold: 0.20,
             reversal_start_time: 120.0,
+            gamma_poll_delay_secs: 60.0,
+            gamma_poll_interval_secs: 3.0,
             price_high_rev: 0.90,
             delta_pct_rev: 0.0008,
             sl_reversal: 0.0,
@@ -2866,7 +2902,9 @@ mod tests {
         enter_down_position(&mut w, 10.0);
         w.step(Event::CycleClose); // -> Confirming(WIN)
 
-        let actions = w.step(Event::ApiResultTimeout);
+        let actions = w.step(Event::ApiResultTimeout {
+            balance_increased: false,
+        });
         let record = actions
             .iter()
             .find_map(|a| {
@@ -2896,6 +2934,90 @@ mod tests {
     }
 
     #[test]
+    fn api_result_timeout_on_confirming_with_balance_increased_continues_without_halting() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+
+        let actions = w.step(Event::ApiResultTimeout {
+            balance_increased: true,
+        });
+        let (record, entry_suppressed) = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::GammaUnresolvedContinued {
+                    record,
+                    entry_suppressed,
+                } = a
+                {
+                    Some((record.clone(), *entry_suppressed))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            record.outcome,
+            Outcome::Win,
+            "timeout must keep the original provisional outcome, not guess"
+        );
+        assert!(
+            !entry_suppressed,
+            "balance up since last cycle's checkpoint must not introduce a new halt"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
+        assert!(
+            !w.entry_suppressed,
+            "balance-increased timeout must not halt new entries"
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                Action::GammaHaltEngaged { .. }
+                    | Action::LogTrade(_)
+                    | Action::LogTradeCorrection { .. }
+            )),
+            "timeout must never halt or rewrite pnl/result when balance is up: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn api_result_timeout_with_balance_increased_reports_a_pre_existing_halt_as_still_suppressed() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+        w.step(Event::Control(ControlEvent::Halt)); // e.g. manual /halt, independent of gamma
+
+        let actions = w.step(Event::ApiResultTimeout {
+            balance_increased: true,
+        });
+        let entry_suppressed = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::GammaUnresolvedContinued {
+                    entry_suppressed, ..
+                } = a
+                {
+                    Some(*entry_suppressed)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert!(
+            entry_suppressed,
+            "a pre-existing halt (e.g. manual /halt) must still read as suppressed, \
+             even though this timeout itself didn't cause it"
+        );
+        assert!(
+            w.entry_suppressed,
+            "balance-increased timeout must never clear a halt set by another source"
+        );
+    }
+
+    #[test]
     fn api_result_timeout_on_enrich_only_gives_up_quietly_without_halting() {
         let p = btc_params();
         let mut w = Worker::new_reversal("BTC", &p);
@@ -2913,7 +3035,9 @@ mod tests {
         }); // -> EnrichOnly(Unwind), pnl/outcome already final
         assert!(matches!(w.state, WorkerState::EnrichOnly(_)));
 
-        let actions = w.step(Event::ApiResultTimeout);
+        let actions = w.step(Event::ApiResultTimeout {
+            balance_increased: false,
+        });
         assert!(
             !actions
                 .iter()
@@ -2940,7 +3064,9 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::ApiResultNote(_)));
 
-        let actions = w.step(Event::ApiResultTimeout);
+        let actions = w.step(Event::ApiResultTimeout {
+            balance_increased: false,
+        });
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::ApiResultNote(_)));
         assert!(matches!(w.state, WorkerState::Watching));

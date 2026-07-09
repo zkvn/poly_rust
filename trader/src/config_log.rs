@@ -194,18 +194,29 @@ mod tests {
         assert_eq!(e.asset, "BTC");
         assert_eq!(e.event, "startup");
         assert_eq!(e.strategies, vec!["reversal".to_string()]);
-        assert!((e.reversal["BTC"] - 0.70).abs() < 1e-9);
-        assert!((e.delta_pct_rev["BTC"] - 0.0006).abs() < 1e-9);
-        // halt_rev has no explicit BTC override in strategy_20260705.toml — falls back to "default",
-        // exactly like Python's `d.get(asset, d.get("default", 0))`.
+        // BTC has no explicit `reversal`/`delta_pct_rev` override in strategy_20260708.toml
+        // — falls back to "default", exactly like Python's `d.get(asset, d.get("default", 0))`
+        // (updated 2026-07-09: previously BTC had its own override, from strategy_20260705.toml;
+        // see the README TODO entry documenting this drift).
+        assert!((e.reversal.get("BTC").unwrap_or(&e.reversal["default"]) - 0.55).abs() < 1e-9);
+        assert!(
+            (e.delta_pct_rev
+                .get("BTC")
+                .unwrap_or(&e.delta_pct_rev["default"])
+                - 0.0010)
+                .abs()
+                < 1e-9
+        );
         assert_eq!(*e.halt_rev.get("BTC").unwrap_or(&e.halt_rev["default"]), 2);
         assert!(e.hkt.ends_with(" HKT"));
         assert!(e.assets.contains("BTC"));
-        // trade_assets scoped to ETH only (2026-07-07) — see
-        // trader/doc/audit_sl_no_trigger_2026-07-07.md; `assets` (monitored/configured)
-        // still covers all 6, `trade_assets` (actually traded) does not.
+        // trade_assets scoped to BTC/ETH/DOGE (2026-07-08 full-history top-win-rate
+        // recalibration) — see strategy_20260708.toml's meta comment; supersedes the
+        // earlier ETH-only scoping from trader/doc/audit_sl_no_trigger_2026-07-07.md.
+        // `assets` (monitored/configured) still covers all 6, `trade_assets` (actually
+        // traded) is the narrower BTC/ETH/DOGE set.
         assert!(e.trade_assets.contains("ETH"));
-        assert!(!e.trade_assets.contains("BTC"));
+        assert!(e.trade_assets.contains("BTC"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

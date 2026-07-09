@@ -33,7 +33,7 @@ use polymarket_client_sdk_v2::types::{Address, U256};
 use tokio::sync::mpsc;
 
 use futures::StreamExt as _;
-use trader::balance::{BalanceGuard, seconds_until_next_check};
+use trader::balance::{BalanceGuard, GammaBalanceTracker, seconds_until_next_check};
 use trader::config::AssetParams;
 use trader::execution::{
     ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus, local_signer_from_key,
@@ -117,7 +117,21 @@ fn arrow_side(side: Side) -> &'static str {
     }
 }
 
-/// Poll Gamma for `slug`'s resolution every 1s until either it settles or `deadline_secs`
+/// Gamma resolution watcher timing, all three sourced from the asset's own config
+/// (`reversal_start_time`/`gamma_poll_delay_secs`/`gamma_poll_interval_secs`) — grouped
+/// into one struct purely to keep `spawn_resolution_watcher`'s argument count under
+/// clippy's `too_many_arguments` limit.
+#[derive(Debug, Clone, Copy)]
+struct GammaPollCadence {
+    /// Give up (and report a timeout) this many seconds after the position closed.
+    deadline_secs: f64,
+    /// Wait this long before the first poll attempt.
+    poll_delay_secs: f64,
+    /// Retry cadence after that first attempt.
+    poll_interval_secs: f64,
+}
+
+/// Poll Gamma for `slug`'s resolution until either it settles or `cadence.deadline_secs`
 /// has elapsed since the position closed, then report back on `tx` as
 /// `(asset, strategy, Some(won))` (relative to `side`, the position's own side) or
 /// `(asset, strategy, None)` on a deadline timeout.
@@ -126,24 +140,35 @@ fn arrow_side(side: Side) -> &'static str {
 /// strategy could possibly want to open a new position this cycle anyway (`reversal` is
 /// gated by that exact config value; `high_prob` only fires in the last
 /// `enter_when_time_left` seconds of a cycle, i.e. far later), so blocking new entries on
-/// this asset+strategy until then costs nothing. A 1s cadence is safe for the same
-/// reason: Gamma "usually won't give you anything until 20-60s after cycle end," and
-/// there's no entry signal to miss by polling in the meantime. See
-/// trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4.
+/// this asset+strategy until then costs nothing.
+///
+/// Polling doesn't start immediately: Gamma "usually won't give you anything until
+/// 20-60s after cycle end" (trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4), so
+/// the first attempt waits `poll_delay_secs` (clamped to `deadline_secs`, in case a
+/// misconfigured delay would otherwise exceed the deadline), then retries every
+/// `poll_interval_secs` (2026-07-09; previously an immediate, hardcoded 1s cadence).
 fn spawn_resolution_watcher(
     http: reqwest::Client,
     slug: String,
     side: Side,
     asset: String,
     strategy: &'static str,
-    deadline_secs: f64,
+    cadence: GammaPollCadence,
     tx: mpsc::UnboundedSender<(String, &'static str, Option<bool>)>,
 ) {
+    let GammaPollCadence {
+        deadline_secs,
+        poll_delay_secs,
+        poll_interval_secs,
+    } = cadence;
     tokio::spawn(async move {
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs_f64(deadline_secs);
+        tokio::time::sleep(std::time::Duration::from_secs_f64(
+            poll_delay_secs.min(deadline_secs).max(0.0),
+        ))
+        .await;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             match fetch_gamma_resolution(&http, &slug).await {
                 Some(went_up) => {
                     let won = match side {
@@ -162,6 +187,10 @@ fn spawn_resolution_watcher(
                 }
                 None => {}
             }
+            tokio::time::sleep(std::time::Duration::from_secs_f64(
+                poll_interval_secs.max(0.1),
+            ))
+            .await;
         }
     });
 }
@@ -876,6 +905,7 @@ impl Driver<'_> {
             | Action::HaltEngaged
             | Action::HaltReset
             | Action::GammaHaltEngaged { .. }
+            | Action::GammaUnresolvedContinued { .. }
             | Action::ApiResultNote(_) => None, // handled by process_actions directly
         }
     }
@@ -950,7 +980,11 @@ impl Driver<'_> {
                             rec.side,
                             slot.worker.asset.clone(),
                             slot.worker.strategy_name,
-                            slot.params.reversal_start_time,
+                            GammaPollCadence {
+                                deadline_secs: slot.params.reversal_start_time,
+                                poll_delay_secs: slot.params.gamma_poll_delay_secs,
+                                poll_interval_secs: slot.params.gamma_poll_interval_secs,
+                            },
                             self.api_result_tx.clone(),
                         );
                     }
@@ -1038,6 +1072,31 @@ impl Driver<'_> {
                         );
                         self.notify(&format!(
                             "🔴 <b>{} GAMMA UNRESOLVED — HALTED</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). New entries suppressed until /resume; please verify manually.",
+                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
+                            record.slug, slot.params.reversal_start_time, record.outcome.as_str(),
+                            if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
+                        )).await;
+                    }
+                    // Gamma never resolved, but balance is up vs. last cycle's checkpoint
+                    // (2026-07-09) — kept provisional, unverified, but entries are not
+                    // suppressed on account of this timeout. `entry_suppressed` is the
+                    // worker's *actual current* state, since some other halt (manual
+                    // /halt, loss-streak, drawdown) may still apply independently.
+                    Action::GammaUnresolvedContinued {
+                        record,
+                        entry_suppressed,
+                    } => {
+                        println!(
+                            "[live] {} gave up waiting for Gamma resolution of {} — balance up since last cycle's checkpoint, continuing ({})",
+                            slot.worker.asset, record.slug, slot.worker.strategy_name
+                        );
+                        let suffix = if *entry_suppressed {
+                            " (new entries remain suppressed by a separate halt already in effect.)"
+                        } else {
+                            " New entries continue normally."
+                        };
+                        self.notify(&format!(
+                            "🟠 <b>{} GAMMA UNRESOLVED — CONTINUING</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). Balance is up since last cycle's checkpoint, so not halting.{suffix} Please verify manually.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
                             record.slug, slot.params.reversal_start_time, record.outcome.as_str(),
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
@@ -1375,6 +1434,10 @@ async fn main() -> Result<()> {
         .await;
 
     let balance_guard = BalanceGuard::new();
+    // Rolling cycle-over-cycle balance comparison for the Gamma-unresolved-timeout
+    // override (2026-07-09) — fed from the same periodic fetch as `balance_guard`
+    // below, no extra API calls. See `GammaBalanceTracker`'s own doc comment.
+    let gamma_balance = GammaBalanceTracker::new();
     let mut balance_deadline = tokio::time::Instant::now()
         + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
 
@@ -1573,7 +1636,12 @@ async fn main() -> Result<()> {
                 if let Some(slot) = assets.iter_mut().find(|s| s.worker.asset == asset && s.worker.strategy_name == strategy) {
                     let event = match result {
                         Some(won) => Event::ApiResult { won },
-                        None => Event::ApiResultTimeout,
+                        // Unknown/failed verdict (`increased()` returns `None`) fails
+                        // safe to "still halt" — see `GammaBalanceTracker`'s own doc
+                        // comment.
+                        None => Event::ApiResultTimeout {
+                            balance_increased: gamma_balance.increased().unwrap_or(false),
+                        },
                     };
                     let actions = slot.worker.step(event);
                     // ApiResult(Timeout) never produces PlaceBuy/ClosePosition either — see note above.
@@ -1583,6 +1651,7 @@ async fn main() -> Result<()> {
 
             _ = tokio::time::sleep_until(balance_deadline) => {
                 let bal = engine.fetch_balance().await;
+                gamma_balance.record(bal);
                 if balance_guard.check(bal) {
                     println!("[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries on all assets.");
                     for slot in assets.iter_mut() {

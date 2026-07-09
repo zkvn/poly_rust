@@ -370,6 +370,8 @@ mod tests {
             reversal: 0.60,
             reversal_low_threshold: 0.20,
             reversal_start_time: 120.0,
+            gamma_poll_delay_secs: 60.0,
+            gamma_poll_interval_secs: 3.0,
             price_high_rev: 0.90,
             delta_pct_rev: 0.0008,
             sl_reversal: 0.0,

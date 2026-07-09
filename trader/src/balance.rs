@@ -75,6 +75,64 @@ impl Default for BalanceGuard {
     }
 }
 
+/// Rolling cycle-over-cycle balance comparison for the Gamma-unresolved-timeout
+/// override (2026-07-09) — "if balance has increased since last cycle's checkpoint,
+/// don't halt on an unresolved Gamma result, keep going." Fed from the *same* periodic
+/// balance sample `bin/live.rs` already fetches each cycle for `BalanceGuard` (no extra
+/// API calls): each call to `record` compares the new sample against the previous one,
+/// then that new sample becomes "previous" for the next cycle.
+///
+/// Deliberately fails safe: with fewer than two samples, or a failed fetch, `increased()`
+/// returns `None` — the caller (`Worker::on_api_result_timeout`) treats `None` as "don't
+/// skip the halt," matching this codebase's "halt over guess" rule (see
+/// `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4) rather than assuming growth
+/// it can't actually confirm.
+struct GammaBalanceState {
+    last_sample: Option<f64>,
+    increased: Option<bool>,
+}
+
+pub struct GammaBalanceTracker {
+    state: Mutex<GammaBalanceState>,
+}
+
+impl GammaBalanceTracker {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(GammaBalanceState {
+                last_sample: None,
+                increased: None,
+            }),
+        }
+    }
+
+    /// Feed one per-cycle balance sample. `None` (failed fetch) marks the verdict
+    /// unknown but leaves the last good sample in place, so the next successful fetch
+    /// still compares against real data rather than restarting from scratch.
+    pub fn record(&self, balance: Option<f64>) {
+        let mut s = self.state.lock().unwrap();
+        let Some(balance) = balance else {
+            s.increased = None;
+            return;
+        };
+        s.increased = s.last_sample.map(|prev| balance > prev);
+        s.last_sample = Some(balance);
+    }
+
+    /// `Some(true)` if the most recent sample was higher than the one before it,
+    /// `Some(false)` if not, `None` if there isn't yet a same-baseline pair to compare
+    /// (startup, or the last fetch failed).
+    pub fn increased(&self) -> Option<bool> {
+        self.state.lock().unwrap().increased
+    }
+}
+
+impl Default for GammaBalanceTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Seconds to sleep until the next check point (window_start + 120s), matching
 /// `_sleep_to_next_check`. `now` and the result are both Unix seconds.
 pub fn seconds_until_next_check(now: f64) -> f64 {
@@ -152,5 +210,54 @@ mod tests {
         let now = window_start as f64 + 200.0; // past the +120s checkpoint
         let secs = seconds_until_next_check(now);
         assert!((secs - 220.0).abs() < 1e-9); // (300+120) - 200
+    }
+
+    #[test]
+    fn gamma_tracker_first_sample_has_no_verdict() {
+        let t = GammaBalanceTracker::new();
+        t.record(Some(100.0));
+        assert_eq!(t.increased(), None);
+    }
+
+    #[test]
+    fn gamma_tracker_detects_increase_and_decrease() {
+        let t = GammaBalanceTracker::new();
+        t.record(Some(100.0));
+        t.record(Some(105.0));
+        assert_eq!(t.increased(), Some(true));
+        t.record(Some(100.0));
+        assert_eq!(t.increased(), Some(false));
+    }
+
+    #[test]
+    fn gamma_tracker_equal_balance_is_not_an_increase() {
+        let t = GammaBalanceTracker::new();
+        t.record(Some(100.0));
+        t.record(Some(100.0));
+        assert_eq!(t.increased(), Some(false));
+    }
+
+    #[test]
+    fn gamma_tracker_failed_fetch_marks_unknown_but_keeps_last_good_sample() {
+        let t = GammaBalanceTracker::new();
+        t.record(Some(100.0));
+        t.record(Some(110.0));
+        assert_eq!(t.increased(), Some(true));
+
+        t.record(None); // failed fetch — verdict goes unknown
+        assert_eq!(t.increased(), None);
+
+        // Next successful fetch still compares against the last *good* sample (110.0),
+        // not against nothing.
+        t.record(Some(120.0));
+        assert_eq!(t.increased(), Some(true));
+        t.record(Some(90.0));
+        assert_eq!(t.increased(), Some(false));
+    }
+
+    #[test]
+    fn gamma_tracker_starts_unknown() {
+        let t = GammaBalanceTracker::new();
+        assert_eq!(t.increased(), None);
     }
 }

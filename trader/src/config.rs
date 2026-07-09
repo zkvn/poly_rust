@@ -39,6 +39,12 @@ pub struct StrategyToml {
     pub reversal: HashMap<String, f64>,
     pub reversal_low_threshold: HashMap<String, f64>,
     pub reversal_start_time: HashMap<String, i64>,
+    /// Seconds after a position closes before the Gamma resolution watcher
+    /// starts polling — Gamma "usually won't give you anything until 20-60s
+    /// after cycle end" (see `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`).
+    pub gamma_poll_delay_secs: HashMap<String, f64>,
+    /// Retry cadence (seconds) once the watcher starts polling.
+    pub gamma_poll_interval_secs: HashMap<String, f64>,
     pub price_high_rev: HashMap<String, f64>,
     pub sl_reversal: HashMap<String, f64>,
     pub unwind_pnl_rev: HashMap<String, f64>,
@@ -79,6 +85,8 @@ pub struct AssetParams {
     pub reversal: f64,
     pub reversal_low_threshold: f64,
     pub reversal_start_time: f64,
+    pub gamma_poll_delay_secs: f64,
+    pub gamma_poll_interval_secs: f64,
     pub price_high_rev: f64,
     pub delta_pct_rev: f64,
     pub sl_reversal: f64,
@@ -142,6 +150,16 @@ impl StrategyToml {
             )?,
             reversal_start_time: req(&self.reversal_start_time, asset, "reversal_start_time")?
                 as f64,
+            gamma_poll_delay_secs: req(
+                &self.gamma_poll_delay_secs,
+                asset,
+                "gamma_poll_delay_secs",
+            )?,
+            gamma_poll_interval_secs: req(
+                &self.gamma_poll_interval_secs,
+                asset,
+                "gamma_poll_interval_secs",
+            )?,
             price_high_rev: req(&self.price_high_rev, asset, "price_high_rev")?,
             delta_pct_rev: req(&self.delta_pct_rev, asset, "delta_pct_rev")?,
             sl_reversal: req(&self.sl_reversal, asset, "sl_reversal")?,
@@ -199,32 +217,41 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // BTC-specific overrides from strategy_20260705.toml (Highest Win Rate,
-        // final cal 2026-05-26 -> 2026-07-02, report_5m_20260704_004615.md)
-        assert!((p.reversal - 0.70).abs() < 1e-9, "BTC reversal = 0.70");
+        // strategy_20260708.toml full-history top-win-rate recalibration — BTC has no
+        // per-asset override for any of these (updated 2026-07-09 test drift fix; the
+        // previous hardcoded values dated back to strategy_20260705.toml and silently
+        // stopped matching when 20260708's recalibration landed the same day, per the
+        // README TODO entry), so every field below resolves to its "default" entry.
+        assert!(
+            (p.reversal - 0.55).abs() < 1e-9,
+            "BTC reversal = 0.55 (default)"
+        );
         assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0006).abs() < 1e-9);
+        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
         assert_eq!(p.halt_rev, 2);
         assert_eq!(p.halt_reset_hour_rev, 2);
-        assert!((p.unwind_pnl_rev - 0.03).abs() < 1e-9);
-        // sl_pnl_rev tightened to a flat 0.25 for all assets (2026-07-07, no more
-        // per-asset override) — see trader/doc/audit_sl_no_trigger_2026-07-07.md.
-        assert!((p.sl_pnl_rev - 0.25).abs() < 1e-9);
-        assert!((p.unwind_pnl_hp - 0.05).abs() < 1e-9);
-        assert!((p.sl_pnl_hp - 0.25).abs() < 1e-9);
-        // unwind_time_{rev,hp} added 2026-07-08 (studies/unwind_safely walk-forward
-        // final calibration) — flat 30.0 for both, no per-asset override yet.
-        assert!((p.unwind_time_rev - 30.0).abs() < 1e-9);
+        assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
+        assert!((p.sl_pnl_rev - 0.40).abs() < 1e-9);
+        assert!((p.unwind_pnl_hp - 0.07).abs() < 1e-9);
+        assert!((p.sl_pnl_hp - 0.35).abs() < 1e-9);
+        // unwind_time_rev has per-asset overrides (ETH=28.0, DOGE=30.0); BTC uses
+        // the 26.0 default. unwind_time_hp is flat 30.0 for all assets.
+        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
         assert!((p.unwind_time_hp - 30.0).abs() < 1e-9);
+        // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
+        // README's Gamma-halt section) — flat defaults, no per-asset override yet.
+        assert!((p.gamma_poll_delay_secs - 60.0).abs() < 1e-9);
+        assert!((p.gamma_poll_interval_secs - 3.0).abs() < 1e-9);
     }
 
     #[test]
     fn unwind_time_falls_back_to_default_and_resolves_asset_override() {
         let mut toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // Default fallback (no BTC-specific entry in the real config).
+        // Default fallback (no BTC-specific entry in the real config — updated
+        // 2026-07-09, BTC's default changed from 30.0 to 26.0 in strategy_20260708.toml).
         let p = toml.resolve("BTC").expect("resolve BTC");
-        assert!((p.unwind_time_rev - 30.0).abs() < 1e-9);
+        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
         // Asset-specific override takes priority over default when present.
         toml.unwind_time_rev.insert("ETH".to_string(), 12.0);
         let p = toml.resolve("ETH").expect("resolve ETH");
@@ -239,8 +266,10 @@ mod tests {
     fn default_fallback() {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // ETH uses default delta_pct_rev = 0.001
-        let p = toml.resolve("ETH").expect("resolve ETH");
-        assert!((p.delta_pct_rev - 0.001).abs() < 1e-9);
+        // BTC uses default delta_pct_rev (updated 2026-07-09: ETH gained its own
+        // override, 0.0008, in strategy_20260708.toml, so it no longer falls back —
+        // BTC is now the asset that demonstrates the fallback path).
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
     }
 }

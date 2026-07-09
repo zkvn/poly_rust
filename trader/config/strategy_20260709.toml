@@ -1,0 +1,170 @@
+# meta
+ts = "2026-07-09T00:00:00+08:00"
+source = "carried over unchanged from strategy_20260708.toml (full-history top win rate recalibration) — this snapshot only adds gamma_poll_delay_secs/gamma_poll_interval_secs (see README's Gamma-halt section, 2026-07-09 update), no strategy parameters changed."
+
+# Trade assets scoped to BTC, ETH, DOGE only — top win rate performers from full-history unwind_safely sweep.
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "ETH", "DOGE"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Trade size
+[trade_size_usdc]
+default = 1.0
+
+# Default to reversal only; ETH is the only asset running both strategies.
+[strategies]
+default = ["reversal"]
+ETH = ["high_prob", "reversal"]
+
+# --- Halt ---
+[halt_rev]
+default = 2
+
+[halt_prob]
+default = 2
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — full-history top win rate (studies/unwind_safely/results/full_history_*_20260708_153401.md) ---
+# Top Win Rate per Asset:
+# BTC   delta=0.0010 rev=0.55 rev_lt=0.20 u=0.15 slp=0.40 uTime=26  wr=88.8%  pnl=+13.68  ppt=0.140  trades=98
+# ETH   delta=0.0008 rev=0.65 rev_lt=0.20 u=0.15 slp=0.40 uTime=28  wr=82.8%  pnl=+18.00  ppt=0.097  trades=186
+# DOGE  delta=0.0008 rev=0.60 rev_lt=0.30 u=0.15 slp=0.40 uTime=30  wr=80.4%  pnl=+29.98  ppt=0.070  trades=429
+
+[delta_pct_rev]
+default = 0.0010
+ETH = 0.0008
+DOGE = 0.0008
+
+[reversal]
+default = 0.55
+ETH = 0.65
+DOGE = 0.60
+
+[reversal_low_threshold]
+default = 0.20
+DOGE = 0.30
+
+[sl_reversal]
+default = 0
+
+[unwind_pnl_rev]
+default = 0.15
+
+[sl_pnl_rev]
+default = 0.40
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. 0 = disabled. Full-history top-win-rate
+# values per asset (see unwind_safely results above).
+[unwind_time_rev]
+default = 26.0
+ETH = 28.0
+DOGE = 30.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# Gamma resolution watcher cadence (2026-07-09) — Gamma "usually won't give you
+# anything until 20-60s after cycle end" (see incident_DOGE_wrong_result doc),
+# so don't start polling immediately; wait gamma_poll_delay_secs, then retry
+# every gamma_poll_interval_secs until reversal_start_time's deadline.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 3
+
+# --- High-prob strategy — full-history top win rate (studies/unwind_safely/results/full_history_*_20260708_180120.md) ---
+# Top Win Rate per Asset:
+# BTC   enter=20 pl=0.80 ph=0.93 delta=0.0004 u=0.07 slp=0.35 uTime=30  wr=92.6%  pnl=+42.29  ppt=0.067  trades=633
+# ETH   enter=20 pl=0.80 ph=0.95 delta=0.0004 u=0.11 slp=0.50 uTime=30  wr=90.8%  pnl=+27.11  ppt=0.043  trades=631
+# DOGE  enter=20 pl=0.80 ph=0.95 delta=0.0004 u=0.09 slp=0.40 uTime=30  wr=93.9%  pnl=+76.65  ppt=0.062  trades=1242
+
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+
+# Max holding time (seconds), high_prob — full-history top-win-rate value
+# (30.0s, the range's max, same boundary caveat as prior runs).
+[unwind_time_hp]
+default = 30.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long]
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249
