@@ -239,6 +239,19 @@ on the remote before the nightly sync runs.
   Live rows that fall inside a real halt window as "as designed" rather than "missed." Flagging
   so the 24-cycle number in today's report isn't misread as a live-trading bug.
 
+- **`ApiResultTimeout` never corrects `HaltTracker` — flagged 2026-07-10, not fixed (deliberately
+  deferred).** Found while explaining `trader/doc/incident_halt_double_count_2026-07-10.md`'s fix:
+  that fix only corrects the halt loss count when Gamma actually answers and disagrees with the
+  provisional guess (`Event::ApiResult` flipping a `Confirming` record). If Gamma never answers at
+  all — fetch/parse failure or genuinely unresolved, `fetch_gamma_resolution` collapses both cases
+  to the same `None` — the resolution watcher retries until `reversal_start_time` elapses, then
+  gives up and fires `Event::ApiResultTimeout`. `Worker::on_api_result_timeout` leaves the
+  provisional Win/Loss standing as final and unverified, and never calls
+  `HaltTracker::correct_trade` — so if that stale guess happens to be wrong, the loss count is
+  never corrected (only `trade_reconcile.py`'s next daily run would ever notice, with no automatic
+  fix). Left alone for now — same rationale as the halt-state-drift gap above, not something to
+  bundle into an unrelated fix.
+
 </details>
 
 <details>
