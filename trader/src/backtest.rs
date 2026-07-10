@@ -16,7 +16,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::config::AssetParams;
 use crate::machine::Machine;
-use crate::types::{BinanceTick, CycleContext, PolyTick, TradeRecord};
+use crate::types::{BinanceTick, CycleContext, Outcome, PolyTick, TradeRecord};
 
 // ── HKT timezone (+08:00) ─────────────────────────────────────────────────────
 
@@ -401,6 +401,54 @@ impl HaltTracker {
         }
         false
     }
+
+    /// Corrects a previously-counted trade whose outcome was flipped after the
+    /// fact — `record_trade` already ran once for `previous_outcome` at
+    /// cycle-close time (a `Confirming` record's *provisional* guess), and
+    /// `worker.rs::on_api_result` may later replace that with a Gamma-verified
+    /// `corrected_outcome`. Undoes/applies the loss-count delta between the
+    /// two so a provisional LOSS later confirmed as a WIN doesn't overcount
+    /// the streak forever (see
+    /// `trader/doc/incident_halt_double_count_2026-07-10.md`), and so the
+    /// reverse (a provisional WIN confirmed as a LOSS) isn't silently
+    /// dropped from the count either.
+    pub(crate) fn correct_trade(
+        &mut self,
+        previous_outcome: Outcome,
+        corrected_outcome: Outcome,
+    ) -> HaltCorrection {
+        let was_loss = previous_outcome.is_loss_for_halt();
+        let is_loss = corrected_outcome.is_loss_for_halt();
+        if was_loss == is_loss {
+            return HaltCorrection::Unchanged;
+        }
+        let was_halted = self.is_halted();
+        if is_loss {
+            self.losses += 1;
+        } else {
+            self.losses = self.losses.saturating_sub(1);
+        }
+        match (was_halted, self.is_halted()) {
+            (false, true) => HaltCorrection::Engaged,
+            (true, false) => HaltCorrection::Cleared,
+            _ => HaltCorrection::Unchanged,
+        }
+    }
+}
+
+/// Result of `HaltTracker::correct_trade` — whether undoing/applying a
+/// corrected outcome's loss-count delta just crossed the halt threshold in
+/// either direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HaltCorrection {
+    /// The correction changed `losses` but didn't cross the halt threshold
+    /// either way (including the no-op case where loss-ness didn't change).
+    Unchanged,
+    /// The correction pushed `losses` up to/past `max`, newly engaging the halt.
+    Engaged,
+    /// The correction pulled `losses` back below `max`, clearing an
+    /// already-active halt.
+    Cleared,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -783,6 +831,58 @@ mod tests {
 
         // Another new session, nothing left to clear -> silent again.
         assert!(!h.reset_if_new_session(1_000.0 + 200_000.0));
+    }
+
+    /// Regression test for trader/doc/incident_halt_double_count_2026-07-10.md:
+    /// `correct_trade` must undo a phantom loss (Loss -> Win) rather than leave
+    /// it counted forever, and must count a missed one (Win -> Loss) instead of
+    /// silently dropping it. Same-loss-ness corrections (Loss -> StopLoss,
+    /// Win -> Win) must be no-ops.
+    #[test]
+    fn halt_tracker_correct_trade_adjusts_losses_by_the_right_delta() {
+        use crate::types::Outcome;
+
+        let mut h = HaltTracker::new(2, 2);
+        let loss = halt_test_record("high_prob", Outcome::Loss);
+        assert!(!h.record_trade(&loss, "high_prob")); // losses: 0 -> 1
+
+        // Loss -> Win: undoes the phantom count, no threshold crossed either way.
+        assert_eq!(
+            h.correct_trade(Outcome::Loss, Outcome::Win),
+            HaltCorrection::Unchanged
+        );
+        assert_eq!(h.losses(), 0);
+        assert!(!h.is_halted());
+
+        // Same-loss-ness corrections must never touch the counter.
+        assert_eq!(
+            h.correct_trade(Outcome::Win, Outcome::Win),
+            HaltCorrection::Unchanged
+        );
+        assert_eq!(h.losses(), 0);
+
+        // Win -> Loss: counts a loss that record_trade never saw. Two of these
+        // in a row crosses halt_max=2 on the second.
+        assert_eq!(
+            h.correct_trade(Outcome::Win, Outcome::Loss),
+            HaltCorrection::Unchanged
+        );
+        assert_eq!(h.losses(), 1);
+        assert!(!h.is_halted());
+        assert_eq!(
+            h.correct_trade(Outcome::Win, Outcome::Loss),
+            HaltCorrection::Engaged
+        );
+        assert_eq!(h.losses(), 2);
+        assert!(h.is_halted());
+
+        // Correcting one of those back to a Win clears the halt it just tripped.
+        assert_eq!(
+            h.correct_trade(Outcome::Loss, Outcome::Win),
+            HaltCorrection::Cleared
+        );
+        assert_eq!(h.losses(), 1);
+        assert!(!h.is_halted());
     }
 
     #[test]

@@ -239,6 +239,17 @@ on the remote before the nightly sync runs.
   Live rows that fall inside a real halt window as "as designed" rather than "missed." Flagging
   so the 24-cycle number in today's report isn't misread as a live-trading bug.
 
+- **`HaltTracker` never resets its loss count on an intervening WIN — flagged 2026-07-10, not
+  fixed (deliberately deferred).** Found while diagnosing the ETH high_prob phantom-halt incident
+  (`trader/doc/incident_halt_double_count_2026-07-10.md`): despite being documented everywhere as
+  a "consecutive-loss"/"loss-streak" halt, `HaltTracker::record_trade` only ever increments
+  `losses` on a loss-shaped outcome — a WIN in between two losses does not reset the counter, so
+  `halt_rev`/`halt_prob` actually tracks "total losses this HKT session," not a true consecutive
+  streak. Today's fix (correcting the count on a Gamma `ApiResult` flip) resolves the specific
+  reported incident without touching this, since changing "per-session total" to "true consecutive
+  streak" would be a live-trading halt-behavior change across every strategy, not something to slip
+  in as a side effect of a bug fix. Flagging so it's a deliberate decision if/when it's revisited.
+
 </details>
 
 <details>
@@ -1607,5 +1618,21 @@ one instance per `(asset, strategy)` pair with its own persisted halt state, so 
 Telegram command-parsing/dispatch change (`telegram/commands.rs`, `telegram/control.rs`,
 `bin/live.rs`, `telegram/mod.rs`). An unrecognized strategy name (anything but `high_prob` or
 `reversal`) is rejected with `Command::Invalid` rather than silently ignored.
+
+### ETH high_prob halted on a phantom second loss (2026-07-10, fixed)
+
+Full writeup: `trader/doc/incident_halt_double_count_2026-07-10.md`.
+
+A 22:24 HKT stop-loss tripped `halt_prob=2` ("2 consecutive losses"), but only one real loss
+had happened that session. Root cause: a provisional LOSS logged at an earlier cycle-close had
+already incremented `HaltTracker`'s loss count, then Gamma's `ApiResult` corrected it to a WIN
+two minutes later (`on_api_result`'s `Confirming` flip branch, `Action::LogTradeCorrection`) —
+but that path never adjusted `self.halt`, so the phantom count sat at 1 for the rest of the
+session until the real stop-loss pushed it to 2. **Fix:** `HaltTracker::correct_trade`
+(`backtest.rs`) now applies the loss-count delta between a Confirming record's original and
+corrected outcome — decrementing a phantom loss (Loss → Win) or counting a missed one
+(Win → Loss) — and can itself emit `Action::HaltEngaged`/new `Action::HaltClearedByCorrection`
+if the correction crosses the threshold in either direction. Covered by new tests in
+`worker.rs`/`backtest.rs` reproducing this exact timeline.
 
 </details>

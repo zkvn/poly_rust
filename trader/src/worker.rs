@@ -12,7 +12,7 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::backtest::HaltTracker;
+use crate::backtest::{HaltCorrection, HaltTracker};
 use crate::config::AssetParams;
 use crate::execution::{OrderKind, SellStatus, choose_exit_order_kind};
 use crate::gates::{GateParams, check_gates};
@@ -260,6 +260,12 @@ pub enum Action {
     /// just cleared an *active* halt on this worker's strategy — not emitted on a
     /// session rollover that had nothing to clear.
     HaltReset,
+    /// A Gamma `ApiResult` correction (Confirming Loss -> Win) just pulled the
+    /// loss-streak count back below `halt_rev`/`halt_prob`, clearing a halt
+    /// that had been engaged partly or wholly on a phantom loss — distinct
+    /// from `HaltReset` (daily rollover). See
+    /// `trader/doc/incident_halt_double_count_2026-07-10.md`.
+    HaltClearedByCorrection,
     /// `ApiResultTimeout` hit a `Confirming` (Win/Loss) record — Gamma never resolved
     /// within the deadline, so the provisional record stands as final (unverified) and
     /// new entries are suppressed until `/resume`. Distinct from `HaltEngaged` (loss
@@ -1306,14 +1312,25 @@ impl Worker {
                 record.pnl = round4(
                     shares * exit_price - self.trade_size - taker_fee(shares, record.token_price),
                 );
-                vec![
+                // `record_trade` already counted `previous_outcome` once at cycle-close
+                // time — undo/apply the delta now that Gamma has overruled it, or a
+                // provisional LOSS later confirmed as a WIN overcounts the loss streak
+                // forever (trader/doc/incident_halt_double_count_2026-07-10.md).
+                let correction = self.halt.correct_trade(previous_outcome, record.outcome);
+                let mut actions = vec![
                     Action::LogTradeCorrection {
                         previous_outcome,
                         previous_pnl,
                         record,
                     },
                     Action::Persist,
-                ]
+                ];
+                match correction {
+                    HaltCorrection::Engaged => actions.push(Action::HaltEngaged),
+                    HaltCorrection::Cleared => actions.push(Action::HaltClearedByCorrection),
+                    HaltCorrection::Unchanged => {}
+                }
+                actions
             }
             WorkerState::EnrichOnly(record) => {
                 // Column-only enrichment: never rewrites pnl/result/halt. A
@@ -1869,6 +1886,165 @@ mod tests {
                 [Action::PlaceBuy { .. }, Action::Persist]
             ),
             "entry must fire again once the halt has cleared for the new session: {actions:?}"
+        );
+    }
+
+    /// Regression test for trader/doc/incident_halt_double_count_2026-07-10.md:
+    /// a provisional LOSS that Gamma later corrects to a WIN must not leave a
+    /// phantom loss in the halt streak — a single subsequent real loss must not
+    /// trip halt_rev/halt_prob=2 on its own.
+    #[test]
+    fn halt_correction_undoes_phantom_loss_so_one_real_loss_does_not_halt() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+
+        // Cycle #1: provisional LOSS at close (record_trade counts it: 0 -> 1)...
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        })); // now above open -> DOWN loses
+        let actions = w.step(Event::CycleClose);
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(record.outcome, Outcome::Loss);
+
+        // ...but Gamma actually says it WON -> the correction must undo that count.
+        let actions = w.step(Event::ApiResult { won: true });
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::LogTradeCorrection { .. })),
+            "expected a correction: {actions:?}"
+        );
+        assert!(
+            !w.is_halted(),
+            "a corrected-to-WIN loss must not leave the halt engaged"
+        );
+
+        // Cycle #2: one genuine loss. Without the fix, the phantom count from
+        // cycle #1 would still be sitting at 1, so this would wrongly trip
+        // halt_rev=2. With the fix, this is the *first* real loss of the session.
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
+        let actions = w.step(Event::CycleClose);
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(record.outcome, Outcome::Loss);
+        assert!(
+            !actions.contains(&Action::HaltEngaged),
+            "one real loss after a corrected phantom must not trip halt_rev=2: {actions:?}"
+        );
+        assert!(
+            !w.is_halted(),
+            "halt must not engage on a single real loss after the phantom was corrected away"
+        );
+    }
+
+    /// Symmetric case: a provisional WIN that Gamma later corrects to a LOSS must
+    /// still count toward the halt streak, even though `record_trade` never saw
+    /// it as a loss at cycle-close time.
+    #[test]
+    fn halt_correction_engages_halt_when_provisional_win_flips_to_loss() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+
+        // Real loss #1, resolved without a flip -> losses: 0 -> 1.
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
+        w.step(Event::CycleClose);
+        assert!(!w.is_halted(), "1 real loss must not halt yet (halt_rev=2)");
+        w.step(Event::ApiResult { won: false }); // agrees, no flip
+
+        // Cycle #2 provisionally WINs at close (price stayed below open)...
+        enter_down_position(&mut w, 10.0);
+        let actions = w.step(Event::CycleClose);
+        let record = actions
+            .iter()
+            .find_map(|a| {
+                if let Action::LogTrade(r) = a {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(record.outcome, Outcome::Win);
+        assert!(!w.is_halted());
+
+        // ...but Gamma says it actually lost -> the correction must push losses
+        // 1 -> 2, crossing halt_rev's threshold even though this trade was never
+        // separately counted at cycle-close time.
+        let actions = w.step(Event::ApiResult { won: false });
+        assert!(
+            actions.contains(&Action::HaltEngaged),
+            "a Win->Loss correction crossing the threshold must emit HaltEngaged: {actions:?}"
+        );
+        assert!(
+            w.is_halted(),
+            "the corrected loss must actually halt entries"
+        );
+    }
+
+    /// A correction can also clear a halt that had *already* engaged, if it
+    /// turns out one of the counted losses wasn't real.
+    #[test]
+    fn halt_correction_clears_an_already_engaged_halt() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+
+        // Loss #1, resolved without a flip (API agrees) -> losses: 0 -> 1.
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
+        w.step(Event::CycleClose);
+        w.step(Event::ApiResult { won: false });
+        assert!(!w.is_halted());
+
+        // Loss #2 trips halt_rev=2; Confirming(Loss) is left outstanding.
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1290.0,
+            price: 60_100.0,
+        }));
+        let actions = w.step(Event::CycleClose);
+        assert!(actions.contains(&Action::HaltEngaged));
+        assert!(w.is_halted());
+
+        // Gamma actually says loss #2 WON -> the correction pulls losses back
+        // to 1, clearing the halt it had just tripped.
+        let actions = w.step(Event::ApiResult { won: true });
+        assert!(
+            actions.contains(&Action::HaltClearedByCorrection),
+            "a correction pulling losses back below threshold must clear the halt: {actions:?}"
+        );
+        assert!(
+            !w.is_halted(),
+            "halt must actually be cleared, not just the action emitted"
         );
     }
 

@@ -904,6 +904,7 @@ impl Driver<'_> {
             | Action::StopLossVerdict { .. }
             | Action::HaltEngaged
             | Action::HaltReset
+            | Action::HaltClearedByCorrection
             | Action::GammaHaltEngaged { .. }
             | Action::GammaUnresolvedContinued { .. }
             | Action::ApiResultNote(_) => None, // handled by process_actions directly
@@ -1058,6 +1059,16 @@ impl Driver<'_> {
                     Action::HaltReset => {
                         self.notify(&format!(
                             "🟢 <b>{} HALT RESET</b> | {} | {}\nDaily loss-streak reset — new entries re-armed.",
+                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
+                        )).await;
+                    }
+                    // A Gamma correction (Loss -> Win) pulled the loss-streak count
+                    // back below halt_rev/halt_prob, clearing a halt that had been
+                    // engaged partly or wholly on a phantom loss — see
+                    // trader/doc/incident_halt_double_count_2026-07-10.md.
+                    Action::HaltClearedByCorrection => {
+                        self.notify(&format!(
+                            "🟢 <b>{} HALT CLEARED</b> | {} | {}\nA Gamma correction reversed one of the counted losses — new entries re-armed.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }
