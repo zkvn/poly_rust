@@ -150,8 +150,16 @@ def _fetch_token_ids_for_slug(slug: str) -> Optional[tuple]:
 
 
 def _fetch_clob_price_history(token_id: str) -> list:
+    """fidelity=1 on the "1m" interval range now 400s ("minimum 'fidelity' for
+    '1m' range is 10" — a Polymarket API change since this was first written,
+    found 2026-07-10 while investigating why the Stoploss/Unwind Audit kept
+    coming back empty). fidelity=10 gives ~10-min-spaced bars, which is coarse
+    but still usually lands inside the +/-15min audit window
+    (_build_sl_unwind_audit) for a 5-min-cycle market; fidelity=60 (~1hr
+    spacing) is kept as a last-resort fallback but rarely has a bar close
+    enough to the trade to be useful — see that function's window filter."""
     import requests
-    for fidelity in (1, 60):
+    for fidelity in (10, 60):
         try:
             resp = requests.get(
                 f"{CLOB_API}/prices-history",
@@ -220,13 +228,53 @@ def load_and_filter(paths: list, from_ts: float, to_ts: float) -> list:
     return deduped
 
 
-def annotate_rows(rows: list) -> tuple:
-    """Cross-check WIN/LOSS rows against Gamma; classify STOPLOSS/UNWIND quality.
+GAMMA_TIMEOUT_CONTINUED_RE = re.compile(
+    r"gave up waiting for Gamma resolution of (\S+) — balance up since last cycle's checkpoint, continuing"
+)
+GAMMA_TIMEOUT_HALTED_RE = re.compile(
+    r"gave up waiting for Gamma resolution of (\S+) — halting new entries"
+)
+
+
+def parse_gamma_timeout_events(live_log_path: Path) -> dict:
+    """Scan live.log for the balance-increase Gamma-timeout override
+    (trader/src/balance.rs::GammaBalanceTracker, added 2026-07-09 —
+    Action::GammaUnresolvedContinued / Action::GammaHaltEngaged in worker.rs)
+    so annotate_rows can tell "worker.rs's ApiResult-correction path let a
+    wrong WIN/LOSS through" apart from "Gamma never resolved in time and the
+    worker did exactly what it's designed to do": keep going if the account
+    balance was up since the last cycle's checkpoint (checked ~2min into
+    every cycle, same sample BalanceGuard already fetches — no extra API
+    calls), otherwise halt new entries and flag for manual review.
+
+    Returns {slug: "CONTINUED" | "HALTED"}. A missing/unreadable log just
+    means this context is unavailable for this run — not fatal, the affected
+    rows fall back to being treated as ordinary mismatches like before this
+    existed.
+    """
+    events = {}
+    try:
+        text = live_log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return events
+    for m in GAMMA_TIMEOUT_CONTINUED_RE.finditer(text):
+        events[m.group(1)] = "CONTINUED"
+    for m in GAMMA_TIMEOUT_HALTED_RE.finditer(text):
+        events.setdefault(m.group(1), "HALTED")
+    return events
+
+
+def annotate_rows(rows: list, gamma_timeout_events: Optional[dict] = None) -> tuple:
+    """Cross-check WIN/LOSS rows against Gamma; classify STOPLOSS/UNWIND/TIMEOUT
+    quality; carve out the Gamma-timeout balance-override cases (see
+    parse_gamma_timeout_events) from the "wrong WIN/LOSS" bug bucket.
 
     Returns (annotated_rows, summary) where summary has direction (resolved/
-    correct/wrong/accuracy/pending) and stoploss (good/costly) counts —
-    mirroring btc_5mins's shape so downstream markdown rendering matches.
+    correct/wrong/accuracy/pending), stoploss (good/costly) counts, and
+    gamma_timeout (continued/halted/details) — mirroring btc_5mins's shape
+    for the first two so downstream markdown rendering matches.
     """
+    gamma_timeout_events = gamma_timeout_events or {}
     slugs = sorted({row["slug"] for row in rows if row.get("slug")})
     outcome_map = {}
     for slug in slugs:
@@ -238,7 +286,9 @@ def annotate_rows(rows: list) -> tuple:
 
     matches = mismatches = pending = 0
     good_stops = costly_stops = 0
+    gamma_timeout_continued = gamma_timeout_halted = 0
     mismatch_details = []
+    gamma_timeout_details = []
     annotated = []
 
     for row in rows:
@@ -246,6 +296,7 @@ def annotate_rows(rows: list) -> tuple:
         side = row.get("side", "").strip().upper()
         outcome = row.get("outcome", "").strip().upper()
         actual = outcome_map.get(slug, "PENDING")
+        timeout_event = gamma_timeout_events.get(slug)
 
         if actual == "PENDING":
             actual_result = "PENDING"
@@ -256,10 +307,35 @@ def annotate_rows(rows: list) -> tuple:
                 costly_stops += 1
             else:
                 good_stops += 1
-        elif outcome == "UNWIND":
-            # Unwind is an exit, not a directional prediction — no match/mismatch,
-            # but still worth knowing whether the underlying side would've won.
+        elif outcome in ("UNWIND", "TIMEOUT"):
+            # Both are exits whose pnl/outcome was already final at the moment
+            # it was logged — Gamma is only useful here for an advisory "would
+            # the side have won anyway" counterfactual, never a right/wrong
+            # verdict on the trade itself. TIMEOUT (added 2026-07-08, see
+            # plan_unwind_time_2026-07-08.md) used to fall through to the
+            # WIN/LOSS branch below by omission, where it could never equal
+            # "WIN"/"LOSS" and was therefore *always* flagged as a Gamma
+            # mismatch regardless of whether the timed-out exit was correct —
+            # found 2026-07-10 while investigating a TIMEOUT row that showed
+            # up as a "bug" in every report since the outcome existed.
             actual_result = "WIN" if side == actual else "LOSS"
+        elif timeout_event is not None and outcome in ("WIN", "LOSS"):
+            # Gamma never resolved within the retry deadline for this
+            # Confirming trade, so worker.rs used the balance-increase
+            # override instead of guessing — this is the worker doing exactly
+            # what it's designed to do when Gamma is slow/unavailable, not
+            # the LogTradeCorrection path failing, so it's tracked separately
+            # rather than counted as a "wrong WIN/LOSS through" bug.
+            actual_result = "WIN" if side == actual else "LOSS"
+            if timeout_event == "CONTINUED":
+                gamma_timeout_continued += 1
+            else:
+                gamma_timeout_halted += 1
+            gamma_timeout_details.append({
+                "time": datetime.fromtimestamp(float(row["logged_at"]), tz=HKT).strftime("%Y-%m-%d %H:%M:%S"),
+                "slug": slug, "side": side, "logged": outcome, "event": timeout_event,
+                "hindsight": actual_result, "hindsight_match": actual_result == outcome,
+            })
         else:
             actual_result = "WIN" if side == actual else "LOSS"
             if actual_result == outcome:
@@ -286,6 +362,10 @@ def annotate_rows(rows: list) -> tuple:
         },
         "stoploss": {"good": good_stops, "costly": costly_stops},
         "mismatch_details": mismatch_details,
+        "gamma_timeout": {
+            "continued": gamma_timeout_continued, "halted": gamma_timeout_halted,
+            "details": gamma_timeout_details,
+        },
     }
     return annotated, summary
 
@@ -973,6 +1053,11 @@ def write_markdown_summary(
             lines.append("")
             _render_failed_exit_audit(lines, failed_exit_rows)
 
+        gamma_timeout = summary.get("gamma_timeout", {})
+        gt_continued = gamma_timeout.get("continued", 0)
+        gt_halted = gamma_timeout.get("halted", 0)
+        gt_details = gamma_timeout.get("details", [])
+
         lines.append("## Gamma Cross-Check")
         lines.append("")
         lines.extend([
@@ -986,6 +1071,8 @@ def write_markdown_summary(
             f"| Pending (market unresolved) | {pending} |",
             f"| STOPLOSS: good (avoided loss) | {good_stops} |",
             f"| STOPLOSS: costly (exited winner) | {costly_stops} |",
+            f"| Gamma timeout — continued (balance up, as designed) | {gt_continued} |",
+            f"| Gamma timeout — halted (pending manual review, as designed) | {gt_halted} |",
         ])
         lines.append("")
         lines.append("### Mismatches")
@@ -999,7 +1086,8 @@ def write_markdown_summary(
             lines.append(
                 "**Any row here means worker.rs's own ApiResult-correction path "
                 "(`Action::LogTradeCorrection`) let a wrong WIN/LOSS through — treat as a bug, "
-                "not noise.**"
+                "not noise.** (Rows where Gamma simply never resolved in time are listed "
+                "separately below, not here — see \"Gamma Timeout\".)"
             )
         else:
             if pending == total_rows:
@@ -1007,6 +1095,32 @@ def write_markdown_summary(
             elif wrong == 0:
                 lines.append("None — worker.rs's outcome matched Gamma on every resolved trade. \U0001f3af")
         lines.append("")
+
+        if gt_details:
+            lines.append("### Gamma Timeout (as designed)")
+            lines.append("")
+            lines.append(
+                "Gamma never resolved these within the retry deadline, so worker.rs used the "
+                "balance-increase override (`trader/src/balance.rs::GammaBalanceTracker`, added "
+                "2026-07-09) instead of guessing: **CONTINUED** = account balance was up since the "
+                "last cycle's checkpoint (sampled ~1-2min into every cycle), so new entries kept "
+                "going; **HALTED** = it wasn't, so new entries were suppressed pending manual "
+                "review. Both are the worker behaving exactly as designed, not a correction-logic "
+                "bug — `Hindsight` shows whether the provisional call happened to match Gamma's "
+                "eventual resolution, for information only."
+            )
+            lines.append("")
+            lines.extend([
+                "| Time | Slug | Side | Logged | Event | Hindsight | Hindsight Match |",
+                "|---|---|---|---|---|---|---|",
+            ])
+            for g in gt_details:
+                match_str = "✓" if g["hindsight_match"] else "✗"
+                lines.append(
+                    f"| {g['time']} | {g['slug']} | {g['side']} | {g['logged']} | {g['event']} | "
+                    f"{g['hindsight']} | {match_str} |"
+                )
+            lines.append("")
 
     # Backtest reconciliation always renders, even on a 0-live-trade day —
     # that's exactly the case where "did live miss a trade the backtest
@@ -1112,7 +1226,8 @@ def main() -> None:
 
     console.print(f"[dim]Loaded {len(rows)} trades after filtering & dedup.[/dim]")
     console.print("[dim]Querying Gamma API for market outcomes...[/dim]")
-    annotated, summary = annotate_rows(rows)
+    gamma_timeout_events = parse_gamma_timeout_events(log_dir / "live.log")
+    annotated, summary = annotate_rows(rows, gamma_timeout_events)
     perf_stats = compute_performance_stats(annotated)
 
     bt_result = None if args.no_bt else _safe_run_backtest_reconciliation(window_start, window_end, annotated)
