@@ -181,6 +181,29 @@ class BuildBtVsLiveTests(unittest.TestCase):
         self.assertEqual(mod.build_bt_vs_live(bt, live), [])
 
 
+class SyncPriceFeedFromOracleTests(unittest.TestCase):
+    def test_returns_false_when_script_missing(self):
+        result = mod.sync_price_feed_from_oracle(Path("/nonexistent/sync_oracle.sh"))
+        self.assertFalse(result)
+
+    def test_returns_true_on_success(self):
+        with tempfile.NamedTemporaryFile(suffix=".sh") as f:
+            script = Path(f.name)
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [str(script)], returncode=0, stdout="", stderr="")) as run_mock:
+                result = mod.sync_price_feed_from_oracle(script)
+            run_mock.assert_called_once()
+            self.assertTrue(result)
+
+    def test_returns_false_on_nonzero_exit_without_raising(self):
+        with tempfile.NamedTemporaryFile(suffix=".sh") as f:
+            script = Path(f.name)
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [str(script)], returncode=1, stdout="", stderr="ssh: connect timed out")):
+                result = mod.sync_price_feed_from_oracle(script)
+            self.assertFalse(result)
+
+
 class RunBacktestReconciliationTests(unittest.TestCase):
     """Orchestration wrapper — every subprocess/filesystem boundary is
     mocked so these run instantly and never invoke cargo, the compiled
@@ -203,6 +226,7 @@ class RunBacktestReconciliationTests(unittest.TestCase):
 
         with patch.object(mod.Path, "exists", return_value=True), \
              patch.object(mod, "resolve_trade_assets", return_value=["ETH", "DOGE"]), \
+             patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
              patch.object(mod, "build_price_data", return_value=True), \
              patch.object(mod, "run_rust_backtest", side_effect=fake_backtest):
             result = mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
@@ -211,11 +235,24 @@ class RunBacktestReconciliationTests(unittest.TestCase):
     def test_skips_a_date_when_price_build_fails(self):
         with patch.object(mod.Path, "exists", return_value=True), \
              patch.object(mod, "resolve_trade_assets", return_value=["ETH"]), \
+             patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
              patch.object(mod, "build_price_data", return_value=False) as build_mock, \
              patch.object(mod, "run_rust_backtest") as bt_mock:
             result = mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
         build_mock.assert_called()
         bt_mock.assert_not_called()  # never runs the backtest binary for a date with no price data
+        self.assertIsNotNone(result)
+
+    def test_sync_failure_does_not_block_the_rest_of_the_pipeline(self):
+        """Oracle unreachable (VPN down, SSH failure, etc.) must degrade to
+        'use whatever local data already exists', not abort the report."""
+        with patch.object(mod.Path, "exists", return_value=True), \
+             patch.object(mod, "resolve_trade_assets", return_value=["ETH"]), \
+             patch.object(mod, "sync_price_feed_from_oracle", return_value=False) as sync_mock, \
+             patch.object(mod, "build_price_data", return_value=True), \
+             patch.object(mod, "run_rust_backtest", return_value="slug,strategy,side,token_price,exit_price,outcome,pnl\n"):
+            result = mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
+        sync_mock.assert_called()
         self.assertIsNotNone(result)
 
     def test_never_shells_out_to_the_live_binary(self):

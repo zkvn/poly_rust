@@ -69,6 +69,13 @@ CONFIG_DIR = REPO_ROOT / "config"
 BACKTEST_BINARY = REPO_ROOT / "target" / "release" / "backtest"
 BACKTEST_PRICES_DIR = REPO_ROOT / "backtest_prices"
 BUILD_PRICES_SCRIPT = REPO_ROOT / "scripts" / "build_backtest_prices.py"
+# price_feed/raw/ is synced from Oracle by its own independent process — not
+# guaranteed fresh at the moment this script runs (found 2026-07-10: a stale
+# local raw/ made every asset "fail" with a missing-file error that looked
+# like a same-day sealing gap but was actually just sync lag). Sync it
+# ourselves before building backtest price data rather than assuming
+# something else already did.
+PRICE_FEED_SYNC_SCRIPT = REPO_ROOT.parent / "price_feed" / "scripts" / "sync_oracle.sh"
 
 CSV_COLUMNS = [
     "logged_at", "slug", "strategy", "side", "entry_ts", "token_price",
@@ -620,6 +627,28 @@ def build_bt_vs_live(bt_rows: list, live_rows: list) -> list:
     return missed
 
 
+def sync_price_feed_from_oracle(sync_script: Path) -> bool:
+    """Pull fresh sealed hourly shards from Oracle before building backtest
+    price data — price_feed/raw/'s local copy is synced by its own
+    independent process (or a stale manual run) and isn't guaranteed to be
+    current when this script runs. Additive-only rsync (no --delete,
+    excludes *.tmp), read-only against Oracle, never touches the live
+    trading process. A failed sync (Oracle unreachable, VPN down, etc.) is
+    not fatal — falls back to whatever local data already exists, same as
+    a missing file for any other reason."""
+    if not sync_script.exists():
+        console.print(f"[yellow]⚠ price_feed sync skipped: {sync_script} not found[/yellow]")
+        return False
+    result = subprocess.run([str(sync_script)], capture_output=True, text=True)
+    if result.returncode != 0:
+        console.print(
+            f"[yellow]⚠ price_feed sync from Oracle failed: "
+            f"{result.stderr.strip()[-500:]}[/yellow]"
+        )
+        return False
+    return True
+
+
 def build_price_data(assets: list, date: str, out_dir: Path, build_script: Path) -> bool:
     result = subprocess.run(
         [sys.executable, str(build_script), "--asset", ",".join(assets),
@@ -648,11 +677,12 @@ def run_rust_backtest(asset: str, date: str, prices_dir: Path, config_dir: Path,
 def run_backtest_reconciliation(window_start: datetime, window_end: datetime, annotated_live_rows: list) -> Optional[tuple]:
     """Orchestrates the whole BT reconciliation pipeline for one window.
 
-    Defensive by design: any failure here (binary missing, price data
-    missing, a single asset's backtest crashing) degrades to a skipped
-    section or a partial one — it must never raise out of here and take
-    down the rest of the (already-working) recon report. Never touches the
-    live trading process; only reads price_feed/raw + trader/config and
+    Defensive by design: any failure here (Oracle unreachable, binary
+    missing, price data missing, a single asset's backtest crashing)
+    degrades to a skipped section or a partial one — it must never raise
+    out of here and take down the rest of the (already-working) recon
+    report. Never touches the live trading process; syncs price_feed/raw
+    from Oracle (read-only, additive), then reads it plus trader/config and
     shells out to the separate `backtest` binary.
     """
     if not BACKTEST_BINARY.exists():
@@ -669,6 +699,9 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
         return None
 
     dates = sorted({window_start.strftime("%Y-%m-%d"), window_end.strftime("%Y-%m-%d")})
+
+    console.print("[dim]Syncing price_feed/raw from Oracle...[/dim]")
+    sync_price_feed_from_oracle(PRICE_FEED_SYNC_SCRIPT)
 
     BACKTEST_PRICES_DIR.mkdir(parents=True, exist_ok=True)
     all_bt_rows: list = []
