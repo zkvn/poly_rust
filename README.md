@@ -211,6 +211,34 @@ on the remote before the nightly sync runs.
   backtest reconciliation feature's price-data build step (any date's poly recovery path would
   have hit this). Fixed the import + call site to the new name; no logic changes.
 
+- ~~`build_backtest_prices.py::build_binance()` silently empty for any date after
+  2026-07-05.~~ **Done, same day.** It date-filtered `btc_5mins/prices/{asset}_binance.parquet`
+  (the old Python collector's merged output), which stopped updating on 2026-07-05 when that
+  collector was fully retired. Every backtest date after that filtered to zero binance rows —
+  no price series means no signal, so the Rust engine could never fire a single trade regardless
+  of config. This is what made the very first "Backtest Reconciliation" report look like a
+  config-drift or halt-carryover problem (`BT DID NOT FIRE` on both live trades, 2026-07-10):
+  it was actually "the backtest had no binance data at all." Confirmed via ETH/2026-07-03 (12
+  trades, before the cutoff) vs ETH/2026-07-09 (0 trades, after) under the identical config.
+  Fixed to source from `price_feed/raw/` (this project's own collector, which was recording
+  binance ticks there all along) the same way `build_poly()` already did — see
+  `trader/scripts/build_backtest_prices.py`'s docstring.
+
+- **Backtest reconciliation halt-state-drift gap — flagged 2026-07-10, not fixed (deliberately
+  deferred).** Once the binance-data bug above was fixed and the backtest could actually fire
+  trades, the "BT vs Live" table started reporting real numbers — including 24 ETH/DOGE cycles
+  the backtest fired on 2026-07-10 that live never traded, "worth" +2.33 USDC. Checked
+  `trader/live_logs/live_state_eth_high_prob.json`: `entry_suppressed: true`, `halt_losses: 0` —
+  ETH/high_prob was under a **manual** `/halt` for a chunk of the day (confirmed via the
+  `🛑 Halted ETH/high_prob` Telegram log line), which the backtest — a config-driven replay with
+  no live halt-state input — has no way to know about, so it fires straight through. Most (not
+  necessarily all) of the 24 "missed" cycles are very likely this, not live actually failing to
+  take a real opportunity. Same shape as the Gamma-timeout balance-override carve-out already
+  built into the Gamma Cross-Check section (`gamma_timeout` in `annotate_rows`) — closing this
+  would mean similarly reading `live_state_*.json`/`live.log`'s halt history and tagging BT vs
+  Live rows that fall inside a real halt window as "as designed" rather than "missed." Flagging
+  so the 24-cycle number in today's report isn't misread as a live-trading bug.
+
 </details>
 
 <details>
