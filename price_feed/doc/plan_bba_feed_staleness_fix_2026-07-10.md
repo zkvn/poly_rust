@@ -1,6 +1,51 @@
 # Plan — fix silent per-asset staleness in the live Polymarket price feed (bba/book)
 
-Status: **draft, for review** — no code changed yet.
+Status: **phase 1 (observe-only) implemented and deployed to Oracle, 2026-07-10 ~20:55 HKT.**
+Phase 2 (the actual recovery action) is **not implemented** — see §8 below for why, and don't
+build it from §4's original design as written; §4 is kept for the record but was disproven in
+production. Read §8 first if you're picking this back up.
+
+## 0. 2026-07-10 update: the first implementation caused a production incident
+
+§4 below (as originally written) was implemented, tested locally (18 passing tests, clippy/
+fmt clean), and deployed to Oracle via `scripts/deploy_oracle.py --price-feed-only`. Two
+problems surfaced, one caught before the second deploy attempt, one after:
+
+1. **A real bug, caught in production, fixed same session**: `spawn_bba_task` is called with
+   an empty `assets: Vec<String>` for the 15m/4hr feeds (they don't publish to NATS, so no
+   asset names are needed — see their call sites in `run()`), but the per-asset task table
+   was sized off `assets.len()` while indexed by the token-slot loop (sized off the tracked-
+   asset count, `n`). Panicked immediately on every restart: `index out of bounds: the len is
+   0 but the index is 0`. Fixed by sizing the task table off the token-slot count instead —
+   see `run_bba_task_loop`'s doc comment and the regression test
+   `spawns_correctly_when_assets_list_is_shorter_than_token_slots` in the (now superseded,
+   see below) implementation.
+2. **A design flaw, caught in production, not fully fixable by patching**: after the panic
+   fix, redeployed, and the watchdog immediately started firing `[STALE] ... forcing
+   per-asset resubscribe` roughly every 5 seconds for nearly every asset across all three
+   durations — BTC, ETH, DOGE, SOL, BNB, XRP, HYPE, continuously, not just during a real
+   outage. This is **worse** than the original bug: a continuous resubscribe storm hammering
+   the shared connection, instead of one rare 205s gap.
+
+   Root cause: `best_bid_ask`/`price_change` are *change* events, not a periodic heartbeat —
+   Polymarket only sends a message when the price actually moves. The plan's original 5s
+   threshold was calibrated only from watching BTC/ETH/DOGE during an actively-moving window
+   in the historical incident data (§1's table below). In practice, plenty of legitimate quiet
+   stretches — untraded assets (SOL/BNB/XRP/HYPE), the 15m/4hr durations, and (per the user,
+   confirmed by this incident) the quiet minute or two right after a cycle opens before price
+   action typically picks up — go well past 5s with genuinely nothing to send. **A raw silence
+   timer cannot distinguish "broken" from "quiet" for a change-event stream.** There is no
+   threshold that's both fast enough to matter and safe against every asset's and duration's
+   normal quiet stretches.
+
+   **Rolled back same session**: `git stash`'d the change (stash entry `wip: bba staleness
+   watchdog - false-positive storm, rolling back to redesign` — kept locally, not pushed, as
+   an audit trail of what was tried and disproven), rebuilt and redeployed the prior known-
+   good binary, confirmed `poly-collector` active with zero errors/panics and the trader's
+   `live.log` showing normal heartbeats again.
+
+See §8 for the redesign this led to (implemented, phase 1 only) and §9 for research on the
+correct fix (phase 2, deferred).
 
 ## 1. Background — what happened
 
@@ -380,16 +425,97 @@ gated on trader-side changes; happy to pull it into phase 1 if you'd rather have
 
 ---
 
-**Nothing in this plan has been implemented yet — this is for your review before I touch any
-`.rs` file.** Let me know which parts to proceed with (all of §4, or start with 4.1+4.2 and
-hold 4.4/4.5), and any pushback on the threshold values or the trait-seam approach in §4.3.
+**§§1–7 above are the original plan, kept for the record. They were disproven in production
+(§0) — §4's "5s threshold, force resubscribe" design is not what's deployed. Read on.**
+
+## 8. What's actually implemented now: phase 1, observe-only
+
+`price_feed/src/staleness.rs` is now a small, pure module (`buckets_to_log`, 6 escalating
+silence thresholds from 10s to 300s) wired into `collect.rs::run()`'s existing `ticker_200ms`
+sampler loop for the 5m feed only (`state_5m` — matches this plan's existing scoping choice to
+handle the trading-critical duration first). For each asset, every 200ms it checks whether
+`AssetState.latest_bba.received_at_ms` has advanced since the last check; if not, and enough
+silence has accumulated to cross a new threshold, it logs
+`[OBSERVE-STALE] {asset} bba feed silent for >={bucket}ms (actual {silent_ms}ms) — logging
+only, no action taken` to the collector's journal. **It takes no recovery action of any
+kind** — no unsubscribe, no resubscribe, nothing touches the live subscription. This is
+deliberately as safe a change as could be made: read-only against already-existing shared
+state, additive to an existing loop, zero behavior change to anything else. Deployed and
+verified stable (§0).
+
+Purpose: collect real per-asset, per-market-phase silence-gap data — including the "quiet
+right after cycle open, busier as it progresses toward resolution" pattern the user pointed
+out, which the failed phase-1-that-wasn't (§0) inadvertently proved is real and underestimated
+— so phase 2's actual trigger (§9) can be sized and validated against real production data
+instead of another guess from a handful of historical incident timestamps.
+
+**Next step, not yet started**: after this has run long enough to accumulate a meaningful
+sample of `[OBSERVE-STALE]` lines across assets/durations/market-phases, review them
+(`journalctl -u poly-collector | grep OBSERVE-STALE`) to see the real distribution of quiet-
+period lengths per asset before deciding phase 2's reconciliation interval/tolerance.
+
+## 9. Phase 2 (deferred): REST reconciliation, not a silence timer
+
+Researched (§0's actual problem — telling "broken" apart from "quiet" — needed a real answer,
+not a retuned constant) rather than guessed. The industry-standard pattern for this exact
+class of problem (a WS feed that's only reliable for *changes*, where silence is ambiguous) is
+**REST snapshot reconciliation**, not a refined silence timer:
+
+- Track quote age continuously per symbol; move a symbol from a "live" state toward
+  "degraded"/"stale" as its age grows — but **the actual stale determination comes from
+  cross-checking against a fresh REST poll's ground truth, not from age/silence alone.** A
+  price is only usable when the application also knows its source and age, so both are kept
+  attached to every quote, and a stale/live transition is a state machine driven by that
+  cross-check, not a bare timeout. ([insightbig.com](https://www.insightbig.com/post/real-time-market-data-fails-quietly-here-s-how-to-make-it-recoverable))
+- Concretely for crypto/exchange feeds: bootstrap from a REST snapshot, maintain via WS, and
+  when a symbol's WS updates slow down, request a fresh REST snapshot and compare — only a
+  genuine mismatch (not just elapsed time) confirms real staleness; a symbol that's
+  legitimately quiet will have a REST snapshot that agrees with the still-cached WS value, so
+  it produces no false alarm no matter how long the silence runs.
+
+  This is exactly the property §0's incident showed matters: a market that's quiet because
+  nothing is happening has a *stable* true price the whole time — REST and cached-WS would
+  still agree — so this approach structurally cannot false-positive on a quiet market the way
+  a silence timer did.
+
+Applied to this project: Polymarket's CLOB REST API has `GET /midpoint?token_id=...` →
+`{"mid_price": "0.45"}` — no auth required for reads
+([docs.polymarket.com](https://docs.polymarket.com/api-reference/data/get-midpoint-price)).
+Proposed phase 2 design (not implemented):
+
+1. Every N seconds (candidate: 20–30s, informed by §8's observed data before committing),
+   poll `/midpoint` for each 5m asset's up-token via `reqwest` (already a dependency, already
+   used for Gamma calls elsewhere in this file).
+2. Compare the REST midpoint against the WS-cached `(best_bid + best_ask) / 2`. Only flag
+   staleness if they diverge beyond a tolerance (candidate: a few cents) — not from silence
+   duration at all. A quiet-but-healthy asset's REST midpoint will match the stale cache
+   almost exactly, producing no false trigger regardless of how long it's been quiet.
+3. On a genuine mismatch, run the same per-asset unsubscribe(×2)+resubscribe recovery §4
+   designed (that part of the original design — the *recovery mechanism* itself, as opposed
+   to the *trigger* — was never the problem; only the timer-based trigger was).
+4. Rate limit: 6 assets polled every 20–30s is ~0.2–0.3 req/s to a public, unauthenticated
+   REST endpoint — far below anything Polymarket would plausibly rate-limit, especially
+   compared to the WS message volume already flowing.
+
+This is real, non-trivial new implementation work (a REST poller, comparison logic, wiring
+the existing recovery code from §4 behind a materially different trigger) — proposing it here
+for review, not building it yet, per your "observe-only first" call. Happy to scope and build
+this once §8's data gives us real numbers to validate the design against, or sooner if you'd
+rather not wait.
 
 ## Sources
 
-Web research used to validate the §4.1 design (one shared connection, not one-per-asset):
+Earlier research (validated §4.1's "one shared connection" design, still correct — only the
+silence-timer trigger in §4.2 was wrong, not the connection architecture):
 
 - [Polymarket CLOB WebSocket — Overview](https://docs.polymarket.com/developers/CLOB/websocket/wss-overview) — market channel subscribe payload shape (`assets_ids` array), ping/pong contract.
 - [Polymarket `agent-skills` — websocket.md](https://github.com/Polymarket/agent-skills/blob/main/websocket.md)
 - [`Polymarket/rs-clob-client-v2` — GitHub](https://github.com/Polymarket/rs-clob-client-v2) — upstream repo for the `polymarket_client_sdk_v2` crate this project depends on (source read directly from the vendored `~/.cargo/registry` copy, version `0.6.0-canary.1`, for §2.1's findings — not from this repo page, which doesn't render the same detail as the actual source).
 - [`GoPolymarket/polymarket-go-sdk` ws package docs](https://pkg.go.dev/github.com/GoPolymarket/polymarket-go-sdk/pkg/clob/ws) — confirms the subscribe/unsubscribe-by-asset pattern exists as a general convention across Polymarket's own SDKs, not just this Rust crate.
 - Hacker News discussion on WS multiplexing vs. per-stream connections (general best-practice framing, not Polymarket-specific): [news.ycombinator.com/item?id=39755924](https://news.ycombinator.com/item?id=39755924)
+
+Research for §9 (the phase-2 redesign, after §0's production incident):
+
+- [Real-Time Market Data Fails Quietly. Here's How to Make It Recoverable](https://www.insightbig.com/post/real-time-market-data-fails-quietly-here-s-how-to-make-it-recoverable) — source/age/state metadata pattern for telling stale data from fresh data, cited in §9.
+- [Get midpoint price — Polymarket Documentation](https://docs.polymarket.com/api-reference/data/get-midpoint-price) — the `GET /midpoint` REST endpoint §9's design is built on.
+- General REST-reconciliation pattern for stale WS symbols (sequence validation, age tracking, snapshot verification, explicit state transitions) — synthesized from multiple crypto-exchange API design discussions found via web search 2026-07-10, no single canonical source.

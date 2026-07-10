@@ -252,6 +252,24 @@ on the remote before the nightly sync runs.
   fix). Left alone for now — same rationale as the halt-state-drift gap above, not something to
   bundle into an unrelated fix.
 
+- **`price_feed`'s bba/price WS feed can silently stop delivering for one asset (no error, no
+  close) — real incident 2026-07-10, first fix attempt also caused a production incident same
+  day, phase-1 (observe-only) mitigation deployed, phase-2 (real fix) deferred.** Root cause:
+  `poly-collector`'s shared best_bid_ask/price_change subscription went quiet for DOGE (205s)
+  and separately ETH (205s) on 2026-07-10, causing the Rust trader to miss two real entry
+  signals (python's independent-feed sibling bot caught both). First fix (a 5s silence timer
+  forcing an unsubscribe+resubscribe) was deployed, then caused a *worse* problem — a
+  continuous resubscribe storm firing every ~5s for nearly every asset, since
+  `best_bid_ask`/`price_change` are change events, not a heartbeat, and plenty of legitimate
+  quiet stretches exceed 5s. Rolled back same session. Deployed instead: a pure observe-only
+  logger (`price_feed/src/staleness.rs`, wired into `collect.rs`) that logs escalating silence
+  durations per asset but takes no recovery action — safe, zero behavior change, currently
+  collecting real quiet-period data. The actual fix (REST `/midpoint` reconciliation instead of
+  a silence timer, since only a ground-truth mismatch — not elapsed time alone — can tell
+  "broken" apart from "quiet") is designed but **not implemented**. See
+  `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` §§0, 8, 9 for the full incident,
+  what's deployed, and the deferred phase-2 design.
+
 </details>
 
 <details>

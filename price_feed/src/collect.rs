@@ -1410,6 +1410,15 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
     ticker_1s.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigterm = signal(SignalKind::terminate()).context("sigterm")?;
 
+    // ── bba staleness observation (5m feed only) — logging only, takes no recovery action.
+    // See staleness.rs's doc comment for why: a raw silence timer that *acts* on a
+    // change-event stream false-positive-stormed in production on 2026-07-10 (deployed,
+    // caused continuous needless resubscribes, rolled back same day). This phase-1 telemetry
+    // exists to observe real per-asset silence-gap distributions before phase 2 (REST
+    // `/midpoint` reconciliation, not yet implemented) ever triggers a real recovery again.
+    let mut bba_last_seen_ms: Vec<i64> = vec![0; n];
+    let mut bba_logged_bucket: Vec<usize> = vec![0; n];
+
     loop {
         tokio::select! {
             _ = ticker_200ms.tick() => {
@@ -1423,6 +1432,26 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
                     let Some((book, srv_ts, rcv_ts, last_trade, slug, bba)) = snap else { continue };
                     if slug.is_empty() { continue; }
                     if let Err(e) = writers_5m[i].write_sample(ts, &book, last_trade, &slug, srv_ts, rcv_ts, bba) { eprintln!("[{}] 5m write: {e:#}", assets[i]); }
+
+                    // Staleness observation (logging only — see the comment above this
+                    // loop's ticker setup for why this never takes a recovery action).
+                    if let Some(sample) = bba {
+                        if sample.received_at_ms != bba_last_seen_ms[i] {
+                            bba_last_seen_ms[i] = sample.received_at_ms;
+                            bba_logged_bucket[i] = 0;
+                        } else {
+                            let silent_ms = now_ms() - sample.received_at_ms;
+                            let (crossed, new_logged) =
+                                crate::staleness::buckets_to_log(bba_logged_bucket[i], silent_ms);
+                            for bucket_ms in crossed {
+                                eprintln!(
+                                    "[OBSERVE-STALE] {} bba feed silent for >={bucket_ms}ms (actual {silent_ms}ms) — logging only, no action taken",
+                                    assets[i]
+                                );
+                            }
+                            bba_logged_bucket[i] = new_logged;
+                        }
+                    }
                 }
                 for (i, snap) in snapshot(&state_15m).into_iter().enumerate() {
                     if let Err(e) = writers_15m[i].seal_if_hour_changed() { eprintln!("[{}] 15m seal: {e:#}", assets[i]); }

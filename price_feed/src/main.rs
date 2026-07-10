@@ -1,6 +1,7 @@
 mod chainlink;
 mod collect;
 mod markets;
+mod staleness;
 
 use clap::{Parser, Subcommand};
 
