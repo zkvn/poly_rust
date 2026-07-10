@@ -1,9 +1,11 @@
 # Plan — fix silent per-asset staleness in the live Polymarket price feed (bba/book)
 
-Status: **phase 1 (observe-only) implemented and deployed to Oracle, 2026-07-10 ~20:55 HKT.**
-Phase 2 (the actual recovery action) is **not implemented** — see §8 below for why, and don't
-build it from §4's original design as written; §4 is kept for the record but was disproven in
-production. Read §8 first if you're picking this back up.
+Status: **phase 1 (observe-only, §8) and phase 2 (REST reconciliation, §10) both implemented
+and deployed to Oracle** — phase 1 at 2026-07-10 ~20:55 HKT, phase 2 at ~22:26 HKT. §4's
+original "5s silence timer + surgical unsubscribe" design is **not** what's deployed anywhere
+— it's kept below for the record only; it was disproven in production (§0) and its recovery
+mechanism was further found unsafe on closer inspection (§10). Read §10 first if you're
+picking this back up — it supersedes §9's proposal in a couple of ways.
 
 ## 0. 2026-07-10 update: the first implementation caused a production incident
 
@@ -503,6 +505,86 @@ for review, not building it yet, per your "observe-only first" call. Happy to sc
 this once §8's data gives us real numbers to validate the design against, or sooner if you'd
 rather not wait.
 
+## 10. Phase 2 implemented (2026-07-10 ~22:00–22:26 HKT) — two changes from §9's proposal
+
+Built per the user's follow-up: default the REST poll to every 5s (not 20-30s), make it a
+config parameter, test thoroughly (including in Docker) before deploying, verify on Oracle,
+then document and push. Two things changed from §9's design during implementation, both
+found by checking assumptions against the real system rather than trusting the plan:
+
+**1. Verified the REST response shape live — the docs page is wrong.** `curl
+'https://clob.polymarket.com/midpoint?token_id=...'` returns `{"mid":"0.125"}`. §9 (and
+`docs.polymarket.com/api-reference/data/get-midpoint-price`) says the field is `mid_price`.
+Trusted the live response, not the docs; `reconcile::parse_midpoint_response` expects `mid`
+and has a test (`parses_real_verified_response_shape`) pinned to the real shape.
+
+**2. Recovery mechanism changed: no surgical per-asset unsubscribe. Exit the process
+instead.** §9 said "run the same per-asset unsubscribe(×2)+resubscribe recovery §4
+designed... only the timer-based trigger was [wrong]." That turned out to be wrong too, on
+closer inspection: `polymarket_client_sdk_v2` refcounts a subscription per asset ID *across
+every independent subscriber sharing the connection*, not per bba-task. In this codebase, one
+asset's up-token is referenced by **4** separate registrations — `spawn_book_task`'s
+`subscribe_orderbook`, `spawn_bba_task`'s `subscribe_best_bid_ask` *and* `subscribe_prices`,
+and `spawn_trade_task`'s `subscribe_last_trade_price` — not the 2 (bba only) §4's original
+design assumed. Unsubscribing only twice would leave the refcount at 2, never reach zero, and
+send no real wire unsubscribe — a silent no-op recovery. The SDK exposes no public per-asset
+refcount accessor to compute the real count dynamically either (only `active_subscriptions()`,
+a full registration list you'd have to scan and reason about correctly under concurrent
+cycle-rollover resubscribes). Given `price_feed::collect::run()` already treats a failed NATS
+connect as fatal — exiting and relying on `Restart=always`/`RestartSec=5` (see
+`poly-collector.service`) — reused that exact, already-established pattern instead: on a
+confirmed mismatch, log and `std::process::exit(1)`. Simple, matches existing convention, and
+correct by construction rather than correct-if-the-refcount-reasoning-holds.
+
+**What's deployed:**
+
+- `price_feed/src/reconcile.rs` — pure `ReconcileState`/`check()` (2-consecutive-mismatch
+  debounce, 0.03 tolerance) + `fetch_midpoint`/`parse_midpoint_response` (REST client). 11
+  unit tests, including a golden-incident regression using the real 2026-07-10 DOGE gap's
+  frozen-vs-real prices.
+- `spawn_reconcile_task` in `collect.rs` — one task, one shared `reqwest::Client` (reused from
+  the existing Gamma-polling client), polls every 5m asset's up-token on a
+  `--midpoint-poll-secs`-controlled interval (**default 5s**, per the user's ask — new CLI
+  flag on `price_feed collect`, `reconcile::DEFAULT_POLL_SECS`). Skips an asset with no
+  WS-cached sample yet (nothing to reconcile against). Does not touch `spawn_bba_task`/
+  `spawn_book_task`/`spawn_trade_task` at all.
+- Confirmed mismatch → `eprintln!` a `[RECONCILE-STALE]` line with full context (asset,
+  rest_mid, cached_mid, diff) → `std::process::exit(1)`.
+
+**Docker validation (`docker compose`, real NATS + real Polymarket network, before touching
+Oracle):**
+
+1. Built and ran `nats` + `price-feed` (BTC) locally. Confirmed via a temporary debug log
+   (removed before the final build) that the reconciliation loop successfully calls the real
+   `/midpoint` endpoint from inside the container every ~5s and the values track closely with
+   the WS cache under real conditions (e.g. `rest_mid=0.4950 cached_mid=0.5250`,
+   `rest_mid=0.3950 cached_mid=0.3950`) — no false positives under real market behavior.
+2. **Forced-trigger test of the full recovery cycle**: temporarily set `MISMATCH_TOLERANCE =
+   -1.0` (guarantees every reading counts as a mismatch) and rebuilt. Watched two consecutive
+   `[RECONCILE-STALE]` → exit → container restart cycles under `restart: unless-stopped`
+   (`docker inspect` showed `RestartCount=2`), each restart cleanly re-establishing NATS,
+   re-discovering the tracked slug, reconnecting Binance WS, and resuming reconciliation —
+   no crash loop, no stuck state.
+3. Reverted the temporary tolerance and debug log, rebuilt, ran a clean 90s soak under the
+   real `0.03` tolerance: `RestartCount=0`, zero `RECONCILE-STALE`/panic/error lines.
+
+**Oracle deployment**: `scripts/deploy_oracle.py --price-feed-only --dry-run` then the real
+run. `poly-collector` active, zero errors on restart, a 90s+ soak on the real 3-asset
+(BTC/ETH/DOGE) production feed showed zero false triggers, `trader-live.service`'s `live.log`
+continued showing normal fresh heartbeats throughout — the trader was never affected.
+
+**Not done / open follow-ups**:
+- `spawn_book_task`/`spawn_trade_task` still have no staleness detection or reconciliation of
+  their own (same scoping as §7's original risk note — bba/price is what the trader's entry
+  signal depends on).
+- The reconciliation loop polls sequentially within its own tick, not concurrently across
+  assets — fine at 3 real `trade_assets` + a handful of recorded-only assets on a 5s interval,
+  but worth revisiting if more assets are added and the per-tick REST round-trips start
+  approaching the poll interval itself.
+- No metric/log aggregation for `[RECONCILE-STALE]` frequency yet — same gap §8's phase-1
+  `feed_gaps.log` idea (never built) was meant to close; if reconciliation restarts turn out
+  to fire more than rarely in practice, that's worth adding.
+
 ## Sources
 
 Earlier research (validated §4.1's "one shared connection" design, still correct — only the
@@ -517,5 +599,5 @@ silence-timer trigger in §4.2 was wrong, not the connection architecture):
 Research for §9 (the phase-2 redesign, after §0's production incident):
 
 - [Real-Time Market Data Fails Quietly. Here's How to Make It Recoverable](https://www.insightbig.com/post/real-time-market-data-fails-quietly-here-s-how-to-make-it-recoverable) — source/age/state metadata pattern for telling stale data from fresh data, cited in §9.
-- [Get midpoint price — Polymarket Documentation](https://docs.polymarket.com/api-reference/data/get-midpoint-price) — the `GET /midpoint` REST endpoint §9's design is built on.
+- [Get midpoint price — Polymarket Documentation](https://docs.polymarket.com/api-reference/data/get-midpoint-price) — the `GET /midpoint` REST endpoint §9's design is built on. **Its stated response field (`mid_price`) is wrong** — verified live 2026-07-10 (§10) that the real field is `mid`, e.g. `{"mid":"0.125"}`. The implementation trusts the verified live response, not this page.
 - General REST-reconciliation pattern for stale WS symbols (sequence validation, age tracking, snapshot verification, explicit state transitions) — synthesized from multiple crypto-exchange API design discussions found via web search 2026-07-10, no single canonical source.

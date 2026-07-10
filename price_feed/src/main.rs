@@ -1,6 +1,7 @@
 mod chainlink;
 mod collect;
 mod markets;
+mod reconcile;
 mod staleness;
 
 use clap::{Parser, Subcommand};
@@ -40,6 +41,12 @@ enum Cmd {
         /// Publish live ticks to NATS (e.g. nats://localhost:4222); omit to disable
         #[arg(long)]
         nats_url: Option<String>,
+        /// REST /midpoint ground-truth reconciliation poll interval (seconds) for the 5m
+        /// feed — see price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md §9. A confirmed
+        /// mismatch (persisted over reconcile::CONSECUTIVE_MISMATCHES_REQUIRED consecutive
+        /// polls) exits the process, relying on systemd's Restart=always to recover.
+        #[arg(long, default_value_t = reconcile::DEFAULT_POLL_SECS)]
+        midpoint_poll_secs: u64,
     },
 }
 
@@ -66,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
             assets,
             raw_dir,
             nats_url,
-        }) => collect::run(assets, &raw_dir, nats_url).await,
+            midpoint_poll_secs,
+        }) => collect::run(assets, &raw_dir, nats_url, midpoint_poll_secs).await,
     }
 }

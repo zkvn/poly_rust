@@ -23,6 +23,8 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::reconcile;
+
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
 fn hkt() -> FixedOffset {
@@ -1164,6 +1166,62 @@ fn spawn_bba_task(
     });
 }
 
+/// REST `/midpoint` ground-truth reconciliation for the 5m feed — see `reconcile.rs`'s doc
+/// comment for the detection design and why a confirmed mismatch exits the process rather
+/// than attempting a surgical per-asset unsubscribe. Polls every `poll_secs` (default
+/// `reconcile::DEFAULT_POLL_SECS`, override via `--midpoint-poll-secs`); does nothing for an
+/// asset that has no WS-cached sample yet (nothing to reconcile against).
+fn spawn_reconcile_task(
+    http: Arc<reqwest::Client>,
+    state: Arc<Mutex<Vec<AssetState>>>,
+    slot_rx: watch::Receiver<Vec<Option<(U256, U256, String)>>>,
+    assets: Vec<String>,
+    poll_secs: u64,
+) {
+    tokio::spawn(async move {
+        let n = assets.len();
+        let mut recon_state: Vec<reconcile::ReconcileState> =
+            (0..n).map(|_| Default::default()).collect();
+        let mut ticker = tokio::time::interval(Duration::from_secs(poll_secs.max(1)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+            let tokens = slot_rx.borrow().clone();
+
+            for (i, slot) in tokens.iter().enumerate() {
+                let Some((up_id, ..)) = slot else { continue };
+                let cached_mid = {
+                    let st = state.lock().unwrap();
+                    st.get(i)
+                        .and_then(|s| s.latest_bba)
+                        .map(|b| (b.best_bid + b.best_ask) / 2.0)
+                };
+                let Some(cached_mid) = cached_mid else {
+                    continue;
+                };
+                let asset_name = assets.get(i).cloned().unwrap_or_else(|| i.to_string());
+
+                match reconcile::fetch_midpoint(&http, *up_id).await {
+                    Ok(rest_mid) => {
+                        if reconcile::check(&mut recon_state[i], cached_mid, rest_mid) {
+                            eprintln!(
+                                "[RECONCILE-STALE] {asset_name} rest_mid={rest_mid:.4} cached_mid={cached_mid:.4} diff={:.4} — confirmed via {} consecutive mismatches, exiting for systemd to restart",
+                                (rest_mid - cached_mid).abs(),
+                                reconcile::CONSECUTIVE_MISMATCHES_REQUIRED,
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[{asset_name}] midpoint fetch failed: {e:#}");
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn spawn_trade_task(
     clob: ClobWsClient,
     state: Arc<Mutex<Vec<AssetState>>>,
@@ -1260,7 +1318,12 @@ fn snapshot(state: &Arc<Mutex<Vec<AssetState>>>) -> Vec<Snap> {
 /// without colliding with its output. `nats_url`, if set, publishes live
 /// Binance + 5m Poly ticks so the trader can subscribe instead of opening its
 /// own duplicate feeds (README.md "Oracle infra: NATS price bridge").
-pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<String>) -> Result<()> {
+pub async fn run(
+    assets: Vec<String>,
+    raw_dir_base: &str,
+    nats_url: Option<String>,
+    midpoint_poll_secs: u64,
+) -> Result<()> {
     let raw_5m = PathBuf::from(raw_dir_base);
     let raw_15m = PathBuf::from(format!("{raw_dir_base}_15_mins"));
     let raw_4hr = PathBuf::from(format!("{raw_dir_base}_4hr"));
@@ -1331,6 +1394,13 @@ pub async fn run(assets: Vec<String>, raw_dir_base: &str, nats_url: Option<Strin
         slot_rx_5m.clone(),
         nats.clone(),
         assets.clone(),
+    );
+    spawn_reconcile_task(
+        Arc::clone(&http),
+        Arc::clone(&state_5m),
+        slot_rx_5m.clone(),
+        assets.clone(),
+        midpoint_poll_secs,
     );
     spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
 

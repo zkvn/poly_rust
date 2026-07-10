@@ -252,23 +252,32 @@ on the remote before the nightly sync runs.
   fix). Left alone for now — same rationale as the halt-state-drift gap above, not something to
   bundle into an unrelated fix.
 
-- **`price_feed`'s bba/price WS feed can silently stop delivering for one asset (no error, no
-  close) — real incident 2026-07-10, first fix attempt also caused a production incident same
-  day, phase-1 (observe-only) mitigation deployed, phase-2 (real fix) deferred.** Root cause:
-  `poly-collector`'s shared best_bid_ask/price_change subscription went quiet for DOGE (205s)
-  and separately ETH (205s) on 2026-07-10, causing the Rust trader to miss two real entry
-  signals (python's independent-feed sibling bot caught both). First fix (a 5s silence timer
-  forcing an unsubscribe+resubscribe) was deployed, then caused a *worse* problem — a
-  continuous resubscribe storm firing every ~5s for nearly every asset, since
+- ~~`price_feed`'s bba/price WS feed can silently stop delivering for one asset (no error, no
+  close) — real incident 2026-07-10.~~ **Done, same day** (in two steps, one of which was
+  itself a production incident — worth reading in full before touching this code again).
+  Root cause: `poly-collector`'s shared best_bid_ask/price_change subscription went quiet for
+  DOGE (205s) and separately ETH (205s) on 2026-07-10, causing the Rust trader to miss two
+  real entry signals (python's independent-feed sibling bot caught both). First fix attempt (a
+  5s silence timer forcing an unsubscribe+resubscribe) was deployed and caused a *worse*
+  problem — a continuous resubscribe storm firing every ~5s for nearly every asset, since
   `best_bid_ask`/`price_change` are change events, not a heartbeat, and plenty of legitimate
-  quiet stretches exceed 5s. Rolled back same session. Deployed instead: a pure observe-only
-  logger (`price_feed/src/staleness.rs`, wired into `collect.rs`) that logs escalating silence
-  durations per asset but takes no recovery action — safe, zero behavior change, currently
-  collecting real quiet-period data. The actual fix (REST `/midpoint` reconciliation instead of
-  a silence timer, since only a ground-truth mismatch — not elapsed time alone — can tell
-  "broken" apart from "quiet") is designed but **not implemented**. See
-  `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` §§0, 8, 9 for the full incident,
-  what's deployed, and the deferred phase-2 design.
+  quiet stretches exceed 5s. Rolled back same session. Landed instead in two phases: **phase 1**
+  (`price_feed/src/staleness.rs`) is a pure observe-only silence logger, no recovery action.
+  **Phase 2** (`price_feed/src/reconcile.rs`) is the real fix — polls Polymarket's REST
+  `GET /midpoint` (every 5s by default, `--midpoint-poll-secs` to override) and only declares
+  an asset stale on a confirmed *ground-truth mismatch* against the WS-cached price (debounced
+  over 2 consecutive polls), never from elapsed silence alone, so a genuinely quiet market
+  can't false-positive no matter how long it stays quiet. On confirmed staleness it logs and
+  exits the process, relying on `poly-collector.service`'s existing `Restart=always` — not a
+  surgical per-asset unsubscribe, which turned out to be unsafe here too (the SDK refcounts a
+  subscription per asset *across every independent subscriber* sharing the connection — 4
+  registrations per asset in this codebase, not the 2 first assumed; unsubscribing only 2
+  would silently no-op). Validated in Docker (real NATS + real Polymarket network, including a
+  forced-trigger test proving the full exit→restart cycle recovers cleanly with
+  `restart: unless-stopped`) before deploying to Oracle, then soak-verified there against the
+  real 3-asset production feed with zero false triggers. See
+  `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` (§0 for the first incident, §8 for
+  phase 1, §10 for phase 2 as actually built) for the full story.
 
 </details>
 
