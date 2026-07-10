@@ -239,17 +239,6 @@ on the remote before the nightly sync runs.
   Live rows that fall inside a real halt window as "as designed" rather than "missed." Flagging
   so the 24-cycle number in today's report isn't misread as a live-trading bug.
 
-- **`HaltTracker` never resets its loss count on an intervening WIN — flagged 2026-07-10, not
-  fixed (deliberately deferred).** Found while diagnosing the ETH high_prob phantom-halt incident
-  (`trader/doc/incident_halt_double_count_2026-07-10.md`): despite being documented everywhere as
-  a "consecutive-loss"/"loss-streak" halt, `HaltTracker::record_trade` only ever increments
-  `losses` on a loss-shaped outcome — a WIN in between two losses does not reset the counter, so
-  `halt_rev`/`halt_prob` actually tracks "total losses this HKT session," not a true consecutive
-  streak. Today's fix (correcting the count on a Gamma `ApiResult` flip) resolves the specific
-  reported incident without touching this, since changing "per-session total" to "true consecutive
-  streak" would be a live-trading halt-behavior change across every strategy, not something to slip
-  in as a side effect of a bug fix. Flagging so it's a deliberate decision if/when it's revisited.
-
 </details>
 
 <details>
@@ -1634,5 +1623,14 @@ corrected outcome — decrementing a phantom loss (Loss → Win) or counting a m
 (Win → Loss) — and can itself emit `Action::HaltEngaged`/new `Action::HaltClearedByCorrection`
 if the correction crosses the threshold in either direction. Covered by new tests in
 `worker.rs`/`backtest.rs` reproducing this exact timeline.
+
+**Design note (confirmed 2026-07-10):** while diagnosing this, we noticed `HaltTracker` never
+resets its loss count on an intervening WIN — despite being documented as a "consecutive-loss"/
+"loss-streak" halt, `halt_rev`/`halt_prob` actually tracks total losses within the HKT session,
+in any order, not a true consecutive streak (a `Loss, Win, Win, Win, Loss` sequence still trips
+`halt_max=2` even though the losses are never back-to-back). Raised with the user and **confirmed
+as the intended behavior, not a bug** — session-total loss counting is what should ship. No code
+change from this; noted here only so the "consecutive" naming in comments/config keys isn't
+misread as a mismatch with the actual semantics.
 
 </details>
