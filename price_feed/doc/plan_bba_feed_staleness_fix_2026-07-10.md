@@ -64,7 +64,63 @@ We do not have a confirmed explanation for *why* Polymarket's server (or the
 subscription while continuing for others — there's no error surfaced anywhere in the stack to
 diagnose further from our side. The fix below is a **detect-and-recover safety net**, not a
 guarantee that the underlying transient server/SDK hiccup itself can never occur again — see
-§6 Risks for why I think this is the right bar rather than overpromising.
+§7 Risks for why I think this is the right bar rather than overpromising.
+
+### 2.1 SDK internals — researched before designing the fix
+
+Before proposing "one WebSocket connection per asset" (an earlier draft of this plan), I
+checked whether that's actually the right shape, given general WS best practice strongly
+favors one multiplexed connection over many (lower handshake/rate-limit overhead, matches how
+Polymarket's own protocol is designed — a single `{"assets_ids": [...], "type": "market"}`
+subscribe message takes an array). Rather than guess, I read the vendored SDK source directly
+(`~/.cargo/registry/.../polymarket_client_sdk_v2-0.6.0-canary.1/src/clob/ws/`, `src/ws/`) —
+this crate is what `price_feed` actually depends on (`Cargo.toml`: `polymarket_client_sdk_v2
+= "0.6.0-canary.1"`), so this is ground truth for what's available, not general docs.
+
+**Findings:**
+
+- `Client::get_or_create_channel(ChannelType::Market)` (`clob/ws/client.rs`) lazily opens
+  **one WebSocket connection per channel type**, and every `subscribe_*` call — orderbook,
+  prices, best_bid_ask, tick_size_change, midpoints — shares one underlying
+  `subscribed_assets: DashMap<U256, usize>` refcount table (`clob/ws/subscription.rs`,
+  `SubscriptionManager`). Two different callers subscribing to the same asset just increment
+  a refcount; "only send subscription request for new assets" is a direct code comment there.
+  **The SDK already multiplexes every asset over one connection by design** — splitting into
+  N raw connections would fight this, not complement it, for no real benefit.
+- It also already exposes the exact primitive we need: `Client::unsubscribe_orderbook(&[id])`
+  (which `unsubscribe_prices`/`unsubscribe_tick_size_change`/`unsubscribe_midpoints` all alias
+  — they share the same refcount pool) decrements that asset's count and, **only once it hits
+  zero, sends a real "unsubscribe" wire message for just that asset** over the live
+  connection. Calling `subscribe_best_bid_ask`/`subscribe_prices` again afterward is treated
+  as "new" again and sends a fresh genuine "subscribe" message — again scoped to just that
+  asset, same connection, no reconnect. **This means a single stale asset can be recovered in
+  place, without touching the shared connection or any other asset's subscription, using the
+  SDK's own existing API** — no new connections, no new protocol messages we'd have to hand-
+  roll.
+- **Sharp edge to test explicitly**: refcounting is call-for-call, and `spawn_bba_task`
+  currently calls *both* `subscribe_best_bid_ask(ids)` and `subscribe_prices(ids)` for the
+  same asset list — that's **2 increments per asset**. A forced refresh must call
+  `unsubscribe_orderbook` twice for the stale asset to actually zero its refcount and trigger
+  a real wire unsubscribe; call it once and the SDK silently keeps the asset "subscribed"
+  internally with no message sent — our fix would appear to run (logged, watchdog fired) but
+  silently do nothing. This is exactly the kind of failure mode this whole effort exists to
+  eliminate, so it gets its own dedicated test (§5, item 7).
+- **Confirms the app-level watchdog is necessary, not redundant with SDK behavior**: the SDK
+  has its own connection-level heartbeat (`ws/config.rs`: 5s ping interval, 15s pong timeout)
+  and reconnection handler (`subscription.rs::start_reconnection_handler`) that calls
+  `resubscribe_all()` — but only on a genuine `ConnectionState` transition (transport
+  disconnect/reconnect). Both of today's incidents kept the transport completely healthy
+  (BTC, sharing the same connection, never blipped) — this is a subscription-level staleness
+  that a transport-level heartbeat structurally cannot see. Nothing in the SDK would have
+  caught this on its own; the fix has to live in `price_feed`.
+
+**Best-practice research (web):** general guidance for WS APIs with many symbols agrees:
+multiplex on one connection, don't open one socket per symbol — matches what the SDK already
+does internally, and matches this plan's revised §4.1 below. Polymarket's own docs confirm
+the market channel is designed for array-based multi-asset subscription and describe the
+5s/10s ping-pong contract (consistent with what's in the SDK's `ws/config.rs`, modulo a small
+docs/impl mismatch — SDK default is 15s pong timeout vs. docs stating 10s; not something this
+plan needs to change, just noting the discrepancy). Sources at the bottom of this doc.
 
 ## 3. Design goals
 
@@ -83,23 +139,36 @@ guarantee that the underlying transient server/SDK hiccup itself can never occur
 
 ## 4. Proposed fix
 
-### 4.1 Split the shared multi-asset subscription into one subscription per asset
+### 4.1 Keep the one shared connection; recover one asset at a time on it
 
-Change `spawn_bba_task` (and `spawn_book_task`, `spawn_trade_task` for consistency — same bug
-class, lower trading impact but same fix) to spawn **one independent task per asset**, each
-opening its own `subscribe_best_bid_ask(vec![this_asset_up_id])` /
-`subscribe_prices(vec![this_asset_up_id])` pair, instead of one task multiplexing every
-asset's IDs over a single connection.
+**Revised from an earlier draft of this plan**, which proposed splitting into N independent
+WebSocket connections (one per asset). Per §2.1, that fights the SDK's own design (it already
+multiplexes every asset over one connection) and general WS best practice, for no benefit the
+SDK doesn't already give us for free. The corrected design:
 
-- Removes the shared blast radius: a cycle rollover for one asset's slot no longer tears down
-  every other asset's healthy connection.
-- Isolates a per-token server-side/SDK hiccup to the one asset it actually affects — it can no
-  longer ride along silently on a connection that's otherwise working fine for its neighbors.
-- Connection count goes from 1 → N (N=6 today: BTC/ETH/SOL/BNB/XRP/DOGE) for the bba+price
-  stream, and similarly for the book stream. Python's `btc_5mins` bot already runs multiple
-  independent WS connections (including deliberate WS1+WS2 redundancy per
-  `shared_data_process.py`) without issue, so this is not a new class of load on
-  Polymarket's infra from this side.
+Keep `spawn_bba_task` subscribing every asset over the **one shared connection**, exactly as
+today — but restructure it from one monolithic merged-stream loop into **one lightweight
+per-asset sub-task**, each holding its own filtered `subscribe_best_bid_ask(vec![this_id])` +
+`subscribe_prices(vec![this_id])` pair. Since these calls share the SDK's underlying
+connection and refcount table (§2.1), this costs **zero additional WebSocket connections** —
+it's still exactly one socket to Polymarket for the whole bba+price feed. What it buys us:
+each asset's stream is now an independent Rust-level handle that can be individually torn
+down and rebuilt without touching its neighbors.
+
+On a staleness detection (§4.2) for one asset:
+1. Call `client.unsubscribe_orderbook(&[stale_id])` **twice** (matching the 2 subscribe calls
+   made for that asset — see §2.1's refcount sharp edge) to zero its refcount and trigger a
+   real per-asset "unsubscribe" wire message.
+2. Drop that asset's old filtered `Stream` handles.
+3. Call `subscribe_best_bid_ask(vec![stale_id])` + `subscribe_prices(vec![stale_id])` again —
+   a fresh "subscribe" wire message for just that asset, same connection.
+
+No connection is closed or reopened; BTC/ETH/SOL/BNB/XRP's subscriptions are never touched by
+DOGE's recovery cycle. This also removes the *unrelated* shared-blast-radius issue the
+original draft correctly flagged (today, a cycle rollover for any one asset's slot currently
+aborts and rebuilds the whole merged task for every asset) — under the per-asset-sub-task
+structure, one asset's slot-driven resubscribe at cycle rollover no longer touches the others
+either, as a side effect of the same restructuring, not a separate change.
 
 ### 4.2 Per-asset staleness watchdog with forced resubscribe
 
@@ -124,15 +193,15 @@ impl StalenessWatchdog {
 }
 ```
 
-Wire one `StalenessWatchdog` per asset into the (now per-asset, from §4.1) bba task's own
-loop via a `tokio::time::interval` tick alongside the message-receive `select!` arm — no
-separate task needed, avoids a second lock-and-poll cycle. On `ForceResubscribe`: abort the
-current per-asset stream task, log
-`"[STALE] {asset} bba feed silent for {elapsed}ms — forcing resubscribe"`, and loop back to
-`subscribe_best_bid_ask`/`subscribe_prices` immediately (skip the existing 2s
-`tokio::time::sleep` for this path specifically — that sleep exists for the close/Err path to
-avoid hot-looping against a genuinely-down endpoint, but a staleness-triggered resubscribe
-should be prompt).
+Wire one `StalenessWatchdog` per asset into that asset's own per-asset sub-task (from §4.1)
+via a `tokio::time::interval` tick alongside the message-receive `select!` arm — no separate
+task needed, avoids a second lock-and-poll cycle. On `ForceResubscribe`: log
+`"[STALE] {asset} bba feed silent for {elapsed}ms — forcing per-asset resubscribe"`, run the
+`unsubscribe_orderbook` ×2 → drop old streams → `subscribe_best_bid_ask`+`subscribe_prices`
+sequence from §4.1 for that asset only, and continue — no connection abort, no
+`tokio::time::sleep` needed on this path (that sleep is for the close/Err retry path, which
+guards against hot-looping a genuinely-down endpoint; a staleness-triggered per-asset
+resubscribe is a normal, expected operation and should be prompt).
 
 Threshold: **5s**. Normal cadence during an active 5-min cycle is a message roughly every
 200–250ms (matches the collector's own `ticker_200ms`/`ticker_250ms` sample rate and what we
@@ -150,24 +219,29 @@ This becomes an actual test (§5), not just an illustrative claim.
 
 ### 4.3 Testability seam for the WS client
 
-`ClobWsClient` (from the external `polymarket_client_sdk_v2` crate) is a concrete struct, not
-a trait — there's no existing seam to inject a fake stream that "goes silent but doesn't
-close" for an integration-style test of the *whole* reconnect loop. Two options:
+`Client`/`ClobWsClient` (from the external `polymarket_client_sdk_v2` crate) is a concrete
+struct, not a trait — there's no existing seam to inject a fake stream that "goes silent but
+doesn't close," or to assert exactly how many times `unsubscribe_orderbook` was called, for an
+integration-style test of the *whole* reconnect loop. Two options:
 
-- **(a)** Introduce a minimal local trait, e.g. `trait BbaSource { fn subscribe_best_bid_ask
-  (&self, ids: Vec<U256>) -> Result<impl Stream<...>>; ... }`, implemented for the real
-  `ClobWsClient` and for a test double that can be told to "emit N messages then go silent
-  without closing." This is the only way to get real coverage of "silent-but-open stream ->
-  watchdog fires -> resubscribe happens" as an automated test rather than a manual/staging
-  check.
+- **(a)** Introduce a minimal local trait covering exactly the calls `spawn_bba_task` makes —
+  `subscribe_best_bid_ask`, `subscribe_prices`, `unsubscribe_orderbook` — implemented for the
+  real `Client<Unauthenticated>` and for a test double that can (i) emit N messages then go
+  silent without closing, and (ii) record every `subscribe_*`/`unsubscribe_orderbook` call so
+  a test can assert the exact refcount-parity sequence from §4.1 (2 unsubscribes before the
+  resubscribe, not 1). This is the only way to get real coverage of both "silent-but-open
+  stream → watchdog fires → resubscribe happens" *and* the refcount sharp edge as automated
+  tests rather than manual/staging checks.
 - **(b)** Skip the trait, keep `StalenessWatchdog` unit-tested in isolation (§5), and treat
-  the full wiring (`watchdog.check()` → `task.abort()` → resubscribe) as covered by
-  staging/production monitoring only, not CI.
+  the full wiring (detect → unsubscribe ×2 → resubscribe) as covered by staging/production
+  monitoring only, not CI.
 
-**Recommendation: (a).** It's a small trait (2-3 methods, mechanical to implement for the
-real client) and it's the difference between "we're confident this works" and "we're
-confident the isolated math works." Flagging this as a real design choice for review rather
-than deciding it silently, since it does add a bit of indirection to `collect.rs`.
+**Recommendation: (a).** It's a small trait (3 methods, mechanical to implement for the real
+client) and it's the difference between "we're confident this works" and "we're confident the
+isolated math works" — and given §2.1's refcount sharp edge is exactly the kind of thing that
+looks correct in review but silently no-ops at runtime, I'd rather have a test pinning the
+call count than trust careful reading alone. Flagging this as a real design choice for review
+rather than deciding it silently, since it does add a bit of indirection to `collect.rs`.
 
 ### 4.4 Visibility — feed_gaps log + recon report
 
@@ -220,19 +294,28 @@ gated on trader-side changes; happy to pull it into phase 1 if you'd rather have
    5.5s of the real last-message timestamp for each. Ties the test suite directly back to the
    incident that motivated it, so it can't silently regress.
 
-**Integration test (needs §4.3(a), the `BbaSource` trait):**
+**Integration test (needs §4.3(a), the local subscription-source trait):**
 
-7. `reconnects_when_stream_goes_silent_without_closing` — fake source emits a few messages
-   then simply stops (stream stays pending/open) → assert a resubscribe call happens within
-   the threshold and a *second* fake stream's messages start flowing afterward.
-8. `reconnects_when_stream_closes_cleanly` — existing behavior, regression-guard it explicitly
+7. `forced_refresh_unsubscribes_exactly_twice_before_resubscribing` — direct regression test
+   for §2.1's refcount sharp edge: assert the recovery sequence calls
+   `unsubscribe_orderbook(&[id])` exactly **twice** (once for the `subscribe_best_bid_ask`
+   increment, once for `subscribe_prices`) *before* issuing the fresh subscribe calls for that
+   asset — and, using the fake's own refcount bookkeeping, assert a real "unsubscribe" record
+   was produced (i.e. the fake's simulated refcount actually reached zero) rather than merely
+   asserting the call count blindly.
+8. `reconnects_when_stream_goes_silent_without_closing` — fake source emits a few messages
+   then simply stops (stream stays pending/open) → assert the full unsubscribe-then-resubscribe
+   sequence fires within the threshold and a *fresh* fake stream's messages start flowing
+   afterward.
+9. `reconnects_when_stream_closes_cleanly` — existing behavior, regression-guard it explicitly
    now that the loop structure is changing.
-9. `retries_with_backoff_when_resubscribe_itself_fails` — fake source's `subscribe_*` returns
-   `Err` repeatedly → assert the existing 2s-sleep retry loop still applies on this path (not
-   the no-sleep staleness-triggered path) and the task never panics/hot-loops CPU.
-10. `one_assets_silence_does_not_affect_another_asset_task` — with per-asset tasks (§4.1),
+10. `retries_with_backoff_when_resubscribe_itself_fails` — fake source's `subscribe_*` returns
+    `Err` repeatedly → assert the existing 2s-sleep retry loop still applies on this path (not
+    the no-sleep staleness-triggered path) and the task never panics/hot-loops CPU.
+11. `one_assets_silence_does_not_affect_another_asset_task` — with per-asset sub-tasks (§4.1),
     starve one fake asset stream and confirm a sibling asset's task keeps delivering messages
-    throughout, unaffected — direct regression test for the actual bug ("BTC was fine while
+    *and its subscription is never touched* (assert zero `unsubscribe_orderbook` calls for the
+    healthy asset) throughout — direct regression test for the actual bug ("BTC was fine while
     DOGE/ETH weren't" from today's incident).
 
 **Manual/staging verification (can't reasonably be a CI test):**
@@ -253,12 +336,13 @@ gated on trader-side changes; happy to pull it into phase 1 if you'd rather have
 
 1. `StalenessWatchdog` (pure struct) + unit tests (§5 items 1-6) — no behavior change yet,
    just the tested decision core.
-2. `BbaSource` trait (§4.3) + integration tests (§5 items 7-10) against the fake — still no
-   production behavior change.
-3. Wire `spawn_bba_task` to per-asset tasks (§4.1) + watchdog (§4.2) for real, using the now
-   real-implemented `BbaSource`. Apply the same split to `spawn_book_task`/`spawn_trade_task`
-   for consistency (lower urgency — book/trade aren't what the trader's entry signal depends
-   on, but same bug class).
+2. Local subscription-source trait (§4.3) + integration tests (§5 items 7-11) against the
+   fake, including the refcount-parity test (item 7) — still no production behavior change.
+3. Restructure `spawn_bba_task` into per-asset sub-tasks sharing the one connection (§4.1) +
+   wire in the watchdog (§4.2) for real, using the now real-implemented trait impl. Apply the
+   same restructuring to `spawn_book_task`/`spawn_trade_task` for consistency (lower urgency —
+   book/trade aren't what the trader's entry signal depends on, but same bug class, and same
+   "one shared connection, many refcounted asset subscriptions" SDK model applies).
 4. `feed_gaps.log` + recon report section (§4.4).
 5. Deploy to Oracle, verify per the manual checklist above.
 6. Phase 2 (separate follow-up, not blocking this fix): trader-side stale-feed Telegram alert
@@ -274,10 +358,14 @@ gated on trader-side changes; happy to pull it into phase 1 if you'd rather have
   never occur — only that we'll now always catch and recover from it fast. Wanted to say this
   plainly rather than title the doc "make sure it will never ever happen again" and then
   quietly under-deliver on the literal claim.
-- **Connection count**: N=6 independent bba+price connections (12 if book gets the same
-  split too) instead of 1-2 shared ones. I don't expect Polymarket to rate-limit this (python
-  bot already runs multiple independent connections), but flagging the change in shape since
-  it's a real infra difference, not just a code refactor.
+- **Refcount parity is the sharpest edge in this design** (§2.1, §4.3 item 7): the recovery
+  path only works if we unsubscribe exactly as many times as we subscribed for that asset. If
+  `spawn_bba_task`'s subscribe calls ever change shape (e.g. a third `subscribe_*` call gets
+  added for the same asset list later) without updating the matching unsubscribe count, the
+  forced-refresh path silently degrades to a no-op — no panic, no error, just a "recovered"
+  log line that didn't actually recover anything. Item 7's test asserts the fake's simulated
+  refcount reaches zero, specifically to catch this, but it's worth flagging as an ongoing
+  maintenance hazard, not just a one-time implementation risk.
 - **Threshold tuning (5s stale / 3s cooldown)**: chosen from today's observed healthy cadence
   (~200-250ms) with comfortable margin, but I have no data on quieter market conditions
   (overnight low-volume, e.g.) where a genuine 3-5s gap in `price_change` events might be
@@ -295,3 +383,13 @@ gated on trader-side changes; happy to pull it into phase 1 if you'd rather have
 **Nothing in this plan has been implemented yet — this is for your review before I touch any
 `.rs` file.** Let me know which parts to proceed with (all of §4, or start with 4.1+4.2 and
 hold 4.4/4.5), and any pushback on the threshold values or the trait-seam approach in §4.3.
+
+## Sources
+
+Web research used to validate the §4.1 design (one shared connection, not one-per-asset):
+
+- [Polymarket CLOB WebSocket — Overview](https://docs.polymarket.com/developers/CLOB/websocket/wss-overview) — market channel subscribe payload shape (`assets_ids` array), ping/pong contract.
+- [Polymarket `agent-skills` — websocket.md](https://github.com/Polymarket/agent-skills/blob/main/websocket.md)
+- [`Polymarket/rs-clob-client-v2` — GitHub](https://github.com/Polymarket/rs-clob-client-v2) — upstream repo for the `polymarket_client_sdk_v2` crate this project depends on (source read directly from the vendored `~/.cargo/registry` copy, version `0.6.0-canary.1`, for §2.1's findings — not from this repo page, which doesn't render the same detail as the actual source).
+- [`GoPolymarket/polymarket-go-sdk` ws package docs](https://pkg.go.dev/github.com/GoPolymarket/polymarket-go-sdk/pkg/clob/ws) — confirms the subscribe/unsubscribe-by-asset pattern exists as a general convention across Polymarket's own SDKs, not just this Rust crate.
+- Hacker News discussion on WS multiplexing vs. per-stream connections (general best-practice framing, not Polymarket-specific): [news.ycombinator.com/item?id=39755924](https://news.ycombinator.com/item?id=39755924)
