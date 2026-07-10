@@ -1,6 +1,19 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use trader::backtest::{load_price_data, run_backtest};
 use trader::config::load_latest;
+use trader::types::TradeRecord;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    /// Aligned, human-readable table (default) — unchanged from before this
+    /// flag existed.
+    Table,
+    /// `slug,strategy,side,token_price,exit_price,outcome,pnl` — header
+    /// always printed, one row per trade, no summary line. For scripts
+    /// (e.g. trader/scripts/trade_reconcile.py's backtest reconciliation)
+    /// to parse via csv.DictReader instead of regexing the table.
+    Csv,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -30,6 +43,9 @@ struct Args {
 
     #[arg(long, help = "Disable halt (sets halt_rev=halt_prob=0)")]
     no_halt: bool,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table, help = "Output format")]
+    format: OutputFormat,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,33 +61,62 @@ fn main() -> anyhow::Result<()> {
     let (b_rows, p_rows) = load_price_data(&args.asset, &args.date, &args.prices_dir)?;
     let trades = run_backtest(&params, b_rows, p_rows);
 
-    if trades.is_empty() {
-        println!("No trades.");
-        return Ok(());
-    }
+    let out = match args.format {
+        OutputFormat::Csv => format_csv(&trades),
+        OutputFormat::Table => format_table(&trades),
+    };
+    print!("{out}");
 
-    // Header
-    println!(
-        "{:<35} {:<10} {:<5} {:>10} {:>14} {:<10} {:>8}",
-        "slug", "strategy", "side", "token_px", "exit_token_px", "outcome", "pnl"
-    );
-    println!("{}", "-".repeat(100));
+    Ok(())
+}
 
-    let mut total_pnl = 0.0_f64;
-    let (mut wins, mut losses, mut stoplosses, mut unwinds, mut timeouts) = (0usize, 0, 0, 0, 0);
-
-    for t in &trades {
-        let outcome_str = t.outcome.as_str();
-        println!(
-            "{:<35} {:<10} {:<5} {:>10.3} {:>14.3} {:<10} {:>8.4}",
+/// `slug,strategy,side,token_price,exit_price,outcome,pnl` — header always
+/// present (even with zero trades) so a script's `csv.DictReader` never has
+/// to special-case an empty result.
+fn format_csv(trades: &[TradeRecord]) -> String {
+    let mut out = String::from("slug,strategy,side,token_price,exit_price,outcome,pnl\n");
+    for t in trades {
+        out.push_str(&format!(
+            "{},{},{},{:.6},{:.6},{},{:.6}\n",
             t.slug,
             t.strategy,
             t.side.as_str(),
             t.token_price,
             t.exit_price,
-            outcome_str,
+            t.outcome.as_str(),
             t.pnl
-        );
+        ));
+    }
+    out
+}
+
+fn format_table(trades: &[TradeRecord]) -> String {
+    if trades.is_empty() {
+        return "No trades.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<35} {:<10} {:<5} {:>10} {:>14} {:<10} {:>8}\n",
+        "slug", "strategy", "side", "token_px", "exit_token_px", "outcome", "pnl"
+    ));
+    out.push_str(&"-".repeat(100));
+    out.push('\n');
+
+    let mut total_pnl = 0.0_f64;
+    let (mut wins, mut losses, mut stoplosses, mut unwinds, mut timeouts) = (0usize, 0, 0, 0, 0);
+
+    for t in trades {
+        out.push_str(&format!(
+            "{:<35} {:<10} {:<5} {:>10.3} {:>14.3} {:<10} {:>8.4}\n",
+            t.slug,
+            t.strategy,
+            t.side.as_str(),
+            t.token_price,
+            t.exit_price,
+            t.outcome.as_str(),
+            t.pnl
+        ));
         total_pnl += t.pnl;
         match t.outcome {
             trader::types::Outcome::Win => wins += 1,
@@ -86,8 +131,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let total_pnl = (total_pnl * 10_000.0).round() / 10_000.0;
-    println!(
-        "\nTotal: trades={} wins={} losses={} stoplosses={} unwinds={} timeouts={} pnl={}",
+    out.push_str(&format!(
+        "\nTotal: trades={} wins={} losses={} stoplosses={} unwinds={} timeouts={} pnl={}\n",
         trades.len(),
         wins,
         losses,
@@ -95,7 +140,78 @@ fn main() -> anyhow::Result<()> {
         unwinds,
         timeouts,
         total_pnl
-    );
+    ));
+    out
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trader::types::{Outcome, Side};
+
+    fn sample_trade() -> TradeRecord {
+        TradeRecord {
+            slug: "eth-updown-5m-1783046100".to_string(),
+            cycle_start: 1783046100.0,
+            strategy: "high_prob",
+            side: Side::Up,
+            entry_ts: 1783046105.0,
+            token_price: 0.93,
+            exit_price: 1.0,
+            outcome: Outcome::Win,
+            pnl: 0.0753,
+            exit_attempts: 0,
+            exit_last_error: None,
+            entry_signal_latency_ms: 0.0,
+            entry_process_latency_ms: 0.0,
+            exit_signal_latency_ms: 0.0,
+            exit_process_latency_ms: 0.0,
+        }
+    }
+
+    #[test]
+    fn csv_header_always_present_even_with_no_trades() {
+        assert_eq!(
+            format_csv(&[]),
+            "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
+        );
+    }
+
+    #[test]
+    fn csv_row_matches_trade_fields() {
+        let out = format_csv(&[sample_trade()]);
+        let mut lines = out.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "slug,strategy,side,token_price,exit_price,outcome,pnl"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "eth-updown-5m-1783046100,high_prob,UP,0.930000,1.000000,WIN,0.075300"
+        );
+        assert!(lines.next().is_none(), "csv format prints no summary line");
+    }
+
+    #[test]
+    fn csv_rows_have_no_trailing_summary_or_separator_lines() {
+        // Regression guard: format_table has a "---" separator + "Total: ..."
+        // trailer that format_csv must never grow, or trade_reconcile.py's
+        // csv.DictReader would choke parsing those as data rows.
+        let out = format_csv(&[sample_trade(), sample_trade()]);
+        assert_eq!(out.lines().count(), 3); // header + 2 rows
+        assert!(!out.contains("Total:"));
+        assert!(!out.contains("---"));
+    }
+
+    #[test]
+    fn table_format_prints_no_trades_message_when_empty() {
+        assert_eq!(format_table(&[]), "No trades.\n");
+    }
+
+    #[test]
+    fn table_format_includes_totals_line() {
+        let out = format_table(&[sample_trade()]);
+        assert!(out.contains("eth-updown-5m-1783046100"));
+        assert!(out.contains("Total: trades=1 wins=1 losses=0 stoplosses=0 unwinds=0 timeouts=0"));
+    }
 }

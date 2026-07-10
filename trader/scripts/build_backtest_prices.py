@@ -16,8 +16,8 @@ This script:
     given date from price_feed/raw/. If the daily file itself is unsealed
     (no footer — happens right after a collector restart, since it writes
     continuously to the plain dated file until the next hourly boundary),
-    recovers it via recover_live_tmp.py's raw-page decoder instead of
-    failing (recover_live_tmp.py itself assumes only *.tmp files can be
+    recovers it via recover_rust_parquet.py's raw-page decoder instead of
+    failing (recover_rust_parquet.py itself assumes only *.tmp files can be
     unsealed; the plain daily file can be too, e.g. after a mid-hour
     collector restart — this is the case encountered building today's
     2026-07-03 report, see trader/doc/plan_daily_recon.md).
@@ -45,7 +45,12 @@ BINANCE_SRC_DIR = Path("/home/kev/apps/btc_5mins/prices")
 DEFAULT_OUT_DIR = SCRIPT_DIR.parent / "backtest_prices"
 
 sys.path.insert(0, str(SCRIPT_DIR.parent.parent / "price_feed" / "scripts"))
-from recover_live_tmp import recover_poly_rust_tmp  # noqa: E402
+# recover_live_tmp.py was renamed to recover_rust_parquet.py (poly/binance/book
+# recovery split into separate functions) after this script was first written —
+# found broken (ModuleNotFoundError) while wiring up the BT reconciliation
+# feature's price-data build step; fixed here since nothing about this script's
+# own recovery logic changed, only the import target.
+from recover_rust_parquet import recover_rust_poly_parquet  # noqa: E402
 
 
 def _read_or_recover(path: Path) -> pd.DataFrame:
@@ -54,7 +59,7 @@ def _read_or_recover(path: Path) -> pd.DataFrame:
         return pq.read_table(str(path)).to_pandas()
     except Exception as e:
         print(f"  {path.name}: normal read failed ({e}); recovering via raw-page decode...")
-        return recover_poly_rust_tmp(str(path))
+        return recover_rust_poly_parquet(str(path))
 
 
 def build_poly(asset: str, date: str, out_dir: Path) -> None:

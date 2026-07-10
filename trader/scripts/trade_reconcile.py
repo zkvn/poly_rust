@@ -32,11 +32,13 @@ Usage:
 import argparse
 import csv
 import glob
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tomllib
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -55,6 +57,18 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 
 HKT = timezone(timedelta(hours=8))
+
+# ---------------------------------------------------------------------------
+# Backtest reconciliation — reuses trader/scripts/build_backtest_prices.py
+# and the Rust `backtest` binary (trader/src/bin/backtest.rs --format csv).
+# Read-only: builds scratch price data + shells out to a separate backtest
+# binary, never touches the live trading process (`live` binary/worker.rs).
+# See trader/doc/feature_bt_recon_2026-07-10.md for the design.
+# ---------------------------------------------------------------------------
+CONFIG_DIR = REPO_ROOT / "config"
+BACKTEST_BINARY = REPO_ROOT / "target" / "release" / "backtest"
+BACKTEST_PRICES_DIR = REPO_ROOT / "backtest_prices"
+BUILD_PRICES_SCRIPT = REPO_ROOT / "scripts" / "build_backtest_prices.py"
 
 CSV_COLUMNS = [
     "logged_at", "slug", "strategy", "side", "entry_ts", "token_price",
@@ -383,6 +397,304 @@ def _fmt_counter(d: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Backtest reconciliation: Live vs BT / BT vs Live
+# ---------------------------------------------------------------------------
+
+def resolve_trade_assets(config_dir: Path) -> list:
+    """Read `trade_assets` from the latest strategy_*.toml — same file
+    selection as Rust's config::load_latest (lexicographic sort, take last),
+    so this always backtests whatever assets are actually configured live,
+    not just whatever live happened to trade in the window."""
+    files = sorted(config_dir.glob("strategy_*.toml"))
+    if not files:
+        raise FileNotFoundError(f"no strategy_*.toml found in {config_dir}")
+    with open(files[-1], "rb") as f:
+        cfg = tomllib.load(f)
+    return list(cfg["trade_assets"])
+
+
+def slug_cycle_ts(slug: str) -> float:
+    """Cycle-start unix ts embedded as the slug's trailing number
+    (e.g. 'eth-updown-5m-1783046100' -> 1783046100.0) — the same value used
+    elsewhere in this project as the source of truth for cycle time."""
+    try:
+        return float(slug.rsplit("-", 1)[-1])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def parse_backtest_csv(csv_text: str, asset: str) -> list:
+    """Parse `backtest --format csv` stdout into normalized row dicts."""
+    rows = []
+    for row in csv.DictReader(io.StringIO(csv_text)):
+        slug = row.get("slug", "")
+        rows.append({
+            "asset": asset,
+            "slug": slug,
+            "strategy": row.get("strategy", ""),
+            "side": row.get("side", "").strip().upper(),
+            "outcome": row.get("outcome", "").strip().upper(),
+            "pnl": _safe_float(row.get("pnl")),
+            "cycle_ts": slug_cycle_ts(slug),
+        })
+    return rows
+
+
+def filter_bt_rows_to_window(rows: list, from_ts: float, to_ts: float) -> list:
+    return [r for r in rows if from_ts <= r["cycle_ts"] < to_ts]
+
+
+def _normalize_live_rows(rows: list) -> list:
+    """Reduce the already-window-filtered `annotated` live rows down to the
+    fields the BT comparison needs, with pnl coerced to float."""
+    out = []
+    for r in rows:
+        out.append({
+            "time": datetime.fromtimestamp(_safe_float(r.get("logged_at")), tz=HKT).strftime("%Y-%m-%d %H:%M:%S"),
+            "asset": r.get("asset", ""),
+            "slug": r.get("slug", ""),
+            "strategy": r.get("strategy", ""),
+            "side": r.get("side", "").strip().upper(),
+            "outcome": r.get("outcome", "").strip().upper(),
+            "pnl": _safe_float(r.get("pnl")),
+        })
+    return out
+
+
+def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set) -> tuple:
+    """One row per live trade: does the backtest agree?
+
+    Status classification:
+      MATCH            - bt fired the same (slug, side), same outcome
+      OUTCOME DIFF     - bt fired the same (slug, side), different outcome
+      SIDE DIFF        - bt fired the opposite side for that slug
+      BT DID NOT FIRE  - bt had price data for the asset but skipped the cycle
+      NO PRICE DATA    - bt couldn't run at all for this asset/date
+    """
+    bt_lookup: dict = {}
+    for r in bt_rows:
+        bt_lookup.setdefault((r["slug"], r["side"]), r)
+
+    n_match = n_outcome_diff = n_side_diff = n_not_fired = n_no_data = 0
+    total_live_pnl = total_bt_pnl = 0.0
+    table = []
+
+    for lt in live_rows:
+        total_live_pnl += lt["pnl"]
+        opp_side = "DOWN" if lt["side"] == "UP" else "UP"
+        bt_same = bt_lookup.get((lt["slug"], lt["side"]))
+        bt_opp = bt_lookup.get((lt["slug"], opp_side))
+
+        if bt_same:
+            total_bt_pnl += bt_same["pnl"]
+            diff_pnl = lt["pnl"] - bt_same["pnl"]
+            if bt_same["outcome"] == lt["outcome"]:
+                n_match += 1
+                status = "MATCH"
+            else:
+                n_outcome_diff += 1
+                status = f"OUTCOME DIFF (live={lt['outcome']} bt={bt_same['outcome']})"
+            table.append({**lt, "bt_outcome": bt_same["outcome"], "bt_pnl": bt_same["pnl"],
+                          "diff_pnl": diff_pnl, "status": status})
+        elif bt_opp:
+            n_side_diff += 1
+            total_bt_pnl += bt_opp["pnl"]
+            table.append({**lt, "bt_outcome": bt_opp["outcome"], "bt_pnl": bt_opp["pnl"],
+                          "diff_pnl": lt["pnl"] - bt_opp["pnl"],
+                          "status": f"SIDE DIFF (bt side={opp_side})"})
+        elif lt["asset"] not in assets_with_data:
+            n_no_data += 1
+            table.append({**lt, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
+                          "status": "NO PRICE DATA"})
+        else:
+            n_not_fired += 1
+            table.append({**lt, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
+                          "status": "BT DID NOT FIRE"})
+
+    summary = {
+        "n_live": len(live_rows), "n_match": n_match, "n_outcome_diff": n_outcome_diff,
+        "n_side_diff": n_side_diff, "n_not_fired": n_not_fired, "n_no_data": n_no_data,
+        "total_live_pnl": total_live_pnl, "total_bt_pnl": total_bt_pnl,
+    }
+    return table, summary
+
+
+def build_bt_vs_live(bt_rows: list, live_rows: list) -> list:
+    """Cycles the backtest fired but live did not trade at all (either side).
+
+    A live trade on the *opposite* side of a bt-fired cycle already shows up
+    as SIDE DIFF in the Live vs BT table, so this only needs to exclude
+    slugs live touched on any side — not check side equality itself.
+    """
+    live_slugs = {lt["slug"] for lt in live_rows}
+    missed = []
+    for r in bt_rows:
+        if r["slug"] in live_slugs:
+            continue
+        missed.append({
+            "time": datetime.fromtimestamp(r["cycle_ts"], tz=HKT).strftime("%Y-%m-%d %H:%M:%S") if r["cycle_ts"] else "",
+            "asset": r["asset"], "strategy": r["strategy"], "side": r["side"],
+            "outcome": r["outcome"], "pnl": r["pnl"],
+        })
+    missed.sort(key=lambda x: x["time"])
+    return missed
+
+
+def build_price_data(assets: list, date: str, out_dir: Path, build_script: Path) -> bool:
+    result = subprocess.run(
+        [sys.executable, str(build_script), "--asset", ",".join(assets),
+         "--date", date, "--out-dir", str(out_dir)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        console.print(
+            f"[yellow]⚠ build_backtest_prices.py failed for {date}: "
+            f"{result.stderr.strip()[-500:]}[/yellow]"
+        )
+        return False
+    return True
+
+
+def run_rust_backtest(asset: str, date: str, prices_dir: Path, config_dir: Path, binary: Path) -> str:
+    result = subprocess.run(
+        [str(binary), "--asset", asset, "--date", date,
+         "--prices-dir", str(prices_dir), "--config-dir", str(config_dir),
+         "--format", "csv"],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout
+
+
+def run_backtest_reconciliation(window_start: datetime, window_end: datetime, annotated_live_rows: list) -> Optional[tuple]:
+    """Orchestrates the whole BT reconciliation pipeline for one window.
+
+    Defensive by design: any failure here (binary missing, price data
+    missing, a single asset's backtest crashing) degrades to a skipped
+    section or a partial one — it must never raise out of here and take
+    down the rest of the (already-working) recon report. Never touches the
+    live trading process; only reads price_feed/raw + trader/config and
+    shells out to the separate `backtest` binary.
+    """
+    if not BACKTEST_BINARY.exists():
+        console.print(
+            f"[yellow]⚠ Backtest reconciliation skipped: binary not found at "
+            f"{BACKTEST_BINARY} (run `cargo build --release --bin backtest` in trader/)[/yellow]"
+        )
+        return None
+
+    try:
+        assets = resolve_trade_assets(CONFIG_DIR)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Backtest reconciliation skipped: could not resolve trade_assets ({e})[/yellow]")
+        return None
+
+    dates = sorted({window_start.strftime("%Y-%m-%d"), window_end.strftime("%Y-%m-%d")})
+
+    BACKTEST_PRICES_DIR.mkdir(parents=True, exist_ok=True)
+    all_bt_rows: list = []
+    assets_with_data: set = set()
+
+    for date in dates:
+        if not build_price_data(assets, date, BACKTEST_PRICES_DIR, BUILD_PRICES_SCRIPT):
+            continue
+        for asset in assets:
+            try:
+                csv_text = run_rust_backtest(asset, date, BACKTEST_PRICES_DIR, CONFIG_DIR, BACKTEST_BINARY)
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr or str(e)).strip()[-300:]
+                console.print(f"[yellow]  {asset}/{date}: backtest failed ({err})[/yellow]")
+                continue
+            assets_with_data.add(asset)
+            all_bt_rows.extend(parse_backtest_csv(csv_text, asset))
+
+    bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start.timestamp(), window_end.timestamp())
+    live_norm = _normalize_live_rows(annotated_live_rows)
+
+    live_vs_bt_rows, bt_summary = build_live_vs_bt(live_norm, bt_in_window, assets_with_data)
+    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm)
+
+    return live_vs_bt_rows, bt_summary, bt_vs_live_rows
+
+
+def _fmt_pnl(v) -> str:
+    return f"{v:+.4f}" if v is not None else "—"
+
+
+def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, bt_vs_live_rows: list) -> None:
+    lines.append("## Backtest Reconciliation")
+    lines.append("")
+    lines.append(
+        "Independent cross-check against the Rust backtest engine's replay "
+        "over the same price data — different from the Gamma cross-check "
+        "above, which validates worker.rs's own WIN/LOSS correction logic "
+        "against Polymarket's resolution, not the trading logic itself."
+    )
+    lines.append("")
+
+    n_live = summary.get("n_live", 0)
+    n_match = summary.get("n_match", 0)
+    n_outcome_diff = summary.get("n_outcome_diff", 0)
+    n_side_diff = summary.get("n_side_diff", 0)
+    n_not_fired = summary.get("n_not_fired", 0)
+    n_no_data = summary.get("n_no_data", 0)
+    n_missed = len(bt_vs_live_rows)
+    missed_pnl = sum(r["pnl"] for r in bt_vs_live_rows)
+
+    lines.append(
+        f"> **Live vs BT:** {n_live} live trades — {n_match} matched, "
+        f"{n_outcome_diff} outcome-diff, {n_side_diff} side-diff, "
+        f"{n_not_fired} bt-not-fired"
+        + (f", {n_no_data} no price data" if n_no_data else "")
+    )
+    lines.append(
+        f"> **BT vs Live:** {n_missed} cycle(s) live missed entirely"
+        + (f" (would-be PnL {missed_pnl:+.4f} USDC)" if n_missed else "")
+    )
+    lines.append("")
+
+    lines.append("### Live vs BT")
+    lines.append("")
+    if live_vs_bt_rows:
+        lines.extend([
+            "| Time | Asset | Strategy | Side | Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status |",
+            "|---|---|---|---|---|---|---|---|---|---|",
+        ])
+        for r in live_vs_bt_rows:
+            lines.append(
+                f"| {r['time']} | {r['asset']} | {r['strategy']} | {r['side']} | "
+                f"{r['outcome']} | {r['pnl']:+.4f} | {r.get('bt_outcome') or '—'} | "
+                f"{_fmt_pnl(r.get('bt_pnl'))} | {_fmt_pnl(r.get('diff_pnl'))} | {r['status']} |"
+            )
+        lines.append("")
+    else:
+        lines.append("*No live trades in window to reconcile against the backtest.*")
+        lines.append("")
+
+    lines.append("### BT vs Live (cycles live missed)")
+    lines.append("")
+    if bt_vs_live_rows:
+        lines.append(
+            f"{n_missed} cycle(s) the backtest fired but live did not trade at all "
+            f"(either side) — would-be PnL {missed_pnl:+.4f} USDC."
+        )
+        lines.append("")
+        lines.extend([
+            "| Cycle (HKT) | Asset | Strategy | Side | BT Outcome | BT PnL |",
+            "|---|---|---|---|---|---|",
+        ])
+        for r in bt_vs_live_rows:
+            lines.append(
+                f"| {r['time']} | {r['asset']} | {r['strategy']} | {r['side']} | "
+                f"{r['outcome']} | {r['pnl']:+.4f} |"
+            )
+        lines.append(f"| **Total** | | | | | **{missed_pnl:+.4f}** |")
+        lines.append("")
+    else:
+        lines.append("None — every cycle the backtest fired, live also traded. \U0001f3af")
+        lines.append("")
+
+
+# ---------------------------------------------------------------------------
 # Stoploss & Unwind audit (CLOB price history around the trade)
 # ---------------------------------------------------------------------------
 
@@ -486,7 +798,7 @@ def _render_failed_exit_audit(lines: list, rows: list) -> None:
 
 def write_markdown_summary(
     summary: dict, perf_stats: dict, window_start: datetime, window_end: datetime,
-    out_dir: Path,
+    out_dir: Path, bt_result: Optional[tuple] = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -543,162 +855,170 @@ def write_markdown_summary(
     if not perf_stats:
         lines.append("> **No trades in this window.** The bot was not active during this period.")
         lines.append("")
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-        console.print(f"[green]✓ Stub report → {out_path}[/green]")
-        return out_path
-
-    ps = perf_stats
-    lines.append("## Performance")
-    lines.append("")
-    lines.extend([
-        f"**Span:** {ps['span_first']} → {ps['span_last']}",
-        "",
-        "| | Value |",
-        "|---|---|",
-        f"| Total trades | {ps['total_rows']} |",
-        f"| Strategies | {_fmt_counter(ps['strategies'])} |",
-        f"| Side split | {_fmt_counter(ps['sides'])} |",
-        f"| Outcomes | {_fmt_counter(ps['outcomes'])} |",
-        f"| Assets | {_fmt_counter(ps['assets'])} |",
-        f"| PnL total | {ps['pnl_total']:+.4f} USDC |",
-        "",
-    ])
-
-    asset_stats = ps.get("asset_stats", {})
-    if asset_stats:
-        lines.extend([
-            "### Per-Asset Win/Loss", "",
-            "| Asset | Total | Wins | Losses | SL | Unwind | Win Rate | PnL |",
-            "|---|---|---|---|---|---|---|---|",
-        ])
-        for asset, st in asset_stats.items():
-            lines.append(
-                f"| {asset} | {st['total']} | {st['wins']} | {st['losses']} | "
-                f"{st['sl']} | {st['unwind']} | {st['win_rate']} | {st['pnl']:+.4f} |"
-            )
-        all_total = sum(st["total"] for st in asset_stats.values())
-        all_wins = sum(st["wins"] for st in asset_stats.values())
-        all_losses = sum(st["losses"] for st in asset_stats.values())
-        all_sl = sum(st["sl"] for st in asset_stats.values())
-        all_unwind = sum(st["unwind"] for st in asset_stats.values())
-        all_wr = f"{(all_wins + all_unwind) / all_total * 100:.1f}%" if all_total else "—"
-        all_pnl = sum(st["pnl"] for st in asset_stats.values())
-        lines.append(
-            f"| **ALL** | **{all_total}** | **{all_wins}** | **{all_losses}** | "
-            f"**{all_sl}** | **{all_unwind}** | **{all_wr}** | **{all_pnl:+.4f}** |"
-        )
+    else:
+        ps = perf_stats
+        lines.append("## Performance")
         lines.append("")
-
-    strat_bd = ps.get("strategy_breakdown", {})
-    if strat_bd:
         lines.extend([
-            "### By Asset + Strategy", "",
-            "| Asset | Strategy | Total | Wins | Losses | SL | Unwind | Win Rate | PnL |",
-            "|---|---|---|---|---|---|---|---|---|",
-        ])
-        for (asset, strategy), st in strat_bd.items():
-            lines.append(
-                f"| {asset} | {strategy} | {st['total']} | {st['wins']} | {st['losses']} | "
-                f"{st['sl']} | {st['unwind']} | {st['win_rate']} | {st['pnl']:+.4f} |"
-            )
-        lines.append("")
-
-    sl_detail = ps.get("sl_detail", [])
-    if sl_detail:
-        good = sum(1 for s in sl_detail if s["quality"] == "GOOD")
-        costly = sum(1 for s in sl_detail if s["quality"] == "COSTLY")
-        lines.extend([
-            "### Stop Loss Detail", "",
-            f"{len(sl_detail)} stop-loss exits: {good} good (avoided loss), {costly} costly (exited winner).",
+            f"**Span:** {ps['span_first']} → {ps['span_last']}",
             "",
-            "| Time | Asset | Strategy | Side | PnL | Entry Price | Exit Price | Quality |",
-            "|---|---|---|---|---|---|---|---|",
+            "| | Value |",
+            "|---|---|",
+            f"| Total trades | {ps['total_rows']} |",
+            f"| Strategies | {_fmt_counter(ps['strategies'])} |",
+            f"| Side split | {_fmt_counter(ps['sides'])} |",
+            f"| Outcomes | {_fmt_counter(ps['outcomes'])} |",
+            f"| Assets | {_fmt_counter(ps['assets'])} |",
+            f"| PnL total | {ps['pnl_total']:+.4f} USDC |",
+            "",
         ])
-        for s in sl_detail:
-            quality_fmt = "GOOD ✓" if s["quality"] == "GOOD" else "COSTLY ✗"
-            lines.append(
-                f"| {s['time']} | {s['asset']} | {s['strategy']} | {s['side']} | "
-                f"{s['pnl']:+.4f} | {s['token_price']:.4f} | {s['exit_price']:.4f} | {quality_fmt} |"
-            )
-        lines.append("")
 
-    trade_history = ps.get("trade_history", [])
-    if trade_history:
-        lines.extend([
-            "### Trade History", "",
-            "| Time | Asset | Strategy | Side | Outcome | Entry Price | Exit Price | PnL | "
-            "Entry Signal (ms) | Entry Process (ms) | Exit Signal (ms) | Exit Process (ms) |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|",
-        ])
-        for t in trade_history:
+        asset_stats = ps.get("asset_stats", {})
+        if asset_stats:
+            lines.extend([
+                "### Per-Asset Win/Loss", "",
+                "| Asset | Total | Wins | Losses | SL | Unwind | Win Rate | PnL |",
+                "|---|---|---|---|---|---|---|---|",
+            ])
+            for asset, st in asset_stats.items():
+                lines.append(
+                    f"| {asset} | {st['total']} | {st['wins']} | {st['losses']} | "
+                    f"{st['sl']} | {st['unwind']} | {st['win_rate']} | {st['pnl']:+.4f} |"
+                )
+            all_total = sum(st["total"] for st in asset_stats.values())
+            all_wins = sum(st["wins"] for st in asset_stats.values())
+            all_losses = sum(st["losses"] for st in asset_stats.values())
+            all_sl = sum(st["sl"] for st in asset_stats.values())
+            all_unwind = sum(st["unwind"] for st in asset_stats.values())
+            all_wr = f"{(all_wins + all_unwind) / all_total * 100:.1f}%" if all_total else "—"
+            all_pnl = sum(st["pnl"] for st in asset_stats.values())
             lines.append(
-                f"| {t['time']} | {t['asset']} | {t['strategy']} | {t['side']} | {t['outcome']} | "
-                f"{t['token_price']:.4f} | {t['exit_price']:.4f} | {t['pnl']:+.4f} | "
-                f"{t['entry_signal_latency_ms']:.0f} | {t['entry_process_latency_ms']:.0f} | "
-                f"{t['exit_signal_latency_ms']:.0f} | {t['exit_process_latency_ms']:.0f} |"
+                f"| **ALL** | **{all_total}** | **{all_wins}** | **{all_losses}** | "
+                f"**{all_sl}** | **{all_unwind}** | **{all_wr}** | **{all_pnl:+.4f}** |"
             )
-        total_pnl = sum(t["pnl"] for t in trade_history)
-        lines.append(f"| **Total** | | | | | | | **{total_pnl:+.4f}** | | | | |")
-        lines.append("")
-
-    sl_unwind_rows = ps.get("sl_unwind_rows", [])
-    if sl_unwind_rows:
-        lines.append("## Stoploss & Unwind Audit")
-        lines.append("")
-        try:
-            audit = _build_sl_unwind_audit(sl_unwind_rows)
-            _render_sl_unwind_audit(lines, audit)
-        except Exception as e:
-            lines.append(f"*Audit failed: {e}*")
             lines.append("")
 
-    failed_exit_rows = ps.get("failed_exit_rows", [])
-    if failed_exit_rows:
-        lines.append("## Failed Exit Attempts (held to resolution)")
-        lines.append("")
-        lines.append(
-            "WIN/LOSS trades where an early exit (unwind take-profit or "
-            "stop-loss) was attempted and failed before the position was "
-            "held to market resolution — not a clean hold."
-        )
-        lines.append("")
-        _render_failed_exit_audit(lines, failed_exit_rows)
+        strat_bd = ps.get("strategy_breakdown", {})
+        if strat_bd:
+            lines.extend([
+                "### By Asset + Strategy", "",
+                "| Asset | Strategy | Total | Wins | Losses | SL | Unwind | Win Rate | PnL |",
+                "|---|---|---|---|---|---|---|---|---|",
+            ])
+            for (asset, strategy), st in strat_bd.items():
+                lines.append(
+                    f"| {asset} | {strategy} | {st['total']} | {st['wins']} | {st['losses']} | "
+                    f"{st['sl']} | {st['unwind']} | {st['win_rate']} | {st['pnl']:+.4f} |"
+                )
+            lines.append("")
 
-    lines.append("## Gamma Cross-Check")
-    lines.append("")
-    lines.extend([
-        "### Summary", "",
-        "| Metric | Value |", "|---|---|",
-        f"| Total rows | {total_rows} |",
-        f"| Resolved (WIN/LOSS) | {resolved} |",
-        f"| Matched worker.rs outcome | {correct} |",
-        f"| Mismatched | {wrong} |",
-        f"| Match rate | {accuracy:.1f}% |",
-        f"| Pending (market unresolved) | {pending} |",
-        f"| STOPLOSS: good (avoided loss) | {good_stops} |",
-        f"| STOPLOSS: costly (exited winner) | {costly_stops} |",
-    ])
-    lines.append("")
-    lines.append("### Mismatches")
-    lines.append("")
-    mismatches = summary.get("mismatch_details", [])
-    if mismatches:
-        lines.extend(["| Time | Slug | Side | Logged | Gamma Actual |", "|---|---|---|---|---|"])
-        for m in mismatches:
-            lines.append(f"| {m['time']} | {m['slug']} | {m['side']} | {m['algo']} | {m['actual']} |")
+        sl_detail = ps.get("sl_detail", [])
+        if sl_detail:
+            good = sum(1 for s in sl_detail if s["quality"] == "GOOD")
+            costly = sum(1 for s in sl_detail if s["quality"] == "COSTLY")
+            lines.extend([
+                "### Stop Loss Detail", "",
+                f"{len(sl_detail)} stop-loss exits: {good} good (avoided loss), {costly} costly (exited winner).",
+                "",
+                "| Time | Asset | Strategy | Side | PnL | Entry Price | Exit Price | Quality |",
+                "|---|---|---|---|---|---|---|---|",
+            ])
+            for s in sl_detail:
+                quality_fmt = "GOOD ✓" if s["quality"] == "GOOD" else "COSTLY ✗"
+                lines.append(
+                    f"| {s['time']} | {s['asset']} | {s['strategy']} | {s['side']} | "
+                    f"{s['pnl']:+.4f} | {s['token_price']:.4f} | {s['exit_price']:.4f} | {quality_fmt} |"
+                )
+            lines.append("")
+
+        trade_history = ps.get("trade_history", [])
+        if trade_history:
+            lines.extend([
+                "### Trade History", "",
+                "| Time | Asset | Strategy | Side | Outcome | Entry Price | Exit Price | PnL | "
+                "Entry Signal (ms) | Entry Process (ms) | Exit Signal (ms) | Exit Process (ms) |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|",
+            ])
+            for t in trade_history:
+                lines.append(
+                    f"| {t['time']} | {t['asset']} | {t['strategy']} | {t['side']} | {t['outcome']} | "
+                    f"{t['token_price']:.4f} | {t['exit_price']:.4f} | {t['pnl']:+.4f} | "
+                    f"{t['entry_signal_latency_ms']:.0f} | {t['entry_process_latency_ms']:.0f} | "
+                    f"{t['exit_signal_latency_ms']:.0f} | {t['exit_process_latency_ms']:.0f} |"
+                )
+            total_pnl = sum(t["pnl"] for t in trade_history)
+            lines.append(f"| **Total** | | | | | | | **{total_pnl:+.4f}** | | | | |")
+            lines.append("")
+
+        sl_unwind_rows = ps.get("sl_unwind_rows", [])
+        if sl_unwind_rows:
+            lines.append("## Stoploss & Unwind Audit")
+            lines.append("")
+            try:
+                audit = _build_sl_unwind_audit(sl_unwind_rows)
+                _render_sl_unwind_audit(lines, audit)
+            except Exception as e:
+                lines.append(f"*Audit failed: {e}*")
+                lines.append("")
+
+        failed_exit_rows = ps.get("failed_exit_rows", [])
+        if failed_exit_rows:
+            lines.append("## Failed Exit Attempts (held to resolution)")
+            lines.append("")
+            lines.append(
+                "WIN/LOSS trades where an early exit (unwind take-profit or "
+                "stop-loss) was attempted and failed before the position was "
+                "held to market resolution — not a clean hold."
+            )
+            lines.append("")
+            _render_failed_exit_audit(lines, failed_exit_rows)
+
+        lines.append("## Gamma Cross-Check")
         lines.append("")
-        lines.append(
-            "**Any row here means worker.rs's own ApiResult-correction path "
-            "(`Action::LogTradeCorrection`) let a wrong WIN/LOSS through — treat as a bug, "
-            "not noise.**"
-        )
+        lines.extend([
+            "### Summary", "",
+            "| Metric | Value |", "|---|---|",
+            f"| Total rows | {total_rows} |",
+            f"| Resolved (WIN/LOSS) | {resolved} |",
+            f"| Matched worker.rs outcome | {correct} |",
+            f"| Mismatched | {wrong} |",
+            f"| Match rate | {accuracy:.1f}% |",
+            f"| Pending (market unresolved) | {pending} |",
+            f"| STOPLOSS: good (avoided loss) | {good_stops} |",
+            f"| STOPLOSS: costly (exited winner) | {costly_stops} |",
+        ])
+        lines.append("")
+        lines.append("### Mismatches")
+        lines.append("")
+        mismatches = summary.get("mismatch_details", [])
+        if mismatches:
+            lines.extend(["| Time | Slug | Side | Logged | Gamma Actual |", "|---|---|---|---|---|"])
+            for m in mismatches:
+                lines.append(f"| {m['time']} | {m['slug']} | {m['side']} | {m['algo']} | {m['actual']} |")
+            lines.append("")
+            lines.append(
+                "**Any row here means worker.rs's own ApiResult-correction path "
+                "(`Action::LogTradeCorrection`) let a wrong WIN/LOSS through — treat as a bug, "
+                "not noise.**"
+            )
+        else:
+            if pending == total_rows:
+                lines.append("All trades still pending resolution.")
+            elif wrong == 0:
+                lines.append("None — worker.rs's outcome matched Gamma on every resolved trade. \U0001f3af")
+        lines.append("")
+
+    # Backtest reconciliation always renders, even on a 0-live-trade day —
+    # that's exactly the case where "did live miss a trade the backtest
+    # would have taken" is most worth knowing, not the case to skip it in.
+    if bt_result is not None:
+        live_vs_bt_rows, bt_summary, bt_vs_live_rows = bt_result
+        render_bt_reconciliation(lines, live_vs_bt_rows, bt_summary, bt_vs_live_rows)
     else:
-        if pending == total_rows:
-            lines.append("All trades still pending resolution.")
-        elif wrong == 0:
-            lines.append("None — worker.rs's outcome matched Gamma on every resolved trade. \U0001f3af")
-    lines.append("")
+        lines.append("## Backtest Reconciliation")
+        lines.append("")
+        lines.append("*Unavailable this run — see recon_cron.log for the reason.*")
+        lines.append("")
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -745,10 +1065,23 @@ def _resolve_window(dt_arg: Optional[str]) -> tuple:
     return window_start, window_end
 
 
+def _safe_run_backtest_reconciliation(window_start: datetime, window_end: datetime, annotated_live_rows: list) -> Optional[tuple]:
+    """Belt-and-suspenders wrapper around run_backtest_reconciliation — that
+    function is already internally defensive, but this is optional/
+    additive reporting and must never be able to take the whole recon run
+    down with it, however it fails."""
+    try:
+        return run_backtest_reconciliation(window_start, window_end, annotated_live_rows)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Backtest reconciliation failed unexpectedly: {e}[/yellow]")
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="poly_rust trade reconciliation")
     parser.add_argument("--wallet", type=str, help="Override FUND_ADDRESS from .env (informational only)")
     parser.add_argument("--no-push", action="store_true", help="Skip git commit+push of the markdown report")
+    parser.add_argument("--no-bt", action="store_true", help="Skip the backtest reconciliation section (faster, for quick manual runs)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--today", action="store_true", help="Reconcile current 24h window anchored at 8pm HKT (default)")
     mode.add_argument("--dt", type=str, help="Reconcile 24h window from 8pm on YYYYMMDD")
@@ -768,7 +1101,11 @@ def main() -> None:
     rows = load_and_filter(files, window_start.timestamp(), window_end.timestamp())
     if not rows:
         console.print(f"[yellow]No trades in window {window_start:%Y-%m-%d %H:%M} → {window_end:%Y-%m-%d %H:%M} HKT.[/yellow]")
-        md_path = write_markdown_summary({"direction": {}, "stoploss": {}, "total_rows": 0}, {}, window_start, window_end, out_dir)
+        bt_result = None if args.no_bt else _safe_run_backtest_reconciliation(window_start, window_end, [])
+        md_path = write_markdown_summary(
+            {"direction": {}, "stoploss": {}, "total_rows": 0}, {}, window_start, window_end, out_dir,
+            bt_result=bt_result,
+        )
         if not args.no_push:
             git_commit_push([md_path], f"recon: {window_start:%Y-%m-%d} — 0 trades")
         raise SystemExit(0)
@@ -778,7 +1115,9 @@ def main() -> None:
     annotated, summary = annotate_rows(rows)
     perf_stats = compute_performance_stats(annotated)
 
-    md_path = write_markdown_summary(summary, perf_stats, window_start, window_end, out_dir)
+    bt_result = None if args.no_bt else _safe_run_backtest_reconciliation(window_start, window_end, annotated)
+
+    md_path = write_markdown_summary(summary, perf_stats, window_start, window_end, out_dir, bt_result=bt_result)
 
     if not args.no_push:
         direction = summary["direction"]

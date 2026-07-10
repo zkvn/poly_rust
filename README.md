@@ -190,6 +190,27 @@ on the remote before the nightly sync runs.
   config file has since been recalibrated, so the hardcoded expected numbers no longer
   match. Confirmed pre-existing via `git stash` (same 4 failures on a clean checkout).
 
+- **Backtest reconciliation config-drift gap — flagged 2026-07-10, not fixed (deliberately
+  deferred).** The new "Backtest Reconciliation" section in the daily recon report
+  (`trader/scripts/trade_reconcile.py`, see `trader/doc/feature_bt_recon_2026-07-10.md`) runs
+  the Rust `backtest` binary against whichever `strategy_*.toml` is lexicographically latest in
+  `trader/config/` **right now** (`config::load_latest`'s normal behavior) — not whichever config
+  was actually live during the window being reconciled. Only matters if the strategy config
+  changes mid-window; most windows won't. Closing this would mean adding a `--config-file <path>`
+  override to `backtest.rs` so the script can pin the exact historical snapshot (poly_rust's
+  `config_log.rs` already writes a schema-compatible JSONL snapshot log this could read from,
+  mirroring how `btc_5mins`'s own backtest recon does it via `read_latest_snapshot`). Not
+  blocking — but a silent mismatch here would otherwise look like a real trading-logic bug in the
+  report, so flagging rather than letting it get lost in a commit message.
+
+- ~~`build_backtest_prices.py` broken — `ModuleNotFoundError: recover_live_tmp` — found
+  2026-07-10.~~ **Done, same day.** `price_feed/scripts/recover_live_tmp.py` had been renamed to
+  `recover_rust_parquet.py` (poly/binance/book recovery split into separate functions:
+  `recover_rust_poly_parquet` etc.) at some point after `build_backtest_prices.py` was written,
+  leaving its import pointing at a module that no longer existed — found while wiring up the
+  backtest reconciliation feature's price-data build step (any date's poly recovery path would
+  have hit this). Fixed the import + call site to the new name; no logic changes.
+
 </details>
 
 <details>
