@@ -72,8 +72,8 @@ pub const HELP_TEXT: &str = "\
 /params <ASSET>   — show current resolved params
 /set <k> <v>      — change a config param (default asset)
 /set <k> <ASSET> <v> — change a per-asset config param
-/halt [asset]     — suppress new entries (all assets or one)
-/resume [asset]   — clear a halt
+/halt [asset] [strategy]     — suppress new entries (all assets, one asset, or one asset+strategy)
+/resume [asset] [strategy]   — clear a halt
 /reset_losses [asset] — zero the halt loss counter
 /strategies [ASSET strat1,strat2] — show or set active strategies
 /trade_assets [A,B,C] — show or set the traded asset list

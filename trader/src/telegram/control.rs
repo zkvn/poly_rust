@@ -24,10 +24,12 @@ pub enum ControlMsg {
     }, // "" = all
     Halt {
         asset: String,
-    }, // "" = all
+        strategy: Option<String>,
+    }, // asset "" = all; strategy None = all strategies for the asset
     Resume {
         asset: String,
-    }, // "" = all
+        strategy: Option<String>,
+    }, // asset "" = all; strategy None = all strategies for the asset
 }
 
 /// Convert a parsed `Command` into a `ControlMsg`, if that command mutates state.
@@ -63,11 +65,13 @@ pub fn command_to_control(cmd: &Command) -> Option<ControlMsg> {
         Command::ResetLosses { asset } => Some(ControlMsg::ResetLosses {
             asset: asset.clone(),
         }),
-        Command::Halt { asset } => Some(ControlMsg::Halt {
+        Command::Halt { asset, strategy } => Some(ControlMsg::Halt {
             asset: asset.clone(),
+            strategy: strategy.clone(),
         }),
-        Command::Resume { asset } => Some(ControlMsg::Resume {
+        Command::Resume { asset, strategy } => Some(ControlMsg::Resume {
             asset: asset.clone(),
+            strategy: strategy.clone(),
         }),
         _ => None,
     }
@@ -81,8 +85,8 @@ pub trait ControlTarget {
     fn set_param(&mut self, param: &str, key: &str, value: &str) -> Result<()>;
     fn set_strategies(&mut self, asset: &str, strategies: &[String]);
     fn reset_losses(&mut self, asset: &str);
-    fn halt(&mut self, asset: &str);
-    fn resume(&mut self, asset: &str);
+    fn halt(&mut self, asset: &str, strategy: Option<&str>);
+    fn resume(&mut self, asset: &str, strategy: Option<&str>);
 }
 
 /// Apply a `ControlMsg` to a target. Returns an error only for a malformed
@@ -93,8 +97,8 @@ pub fn apply_control(target: &mut impl ControlTarget, msg: &ControlMsg) -> Resul
         ControlMsg::SetParam { param, key, value } => target.set_param(param, key, value)?,
         ControlMsg::SetStrategies { asset, strategies } => target.set_strategies(asset, strategies),
         ControlMsg::ResetLosses { asset } => target.reset_losses(asset),
-        ControlMsg::Halt { asset } => target.halt(asset),
-        ControlMsg::Resume { asset } => target.resume(asset),
+        ControlMsg::Halt { asset, strategy } => target.halt(asset, strategy.as_deref()),
+        ControlMsg::Resume { asset, strategy } => target.resume(asset, strategy.as_deref()),
     }
     Ok(())
 }
@@ -143,19 +147,26 @@ mod tests {
         fn reset_losses(&mut self, asset: &str) {
             self.losses_reset.push(asset.to_string());
         }
-        fn halt(&mut self, asset: &str) {
-            let key = if asset.is_empty() {
-                "*".to_string()
-            } else {
-                asset.to_string()
+        fn halt(&mut self, asset: &str, strategy: Option<&str>) {
+            let key = match (asset.is_empty(), strategy) {
+                (true, _) => "*".to_string(),
+                (false, Some(s)) => format!("{asset}:{s}"),
+                (false, None) => asset.to_string(),
             };
             self.suppressed.insert(key);
         }
-        fn resume(&mut self, asset: &str) {
+        fn resume(&mut self, asset: &str, strategy: Option<&str>) {
             if asset.is_empty() {
                 self.suppressed.clear();
             } else {
-                self.suppressed.remove(asset);
+                match strategy {
+                    Some(s) => {
+                        self.suppressed.remove(&format!("{asset}:{s}"));
+                    }
+                    None => {
+                        self.suppressed.remove(asset);
+                    }
+                }
             }
         }
     }
@@ -190,6 +201,7 @@ mod tests {
             &mut w,
             &ControlMsg::Halt {
                 asset: "BTC".to_string(),
+                strategy: None,
             },
         )
         .unwrap();
@@ -198,6 +210,7 @@ mod tests {
             &mut w,
             &ControlMsg::Resume {
                 asset: "BTC".to_string(),
+                strategy: None,
             },
         )
         .unwrap();
@@ -211,6 +224,7 @@ mod tests {
             &mut w,
             &ControlMsg::Halt {
                 asset: "".to_string(),
+                strategy: None,
             },
         )
         .unwrap();
@@ -219,10 +233,26 @@ mod tests {
             &mut w,
             &ControlMsg::Resume {
                 asset: "".to_string(),
+                strategy: None,
             },
         )
         .unwrap();
         assert!(w.suppressed.is_empty());
+    }
+
+    #[test]
+    fn strategy_scoped_halt_leaves_other_strategy_running() {
+        let cmd = crate::telegram::commands::parse_command("/halt eth high_prob").unwrap();
+        let msg = command_to_control(&cmd).unwrap();
+        let mut w = MockWorker::default();
+        apply_control(&mut w, &msg).unwrap();
+        assert!(w.suppressed.contains("ETH:high_prob"));
+        assert!(!w.suppressed.contains("ETH:reversal"));
+
+        let resume_cmd = crate::telegram::commands::parse_command("/resume eth high_prob").unwrap();
+        let resume_msg = command_to_control(&resume_cmd).unwrap();
+        apply_control(&mut w, &resume_msg).unwrap();
+        assert!(!w.suppressed.contains("ETH:high_prob"));
     }
 
     #[test]

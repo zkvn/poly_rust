@@ -1581,13 +1581,13 @@ async fn main() -> Result<()> {
                 let reply = match cmd {
                     Command::Status => Some(driver.render_status(&assets).await),
                     Command::Help => Some(HELP_TEXT.to_string()),
-                    Command::Halt { asset } if asset.is_empty() => {
+                    Command::Halt { asset, strategy: _ } if asset.is_empty() => {
                         for slot in assets.iter_mut() {
                             slot.worker.step(Event::Control(ControlEvent::Halt));
                         }
                         Some(format!("🛑 Halted all assets ({}) — new entries suppressed, open positions still managed.", args.asset.join(", ")))
                     }
-                    Command::Resume { asset } if asset.is_empty() => {
+                    Command::Resume { asset, strategy: _ } if asset.is_empty() => {
                         for slot in assets.iter_mut() {
                             slot.worker.step(Event::Control(ControlEvent::Resume));
                         }
@@ -1595,33 +1595,54 @@ async fn main() -> Result<()> {
                         Some(format!("▶️ Resumed all assets ({}).", args.asset.join(", ")))
                     }
                     // A named asset may own more than one strategy slot (e.g. ETH:
-                    // high_prob + reversal) — halt/resume both together, matching
-                    // Python's manual per-asset halt lighting both indicators.
-                    Command::Halt { asset } => {
+                    // high_prob + reversal). With no strategy given, halt/resume both
+                    // together, matching Python's manual per-asset halt lighting both
+                    // indicators; with a strategy given, scope to that slot only.
+                    Command::Halt { asset, strategy } => {
                         let matched: Vec<&mut AssetSlot> = assets.iter_mut()
-                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset))
+                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset)
+                                && match &strategy {
+                                    Some(st) => s.worker.strategy_name.eq_ignore_ascii_case(st),
+                                    None => true,
+                                })
                             .collect();
                         if matched.is_empty() {
-                            Some(format!("this driver doesn't manage {asset} — trading {}", args.asset.join(", ")))
+                            Some(format!("this driver doesn't manage {asset}{} — trading {}",
+                                strategy.as_deref().map(|s| format!("/{s}")).unwrap_or_default(),
+                                args.asset.join(", ")))
                         } else {
                             for slot in matched {
                                 slot.worker.step(Event::Control(ControlEvent::Halt));
                             }
-                            Some(format!("🛑 Halted {asset} — new entries suppressed, open positions still managed."))
+                            let label = match &strategy {
+                                Some(s) => format!("{asset}/{s}"),
+                                None => asset.clone(),
+                            };
+                            Some(format!("🛑 Halted {label} — new entries suppressed, open positions still managed."))
                         }
                     }
-                    Command::Resume { asset } => {
+                    Command::Resume { asset, strategy } => {
                         let matched: Vec<&mut AssetSlot> = assets.iter_mut()
-                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset))
+                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset)
+                                && match &strategy {
+                                    Some(st) => s.worker.strategy_name.eq_ignore_ascii_case(st),
+                                    None => true,
+                                })
                             .collect();
                         if matched.is_empty() {
-                            Some(format!("this driver doesn't manage {asset} — trading {}", args.asset.join(", ")))
+                            Some(format!("this driver doesn't manage {asset}{} — trading {}",
+                                strategy.as_deref().map(|s| format!("/{s}")).unwrap_or_default(),
+                                args.asset.join(", ")))
                         } else {
                             for slot in matched {
                                 slot.worker.step(Event::Control(ControlEvent::Resume));
                             }
                             balance_guard.reset_baseline();
-                            Some(format!("▶️ Resumed {asset}."))
+                            let label = match &strategy {
+                                Some(s) => format!("{asset}/{s}"),
+                                None => asset.clone(),
+                            };
+                            Some(format!("▶️ Resumed {label}."))
                         }
                     }
                     Command::Invalid(msg) => Some(msg),

@@ -1545,4 +1545,18 @@ wiring explicitly stayed out of scope (Python kept separate from the live Rust p
    `trade_reconcile.py`'s independent daily Gamma cross-check still catches it the next
    day even if the live halt doesn't fire same-day.
 
+### `/halt`/`/resume` can now scope to one strategy, not just one asset (2026-07-10, added)
+
+Full writeup: `trader/doc/plan_halt_per_strategy_2026-07-10.md`.
+
+`/halt <asset>` previously halted every strategy running on that asset together (e.g. `/halt eth`
+stopped both ETH `high_prob` and ETH `reversal`). `/halt <asset> [strategy]` now accepts an
+optional third argument — `/halt eth high_prob` halts only ETH `high_prob`, leaving ETH `reversal`
+running; `/halt eth` (no strategy) keeps the old all-strategies-for-this-asset behavior. Same for
+`/resume`. No changes to `Worker`, entry gating, or persistence were needed — `Worker` is already
+one instance per `(asset, strategy)` pair with its own persisted halt state, so this was purely a
+Telegram command-parsing/dispatch change (`telegram/commands.rs`, `telegram/control.rs`,
+`bin/live.rs`, `telegram/mod.rs`). An unrecognized strategy name (anything but `high_prob` or
+`reversal`) is rejected with `Command::Invalid` rather than silently ignored.
+
 </details>

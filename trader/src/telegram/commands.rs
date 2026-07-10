@@ -3,6 +3,11 @@
 
 use std::collections::HashSet;
 
+/// Strategy names recognized by `/halt`, `/resume`, and `/strategies`.
+fn valid_strategies() -> HashSet<&'static str> {
+    ["high_prob", "reversal"].into_iter().collect()
+}
+
 /// Params settable via `/set <param> <value>` — must match bot/config.py::SETTABLE_PARAMS.
 pub fn settable_params() -> HashSet<&'static str> {
     [
@@ -115,13 +120,36 @@ pub enum Command {
     }, // "" = all
     Halt {
         asset: String,
-    }, // "" = all
+        strategy: Option<String>,
+    }, // asset "" = all; strategy None = all strategies for the asset
     Resume {
         asset: String,
-    }, // "" = all
+        strategy: Option<String>,
+    }, // asset "" = all; strategy None = all strategies for the asset
     Help,
     /// Recognized-but-malformed usage, or an unrecognized command.
     Invalid(String),
+}
+
+/// Shared parsing for `/halt [asset] [strategy]` and `/resume [asset] [strategy]`.
+fn parse_halt_resume(parts: &[&str], is_halt: bool) -> Command {
+    let asset = parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default();
+    let strategy = match parts.get(2) {
+        None => None,
+        Some(s) => {
+            let lower = s.to_lowercase();
+            if valid_strategies().contains(lower.as_str()) {
+                Some(lower)
+            } else {
+                return Command::Invalid(format!("Unknown strategy: {s}"));
+            }
+        }
+    };
+    if is_halt {
+        Command::Halt { asset, strategy }
+    } else {
+        Command::Resume { asset, strategy }
+    }
 }
 
 /// Parse one incoming Telegram message text into a `Command`.
@@ -162,7 +190,7 @@ pub fn parse_command(text: &str) -> Option<Command> {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                let valid: HashSet<&str> = ["high_prob", "reversal"].into_iter().collect();
+                let valid = valid_strategies();
                 let invalid: Vec<&String> = names
                     .iter()
                     .filter(|n| !valid.contains(n.as_str()))
@@ -280,12 +308,8 @@ pub fn parse_command(text: &str) -> Option<Command> {
         "/reset_losses" => Command::ResetLosses {
             asset: parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default(),
         },
-        "/halt" => Command::Halt {
-            asset: parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default(),
-        },
-        "/resume" => Command::Resume {
-            asset: parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default(),
-        },
+        "/halt" => parse_halt_resume(&parts, true),
+        "/resume" => parse_halt_resume(&parts, false),
         "/start" | "/help" => Command::Help,
         _ => Command::Invalid(format!("Unknown command: {cmd}")),
     })
@@ -359,21 +383,58 @@ mod tests {
         assert_eq!(
             parse_command("/halt"),
             Some(Command::Halt {
-                asset: "".to_string()
+                asset: "".to_string(),
+                strategy: None
             })
         );
         assert_eq!(
             parse_command("/halt btc"),
             Some(Command::Halt {
-                asset: "BTC".to_string()
+                asset: "BTC".to_string(),
+                strategy: None
             })
         );
         assert_eq!(
             parse_command("/resume ETH"),
             Some(Command::Resume {
-                asset: "ETH".to_string()
+                asset: "ETH".to_string(),
+                strategy: None
             })
         );
+    }
+
+    #[test]
+    fn parses_halt_resume_scoped_to_strategy() {
+        assert_eq!(
+            parse_command("/halt eth high_prob"),
+            Some(Command::Halt {
+                asset: "ETH".to_string(),
+                strategy: Some("high_prob".to_string())
+            })
+        );
+        assert_eq!(
+            parse_command("/resume eth reversal"),
+            Some(Command::Resume {
+                asset: "ETH".to_string(),
+                strategy: Some("reversal".to_string())
+            })
+        );
+        // Case-insensitive strategy name.
+        assert_eq!(
+            parse_command("/halt BTC HIGH_PROB"),
+            Some(Command::Halt {
+                asset: "BTC".to_string(),
+                strategy: Some("high_prob".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn halt_rejects_unknown_strategy() {
+        match parse_command("/halt eth not_real").unwrap() {
+            Command::Invalid(_) => {}
+            other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 
     #[test]
@@ -468,7 +529,8 @@ mod tests {
         assert_eq!(
             parse_command("/HALT"),
             Some(Command::Halt {
-                asset: "".to_string()
+                asset: "".to_string(),
+                strategy: None
             })
         );
     }

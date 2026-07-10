@@ -51,6 +51,16 @@ pub struct Dispatch {
     pub reply: Option<String>,
 }
 
+/// Human-readable target description for a halt/resume reply, e.g. "all assets",
+/// "BTC", or "BTC/high_prob".
+fn halt_target_label(asset: &str, strategy: &Option<String>) -> String {
+    match (asset.is_empty(), strategy) {
+        (true, _) => "all assets".to_string(),
+        (false, Some(s)) => format!("{asset}/{s}"),
+        (false, None) => asset.to_string(),
+    }
+}
+
 /// Pure dispatch: parse `text`, decide the ControlMsg (if any) and the reply
 /// text (if any). No I/O — testable without a network or a real worker.
 pub fn dispatch(text: &str) -> Option<Dispatch> {
@@ -62,21 +72,13 @@ pub fn dispatch(text: &str) -> Option<Dispatch> {
         Command::Set { param, key, value } => {
             Some(format!("✅ Sent: set {param}[{key}] = {value}"))
         }
-        Command::Halt { asset } => Some(format!(
+        Command::Halt { asset, strategy } => Some(format!(
             "🛑 Sent halt for {}",
-            if asset.is_empty() {
-                "all assets".to_string()
-            } else {
-                asset.clone()
-            }
+            halt_target_label(asset, strategy)
         )),
-        Command::Resume { asset } => Some(format!(
+        Command::Resume { asset, strategy } => Some(format!(
             "▶️ Sent resume for {}",
-            if asset.is_empty() {
-                "all assets".to_string()
-            } else {
-                asset.clone()
-            }
+            halt_target_label(asset, strategy)
         )),
         Command::ResetLosses { asset } => Some(format!(
             "🔄 reset_losses sent for {}",
@@ -297,10 +299,25 @@ mod tests {
         assert_eq!(
             d.control,
             Some(ControlMsg::Halt {
-                asset: "BTC".to_string()
+                asset: "BTC".to_string(),
+                strategy: None
             })
         );
         assert!(d.reply.unwrap().contains("BTC"));
+    }
+
+    #[test]
+    fn dispatch_halt_scoped_to_strategy_produces_control_and_reply() {
+        let d = dispatch("/halt BTC high_prob").unwrap();
+        assert_eq!(
+            d.control,
+            Some(ControlMsg::Halt {
+                asset: "BTC".to_string(),
+                strategy: Some("high_prob".to_string())
+            })
+        );
+        let reply = d.reply.unwrap();
+        assert!(reply.contains("BTC/high_prob"));
     }
 
     #[test]
