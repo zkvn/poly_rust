@@ -385,6 +385,24 @@ fn persist(slot: &AssetSlot) {
     }
 }
 
+/// `Worker::on_control` always returns exactly `[Action::Persist]` — apply the event and act on
+/// that signal immediately, rather than leaving `entry_suppressed` unpersisted until some later,
+/// unrelated event happens to persist this slot (2026-07-11,
+/// `trader/doc/plan_halt_persist_2026-07-11.md`). Deliberately *not* used by the SIGINT/SIGTERM
+/// shutdown handlers — see that doc §3 for why persisting a shutdown-time halt would be a real
+/// behavior change (every deploy restart would come back halted), not just a bugfix.
+fn apply_control(slot: &mut AssetSlot, event: ControlEvent) {
+    slot.worker.step(Event::Control(event));
+    persist(slot);
+}
+
+/// Same as `apply_control`, for the one `BalanceEvent` variant — `Worker::on_balance` also always
+/// returns exactly `[Action::Persist]`.
+fn apply_balance_halt(slot: &mut AssetSlot) {
+    slot.worker.step(Event::Balance(BalanceEvent::DrawdownHalt));
+    persist(slot);
+}
+
 /// Best-effort load of a previously-persisted slot — a missing file (first
 /// run), unparsable JSON, or any other error just means "nothing to restore,"
 /// never a startup failure. Loading is intentionally silent on failure since
@@ -1627,13 +1645,13 @@ async fn main() -> Result<()> {
                     Command::Help => Some(HELP_TEXT.to_string()),
                     Command::Halt { asset, strategy: _ } if asset.is_empty() => {
                         for slot in assets.iter_mut() {
-                            slot.worker.step(Event::Control(ControlEvent::Halt));
+                            apply_control(slot, ControlEvent::Halt);
                         }
                         Some(format!("🛑 Halted all assets ({}) — new entries suppressed, open positions still managed.", args.asset.join(", ")))
                     }
                     Command::Resume { asset, strategy: _ } if asset.is_empty() => {
                         for slot in assets.iter_mut() {
-                            slot.worker.step(Event::Control(ControlEvent::Resume));
+                            apply_control(slot, ControlEvent::Resume);
                         }
                         balance_guard.reset_baseline();
                         Some(format!("▶️ Resumed all assets ({}).", args.asset.join(", ")))
@@ -1656,7 +1674,7 @@ async fn main() -> Result<()> {
                                 args.asset.join(", ")))
                         } else {
                             for slot in matched {
-                                slot.worker.step(Event::Control(ControlEvent::Halt));
+                                apply_control(slot, ControlEvent::Halt);
                             }
                             let label = match &strategy {
                                 Some(s) => format!("{asset}/{s}"),
@@ -1679,7 +1697,7 @@ async fn main() -> Result<()> {
                                 args.asset.join(", ")))
                         } else {
                             for slot in matched {
-                                slot.worker.step(Event::Control(ControlEvent::Resume));
+                                apply_control(slot, ControlEvent::Resume);
                             }
                             balance_guard.reset_baseline();
                             let label = match &strategy {
@@ -1733,7 +1751,7 @@ async fn main() -> Result<()> {
                             halted.join(", ")
                         );
                         for slot in assets.iter_mut().filter(|s| s.worker.is_confirming()) {
-                            slot.worker.step(Event::Balance(BalanceEvent::DrawdownHalt));
+                            apply_balance_halt(slot);
                         }
                         driver.notify(&format!(
                             "🟡 <b>BALANCE DECREASED — SCOPED HALT</b>\nBalance dropped vs last cycle's checkpoint while {} still had a trade pending Gamma confirmation — halted new entries there only; other assets/strategies continue. Send /resume to re-arm.",
@@ -1747,7 +1765,7 @@ async fn main() -> Result<()> {
                 if balance_guard.check(bal) {
                     println!("[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries on all assets.");
                     for slot in assets.iter_mut() {
-                        slot.worker.step(Event::Balance(BalanceEvent::DrawdownHalt));
+                        apply_balance_halt(slot);
                     }
                     driver.notify(&format!(
                         "🛑 balance drawdown >25% from session baseline — halted new entries on all assets ({}). Send /resume to re-arm.",
@@ -2157,5 +2175,157 @@ mod balance_halt_scope_tests {
             halted,
             vec!["DOGE/reversal".to_string(), "ETH/reversal".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod halt_persist_tests {
+    use super::*;
+
+    fn test_params(asset: &str) -> AssetParams {
+        AssetParams {
+            asset: asset.to_string(),
+            strategies: vec!["reversal".to_string()],
+            enter_when_time_left: 20.0,
+            no_enter_when_time_left: 10.0,
+            reversal: 0.60,
+            reversal_low_threshold: 0.20,
+            reversal_start_time: 120.0,
+            gamma_poll_delay_secs: 60.0,
+            gamma_poll_interval_secs: 20.0,
+            gamma_poll_deadline_secs: 600.0,
+            price_high_rev: 0.90,
+            delta_pct_rev: 0.0008,
+            sl_reversal: 0.0,
+            unwind_pnl_rev: 0.03,
+            sl_pnl_rev: 0.20,
+            unwind_time_rev: 0.0,
+            price_low: 0.80,
+            price_high: 0.93,
+            delta_pct_hp: 0.0004,
+            sl_high_prob: 0.49,
+            unwind_pnl_hp: 0.05,
+            sl_pnl_hp: 0.25,
+            unwind_time_hp: 0.0,
+            halt_rev: 2,
+            halt_prob: 2,
+            halt_reset_hour_rev: 2,
+            halt_reset_hour_hp: 8,
+            max_buy_price: 0.95,
+            spread_premium_limit: 1.05,
+            spread_discount_limit: 0.95,
+            max_price_age_secs: 300.0,
+            trade_size_usdc: 1.0,
+        }
+    }
+
+    fn scratch_state_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "poly_rust_test_halt_persist_{name}_{}.json",
+                std::process::id()
+            ))
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Minimal real `AssetSlot` — same field values `main()` uses for a fresh
+    /// (never-restarted) slot — pointed at a scratch `state_file` so `persist()`
+    /// writes somewhere disposable.
+    fn test_slot(asset: &str, state_file: String) -> AssetSlot {
+        let params = test_params(asset);
+        AssetSlot {
+            worker: Worker::new_reversal(asset, &params),
+            params,
+            up_id: U256::from(0u64),
+            dn_id: U256::from(0u64),
+            current_token_id: None,
+            max_buy_price: 0.95,
+            log_path: String::new(),
+            state_file,
+            cycle_trades: 0,
+            sl_notified: false,
+            timeout_notified: false,
+            wins: 0,
+            losses: 0,
+            stoplosses: 0,
+            unwinds: 0,
+            timeouts: 0,
+            total_pnl: 0.0,
+            last_trade: None,
+            current_slug: None,
+            last_binance: 0.0,
+            last_poly_up: 0.0,
+            last_poly_dn: 0.0,
+            poly_sub: None,
+            last_binance_server_ts: None,
+            last_poly_server_ts: None,
+            last_binance_ts: None,
+            last_poly_ts: None,
+        }
+    }
+
+    /// The actual scenario `trader/doc/plan_halt_persist_2026-07-11.md` closes: a
+    /// halt must reach disk before any other event happens to persist the slot, not
+    /// just flip the in-memory flag.
+    #[test]
+    fn apply_control_halt_persists_immediately() {
+        let path = scratch_state_path("control");
+        let _ = std::fs::remove_file(&path);
+        let mut slot = test_slot("BTC", path.clone());
+
+        assert!(
+            load_persisted_slot(&path).is_none(),
+            "setup: nothing on disk yet"
+        );
+
+        apply_control(&mut slot, ControlEvent::Halt);
+
+        assert!(slot.worker.is_halted());
+        let on_disk = load_persisted_slot(&path).expect("halt must have persisted to disk");
+        assert!(
+            on_disk.worker.entry_suppressed,
+            "on-disk entry_suppressed must be true immediately, before any other event"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn apply_control_resume_persists_immediately() {
+        let path = scratch_state_path("resume");
+        let _ = std::fs::remove_file(&path);
+        let mut slot = test_slot("BTC", path.clone());
+        apply_control(&mut slot, ControlEvent::Halt);
+        assert!(load_persisted_slot(&path).unwrap().worker.entry_suppressed);
+
+        apply_control(&mut slot, ControlEvent::Resume);
+
+        assert!(!slot.worker.is_halted());
+        let on_disk = load_persisted_slot(&path).expect("resume must have persisted to disk");
+        assert!(!on_disk.worker.entry_suppressed);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn apply_balance_halt_persists_immediately() {
+        let path = scratch_state_path("balance");
+        let _ = std::fs::remove_file(&path);
+        let mut slot = test_slot("ETH", path.clone());
+
+        assert!(
+            load_persisted_slot(&path).is_none(),
+            "setup: nothing on disk yet"
+        );
+
+        apply_balance_halt(&mut slot);
+
+        assert!(slot.worker.is_halted());
+        let on_disk = load_persisted_slot(&path).expect("balance halt must have persisted to disk");
+        assert!(on_disk.worker.entry_suppressed);
+
+        std::fs::remove_file(&path).unwrap();
     }
 }

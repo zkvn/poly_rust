@@ -279,18 +279,12 @@ on the remote before the nightly sync runs.
   `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` (§0 for the first incident, §8 for
   phase 1, §10 for phase 2 as actually built) for the full story.
 
-- **`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
-  found 2026-07-11 while scoping the balance-decrease halt, not fixed (pre-existing,
-  out of scope).** `Worker::on_control`/`on_balance` (`worker.rs`) both return
-  `vec![Action::Persist]`, but every call site in `bin/live.rs` that fires
-  `Event::Control(..)` or `Event::Balance(..)` (`/halt`, `/resume`, the 25% drawdown guard,
-  and the new scoped balance-decrease halt) discards `.step()`'s return value instead of
-  acting on that `Action::Persist` — so the in-memory `entry_suppressed` flips immediately,
-  but the on-disk `live_state_<asset>_<strategy>.json` only catches up whenever some other
-  event next persists that slot (e.g. its next trade). A process restart in between would
-  silently lose the halt. Pattern is consistent across every one of these call sites (not
-  introduced by 2026-07-11's change), so left alone rather than bundled into an unrelated fix
-  — closing this would mean calling `persist(slot)` right after each of those `.step()` calls.
+- ~~`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
+  found 2026-07-11 while scoping the balance-decrease halt.~~ **Fixed 2026-07-11 for the
+  command/balance-driven call sites** (see below) — deliberately left alone for the 2
+  SIGINT/SIGTERM shutdown handlers, by choice: restarts (including every `deploy_trader.sh`
+  deploy, which sends SIGTERM) should keep auto-continuing whatever was persisted before, not
+  come back halted. Full writeup: `trader/doc/plan_halt_persist_2026-07-11.md`.
 
 </details>
 
@@ -1681,6 +1675,28 @@ the specific asset+strategy involved, instead of process-wide. Full plan:
    and a deadline timeout (`Action::GammaHaltEngaged`/`GammaUnresolvedContinued`) have
    always sent a Telegram alert. Only the displayed window in the timeout message's text
    changed, from `reversal_start_time` to `gamma_poll_deadline_secs`.
+
+**Update (2026-07-11, second):** a halt now reaches disk immediately, not on the next unrelated
+event. Full plan: `trader/doc/plan_halt_persist_2026-07-11.md`.
+
+`Worker::on_control`/`on_balance` (`worker.rs`) both return `vec![Action::Persist]`, but every
+`bin/live.rs` call site that fired `Event::Control(..)`/`Event::Balance(..)` discarded that return
+value — the in-memory `entry_suppressed` flipped immediately, but the on-disk
+`live_state_<asset>_<strategy>.json` only caught up whenever some other event happened to persist
+that slot next (e.g. its next trade). A crash or restart in between silently reverted the halt.
+Fixed by two small helpers, `apply_control`/`apply_balance_halt`, that call `.step()` then
+`persist(slot)` in one place, wired into the 6 call sites where an immediate write is
+unambiguously correct: global `/halt`/`/resume`, scoped `/halt <asset> [strategy]`/`/resume`, the
+25%-drawdown backstop, and the new scoped balance-decrease halt above. **Deliberately excluded:**
+the 2 SIGINT/SIGTERM shutdown handlers, which also fire `Event::Control(ControlEvent::Halt)` and
+also discard it — that call has been a no-op since it was first written (2026-07-03) and stays
+that way by choice: `deploy_trader.sh` sends SIGTERM on every routine deploy, and the intent is
+for a restart to auto-continue whatever halt/resume state was already persisted, not come back
+halted just because the process happened to restart. New tests:
+`apply_control_halt_persists_immediately`, `apply_control_resume_persists_immediately`,
+`apply_balance_halt_persists_immediately` (`bin/live.rs`), each building a real `AssetSlot` against
+a scratch state file and asserting the on-disk `entry_suppressed` flips before any other event
+could have persisted it.
 
 ### `/halt`/`/resume` can now scope to one strategy, not just one asset (2026-07-10, added)
 
