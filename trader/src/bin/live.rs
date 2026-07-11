@@ -97,6 +97,13 @@ struct Args {
     #[arg(long, default_value_t = 300)]
     period_secs: u64,
 
+    /// Seconds into each cycle window the balance-drawdown checks (both the
+    /// global 25%-from-session-baseline guard and the per-cycle scoped halt,
+    /// 2026-07-11) sample the wallet balance. Was hardcoded to 120; see
+    /// `trader/doc/plan_gammapi_2026-07-11.md`.
+    #[arg(long, default_value_t = 120)]
+    balance_check_offset_secs: u64,
+
     /// Subscribe to price ticks from a price_feed NATS publisher instead of opening
     /// direct Binance/Poly WS connections (e.g. nats://localhost:4222).
     #[arg(long)]
@@ -106,6 +113,22 @@ struct Args {
 /// Current time in Hong Kong (UTC+8), matching the Python bot's `_HKT` convention.
 fn hkt_now() -> chrono::DateTime<chrono::FixedOffset> {
     chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+}
+
+/// `"ASSET/strategy"` labels for every worker currently `Confirming` (an unresolved
+/// trade still awaiting Gamma) — the scope of the per-cycle balance-decrease halt
+/// (2026-07-11, `trader/doc/plan_gammapi_2026-07-11.md`). A single account-wide balance
+/// sample can't attribute a drop to one asset+strategy over another when several are
+/// pending at once, so every currently-pending one is halted, not just one guessed at —
+/// still not "the whole thing" the way the 25%-drawdown backstop is, since idle
+/// (`Watching`) slots are untouched. Pure and free of `AssetSlot` so it's unit-testable
+/// against plain `Worker`s.
+fn confirming_asset_labels<'a>(workers: impl IntoIterator<Item = &'a Worker>) -> Vec<String> {
+    workers
+        .into_iter()
+        .filter(|w| w.is_confirming())
+        .map(|w| format!("{}/{}", w.asset, w.strategy_name))
+        .collect()
 }
 
 /// Display-only side label with an arrow — doesn't touch `Side::as_str()` (used by CSV
@@ -118,9 +141,9 @@ fn arrow_side(side: Side) -> &'static str {
 }
 
 /// Gamma resolution watcher timing, all three sourced from the asset's own config
-/// (`reversal_start_time`/`gamma_poll_delay_secs`/`gamma_poll_interval_secs`) — grouped
-/// into one struct purely to keep `spawn_resolution_watcher`'s argument count under
-/// clippy's `too_many_arguments` limit.
+/// (`gamma_poll_deadline_secs`/`gamma_poll_delay_secs`/`gamma_poll_interval_secs`) —
+/// grouped into one struct purely to keep `spawn_resolution_watcher`'s argument count
+/// under clippy's `too_many_arguments` limit.
 #[derive(Debug, Clone, Copy)]
 struct GammaPollCadence {
     /// Give up (and report a timeout) this many seconds after the position closed.
@@ -136,17 +159,21 @@ struct GammaPollCadence {
 /// `(asset, strategy, Some(won))` (relative to `side`, the position's own side) or
 /// `(asset, strategy, None)` on a deadline timeout.
 ///
-/// `deadline_secs` is the asset's own `reversal_start_time` — the earliest either
-/// strategy could possibly want to open a new position this cycle anyway (`reversal` is
-/// gated by that exact config value; `high_prob` only fires in the last
-/// `enter_when_time_left` seconds of a cycle, i.e. far later), so blocking new entries on
-/// this asset+strategy until then costs nothing.
+/// `deadline_secs` is `gamma_poll_deadline_secs` — its own dedicated config field as of
+/// 2026-07-11 (`trader/doc/plan_gammapi_2026-07-11.md`; previously it reused
+/// `reversal_start_time`, "the earliest either strategy could possibly want to open a
+/// new position this cycle anyway," on the theory that blocking new entries on this
+/// asset+strategy until then cost nothing — decoupled once the window grew to 10
+/// minutes, well past that assumption, and `Worker::try_enter` gates on `WorkerState`
+/// regardless, so a `Confirming` position naturally survives a cycle boundary if Gamma
+/// is still unresolved when the next cycle opens).
 ///
 /// Polling doesn't start immediately: Gamma "usually won't give you anything until
 /// 20-60s after cycle end" (trader/doc/incident_DOGE_wrong_result_2026-07-09.md §4), so
 /// the first attempt waits `poll_delay_secs` (clamped to `deadline_secs`, in case a
 /// misconfigured delay would otherwise exceed the deadline), then retries every
-/// `poll_interval_secs` (2026-07-09; previously an immediate, hardcoded 1s cadence).
+/// `poll_interval_secs` (2026-07-09; previously an immediate, hardcoded 1s cadence; 20s
+/// as of 2026-07-11).
 fn spawn_resolution_watcher(
     http: reqwest::Client,
     slug: String,
@@ -982,7 +1009,7 @@ impl Driver<'_> {
                             slot.worker.asset.clone(),
                             slot.worker.strategy_name,
                             GammaPollCadence {
-                                deadline_secs: slot.params.reversal_start_time,
+                                deadline_secs: slot.params.gamma_poll_deadline_secs,
                                 poll_delay_secs: slot.params.gamma_poll_delay_secs,
                                 poll_interval_secs: slot.params.gamma_poll_interval_secs,
                             },
@@ -1072,7 +1099,7 @@ impl Driver<'_> {
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }
-                    // Gamma never resolved within reversal_start_time of the position
+                    // Gamma never resolved within gamma_poll_deadline_secs of the position
                     // closing — halt over guess (trader/doc/incident_DOGE_wrong_result_2026-07-09.md
                     // §4): the provisional record stands as logged, unverified, and new
                     // entries are suppressed until a human checks it and /resumes.
@@ -1084,7 +1111,7 @@ impl Driver<'_> {
                         self.notify(&format!(
                             "🔴 <b>{} GAMMA UNRESOLVED — HALTED</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). New entries suppressed until /resume; please verify manually.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
-                            record.slug, slot.params.reversal_start_time, record.outcome.as_str(),
+                            record.slug, slot.params.gamma_poll_deadline_secs, record.outcome.as_str(),
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
                         )).await;
                     }
@@ -1109,7 +1136,7 @@ impl Driver<'_> {
                         self.notify(&format!(
                             "🟠 <b>{} GAMMA UNRESOLVED — CONTINUING</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). Balance is up since last cycle's checkpoint, so not halting.{suffix} Please verify manually.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
-                            record.slug, slot.params.reversal_start_time, record.outcome.as_str(),
+                            record.slug, slot.params.gamma_poll_deadline_secs, record.outcome.as_str(),
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
                         )).await;
                     }
@@ -1445,12 +1472,18 @@ async fn main() -> Result<()> {
         .await;
 
     let balance_guard = BalanceGuard::new();
-    // Rolling cycle-over-cycle balance comparison for the Gamma-unresolved-timeout
-    // override (2026-07-09) — fed from the same periodic fetch as `balance_guard`
-    // below, no extra API calls. See `GammaBalanceTracker`'s own doc comment.
+    // Rolling cycle-over-cycle balance comparison — feeds both the Gamma-unresolved-
+    // timeout override (2026-07-09) and the scoped per-cycle balance-decrease halt
+    // (2026-07-11, trader/doc/plan_gammapi_2026-07-11.md) — fed from the same periodic
+    // fetch as `balance_guard` below, no extra API calls. See `GammaBalanceTracker`'s
+    // own doc comment.
     let gamma_balance = GammaBalanceTracker::new();
     let mut balance_deadline = tokio::time::Instant::now()
-        + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
+        + tokio::time::Duration::from_secs_f64(seconds_until_next_check(
+            now_secs_f64(),
+            args.balance_check_offset_secs,
+            args.period_secs,
+        ));
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1684,6 +1717,33 @@ async fn main() -> Result<()> {
             _ = tokio::time::sleep_until(balance_deadline) => {
                 let bal = engine.fetch_balance().await;
                 gamma_balance.record(bal);
+
+                // Scoped halt (2026-07-11, trader/doc/plan_gammapi_2026-07-11.md): balance
+                // dropped vs. last cycle's checkpoint while one or more asset+strategy slots
+                // still have a trade pending Gamma confirmation — halt only those, leave
+                // everything else trading. `increased() == Some(false)` requires two real
+                // samples to compare; `None` (startup, or a failed fetch) fails safe by not
+                // triggering this, same "unknown ⇒ don't act" convention as the Gamma-timeout
+                // override below.
+                if gamma_balance.increased() == Some(false) {
+                    let halted = confirming_asset_labels(assets.iter().map(|s| &s.worker));
+                    if !halted.is_empty() {
+                        println!(
+                            "[live] balance decreased vs last cycle's checkpoint — halting new entries on: {}",
+                            halted.join(", ")
+                        );
+                        for slot in assets.iter_mut().filter(|s| s.worker.is_confirming()) {
+                            slot.worker.step(Event::Balance(BalanceEvent::DrawdownHalt));
+                        }
+                        driver.notify(&format!(
+                            "🟡 <b>BALANCE DECREASED — SCOPED HALT</b>\nBalance dropped vs last cycle's checkpoint while {} still had a trade pending Gamma confirmation — halted new entries there only; other assets/strategies continue. Send /resume to re-arm.",
+                            halted.join(", ")
+                        )).await;
+                    }
+                }
+
+                // Coarse backstop, unchanged: a broad/systemic drawdown from the session-start
+                // baseline still halts everything, regardless of the scoped check above.
                 if balance_guard.check(bal) {
                     println!("[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries on all assets.");
                     for slot in assets.iter_mut() {
@@ -1695,7 +1755,11 @@ async fn main() -> Result<()> {
                     )).await;
                 }
                 balance_deadline = tokio::time::Instant::now()
-                    + tokio::time::Duration::from_secs_f64(seconds_until_next_check(now_secs_f64()));
+                    + tokio::time::Duration::from_secs_f64(seconds_until_next_check(
+                        now_secs_f64(),
+                        args.balance_check_offset_secs,
+                        args.period_secs,
+                    ));
             }
         }
     }
@@ -1965,5 +2029,133 @@ mod exchange_latency_tests {
             "got {process_latency_ms}"
         );
         assert!(process_latency_ms > latency_ms(received_ts, confirmed_ts));
+    }
+}
+
+#[cfg(test)]
+mod balance_halt_scope_tests {
+    use super::*;
+
+    fn test_params(asset: &str) -> AssetParams {
+        AssetParams {
+            asset: asset.to_string(),
+            strategies: vec!["reversal".to_string()],
+            enter_when_time_left: 20.0,
+            no_enter_when_time_left: 10.0,
+            reversal: 0.60,
+            reversal_low_threshold: 0.20,
+            reversal_start_time: 120.0,
+            gamma_poll_delay_secs: 60.0,
+            gamma_poll_interval_secs: 20.0,
+            gamma_poll_deadline_secs: 600.0,
+            price_high_rev: 0.90,
+            delta_pct_rev: 0.0008,
+            sl_reversal: 0.0,
+            unwind_pnl_rev: 0.03,
+            sl_pnl_rev: 0.20,
+            unwind_time_rev: 0.0,
+            price_low: 0.80,
+            price_high: 0.93,
+            delta_pct_hp: 0.0004,
+            sl_high_prob: 0.49,
+            unwind_pnl_hp: 0.05,
+            sl_pnl_hp: 0.25,
+            unwind_time_hp: 0.0,
+            halt_rev: 2,
+            halt_prob: 2,
+            halt_reset_hour_rev: 2,
+            halt_reset_hour_hp: 8,
+            max_buy_price: 0.95,
+            spread_premium_limit: 1.05,
+            spread_discount_limit: 0.95,
+            max_price_age_secs: 300.0,
+            trade_size_usdc: 1.0,
+        }
+    }
+
+    fn ctx(start: f64) -> CycleContext {
+        CycleContext {
+            start_ts: start,
+            end_ts: start + 300.0,
+            open_binance: 60_000.0,
+        }
+    }
+
+    /// Drives `w` from cycle-open through a filled DOWN reversal entry and a cycle
+    /// close into `Confirming` — same shape as worker.rs's own `enter_down_position` +
+    /// `CycleClose` test sequence, duplicated here (rather than exported) since it's
+    /// only needed to exercise `confirming_asset_labels`'s filtering, not the state
+    /// machine itself (already covered by worker.rs's own tests).
+    fn drive_to_confirming(w: &mut Worker, slug: &str) {
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: slug.to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::OrderFilled {
+            filled_shares: 10.0,
+            cost: 0.70,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        w.step(Event::CycleClose);
+        assert!(w.is_confirming(), "setup: expected {slug} to be Confirming");
+    }
+
+    #[test]
+    fn labels_only_confirming_workers() {
+        let eth_params = test_params("ETH");
+        let mut eth_hp = Worker::new_reversal("ETH", &eth_params);
+        drive_to_confirming(&mut eth_hp, "eth-updown-5m-1000");
+
+        let btc_params = test_params("BTC");
+        let btc_watching = Worker::new_reversal("BTC", &btc_params);
+
+        let workers = [&eth_hp, &btc_watching];
+        let halted = confirming_asset_labels(workers);
+        assert_eq!(halted, vec!["ETH/reversal".to_string()]);
+    }
+
+    #[test]
+    fn empty_when_nothing_pending() {
+        let btc_params = test_params("BTC");
+        let btc_watching = Worker::new_reversal("BTC", &btc_params);
+        let workers = [&btc_watching];
+        assert!(confirming_asset_labels(workers).is_empty());
+    }
+
+    #[test]
+    fn labels_every_concurrently_pending_worker() {
+        // Balance is account-wide — if two assets both have a trade pending Gamma at
+        // once, a single decrease can't be attributed to just one, so both are halted
+        // (trader/doc/plan_gammapi_2026-07-11.md §3).
+        let eth_params = test_params("ETH");
+        let mut eth_hp = Worker::new_reversal("ETH", &eth_params);
+        drive_to_confirming(&mut eth_hp, "eth-updown-5m-1000");
+
+        let doge_params = test_params("DOGE");
+        let mut doge_rev = Worker::new_reversal("DOGE", &doge_params);
+        drive_to_confirming(&mut doge_rev, "doge-updown-5m-1000");
+
+        let workers = [&eth_hp, &doge_rev];
+        let mut halted = confirming_asset_labels(workers);
+        halted.sort();
+        assert_eq!(
+            halted,
+            vec!["DOGE/reversal".to_string(), "ETH/reversal".to_string()]
+        );
     }
 }

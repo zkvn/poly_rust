@@ -45,6 +45,11 @@ pub struct StrategyToml {
     pub gamma_poll_delay_secs: HashMap<String, f64>,
     /// Retry cadence (seconds) once the watcher starts polling.
     pub gamma_poll_interval_secs: HashMap<String, f64>,
+    /// Give up (and report a timeout) this many seconds after the position
+    /// closed. Previously reused `reversal_start_time` for this; decoupled
+    /// 2026-07-11 (see `trader/doc/plan_gammapi_2026-07-11.md`) so the poll
+    /// window can be tuned independently of entry timing.
+    pub gamma_poll_deadline_secs: HashMap<String, f64>,
     pub price_high_rev: HashMap<String, f64>,
     pub sl_reversal: HashMap<String, f64>,
     pub unwind_pnl_rev: HashMap<String, f64>,
@@ -87,6 +92,7 @@ pub struct AssetParams {
     pub reversal_start_time: f64,
     pub gamma_poll_delay_secs: f64,
     pub gamma_poll_interval_secs: f64,
+    pub gamma_poll_deadline_secs: f64,
     pub price_high_rev: f64,
     pub delta_pct_rev: f64,
     pub sl_reversal: f64,
@@ -159,6 +165,11 @@ impl StrategyToml {
                 &self.gamma_poll_interval_secs,
                 asset,
                 "gamma_poll_interval_secs",
+            )?,
+            gamma_poll_deadline_secs: req(
+                &self.gamma_poll_deadline_secs,
+                asset,
+                "gamma_poll_deadline_secs",
             )?,
             price_high_rev: req(&self.price_high_rev, asset, "price_high_rev")?,
             delta_pct_rev: req(&self.delta_pct_rev, asset, "delta_pct_rev")?,
@@ -240,8 +251,11 @@ mod tests {
         assert!((p.unwind_time_hp - 30.0).abs() < 1e-9);
         // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
         // README's Gamma-halt section) — flat defaults, no per-asset override yet.
+        // gamma_poll_deadline_secs added 2026-07-11 (extended window, decoupled
+        // from reversal_start_time — see trader/doc/plan_gammapi_2026-07-11.md).
         assert!((p.gamma_poll_delay_secs - 60.0).abs() < 1e-9);
-        assert!((p.gamma_poll_interval_secs - 3.0).abs() < 1e-9);
+        assert!((p.gamma_poll_interval_secs - 20.0).abs() < 1e-9);
+        assert!((p.gamma_poll_deadline_secs - 600.0).abs() < 1e-9);
     }
 
     #[test]

@@ -540,6 +540,14 @@ impl Worker {
         )
     }
 
+    /// True while a closed trade's WIN/LOSS is still provisional, awaiting Gamma
+    /// confirmation — used to scope the per-cycle balance-decrease halt (2026-07-11,
+    /// `trader/doc/plan_gammapi_2026-07-11.md`) to only the asset+strategy that
+    /// actually has exposure pending resolution, instead of halting everything.
+    pub fn is_confirming(&self) -> bool {
+        matches!(self.state, WorkerState::Confirming(_))
+    }
+
     /// Current `(latest_binance - cycle_open) / cycle_open` — the live reading
     /// of the same gate signal `check_gates` uses, for status display.
     pub fn delta_pct(&self) -> f64 {
@@ -1445,7 +1453,8 @@ mod tests {
             reversal_low_threshold: 0.20,
             reversal_start_time: 120.0,
             gamma_poll_delay_secs: 60.0,
-            gamma_poll_interval_secs: 3.0,
+            gamma_poll_interval_secs: 20.0,
+            gamma_poll_deadline_secs: 600.0,
             price_high_rev: 0.90,
             delta_pct_rev: 0.0008,
             sl_reversal: 0.0,
@@ -2881,6 +2890,25 @@ mod tests {
             .unwrap();
         assert_eq!(record.outcome, Outcome::Win);
         assert!(matches!(w.state, WorkerState::Confirming(_)));
+    }
+
+    #[test]
+    fn is_confirming_true_only_while_awaiting_gamma() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        assert!(!w.is_confirming(), "fresh worker starts Watching");
+
+        enter_down_position(&mut w, 10.0);
+        assert!(
+            !w.is_confirming(),
+            "an open Holding position isn't Confirming"
+        );
+
+        w.step(Event::CycleClose); // -> Confirming(WIN)
+        assert!(w.is_confirming());
+
+        w.step(Event::ApiResult { won: true }); // Gamma confirms -> Watching
+        assert!(!w.is_confirming());
     }
 
     #[test]

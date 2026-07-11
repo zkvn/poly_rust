@@ -279,6 +279,19 @@ on the remote before the nightly sync runs.
   `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` (§0 for the first incident, §8 for
   phase 1, §10 for phase 2 as actually built) for the full story.
 
+- **`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
+  found 2026-07-11 while scoping the balance-decrease halt, not fixed (pre-existing,
+  out of scope).** `Worker::on_control`/`on_balance` (`worker.rs`) both return
+  `vec![Action::Persist]`, but every call site in `bin/live.rs` that fires
+  `Event::Control(..)` or `Event::Balance(..)` (`/halt`, `/resume`, the 25% drawdown guard,
+  and the new scoped balance-decrease halt) discards `.step()`'s return value instead of
+  acting on that `Action::Persist` — so the in-memory `entry_suppressed` flips immediately,
+  but the on-disk `live_state_<asset>_<strategy>.json` only catches up whenever some other
+  event next persists that slot (e.g. its next trade). A process restart in between would
+  silently lose the halt. Pattern is consistent across every one of these call sites (not
+  introduced by 2026-07-11's change), so left alone rather than bundled into an unrelated fix
+  — closing this would mean calling `persist(slot)` right after each of those `.step()` calls.
+
 </details>
 
 <details>
@@ -1633,6 +1646,41 @@ wiring explicitly stayed out of scope (Python kept separate from the live Rust p
    itself is unchanged and still marked unverified in the CSV/Telegram either way, so
    `trade_reconcile.py`'s independent daily Gamma cross-check still catches it the next
    day even if the live halt doesn't fire same-day.
+
+**Update (2026-07-11):** extended Gamma's window and scoped the balance-decrease halt to
+the specific asset+strategy involved, instead of process-wide. Full plan:
+`trader/doc/plan_gammapi_2026-07-11.md`.
+
+1. **Gamma deadline decoupled from `reversal_start_time`, extended to 10 minutes.**
+   `gamma_poll_deadline_secs` is now its own `strategy_*.toml` field (default `600`,
+   same per-asset/`default`-fallback shape as the other two Gamma fields) rather than
+   reusing `reversal_start_time` (120s). `gamma_poll_delay_secs` is unchanged (still 60s
+   before the first poll); `gamma_poll_interval_secs`'s default moved from 3s to 20s. A
+   `Confirming` position already survives a cycle boundary if Gamma is still unresolved
+   when the next cycle opens (see the 2026-07-09 fix above), so the longer window doesn't
+   require any change to that machinery — it just gives Gamma more real time before the
+   watcher gives up and halts for manual review.
+2. **New scoped balance-decrease halt, additive to the existing 25% global guard.** The
+   existing `BalanceGuard` (halts every asset/strategy process-wide if balance drops >25%
+   from the session-start baseline) stays as-is, as a coarse backstop. New: at the same
+   per-cycle checkpoint (now config-driven — `--balance-check-offset-secs`, default 120,
+   was a hardcoded const in `balance.rs`), if `GammaBalanceTracker` shows balance dropped
+   vs. the *previous* cycle's checkpoint, `bin/live.rs` halts only the `AssetSlot`s
+   currently `Worker::is_confirming()` (a trade whose WIN/LOSS is still awaiting Gamma) —
+   e.g. if only ETH `high_prob` has a trade pending, only ETH `high_prob` halts; every
+   other asset/strategy keeps trading. If two or more assets/strategies have a trade
+   pending at the same checkpoint, a single account-wide balance sample can't attribute
+   the drop to just one, so every currently-pending one halts (still not literally "the
+   whole thing" — idle slots are untouched). If balance is up instead, no halt — the
+   pending trade(s) keep being polled exactly as before, all the way to
+   `gamma_poll_deadline_secs`.
+3. **Gamma status reporting was already "quiet unless it matters."** Re-verified against
+   this change rather than modified: a clean Gamma confirmation (agrees with the
+   provisional Binance-based result) has only ever logged to `live.log`
+   (`Action::ApiResultNote`), never Telegram; a mismatch (`Action::LogTradeCorrection`)
+   and a deadline timeout (`Action::GammaHaltEngaged`/`GammaUnresolvedContinued`) have
+   always sent a Telegram alert. Only the displayed window in the timeout message's text
+   changed, from `reversal_start_time` to `gamma_poll_deadline_secs`.
 
 ### `/halt`/`/resume` can now scope to one strategy, not just one asset (2026-07-10, added)
 

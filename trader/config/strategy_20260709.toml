@@ -101,15 +101,19 @@ default = 0.9
 [reversal_start_time]
 default = 120
 
-# Gamma resolution watcher cadence (2026-07-09) — Gamma "usually won't give you
+# Gamma resolution watcher cadence (2026-07-09; window extended 2026-07-11, see
+# trader/doc/plan_gammapi_2026-07-11.md) — Gamma "usually won't give you
 # anything until 20-60s after cycle end" (see incident_DOGE_wrong_result doc),
 # so don't start polling immediately; wait gamma_poll_delay_secs, then retry
-# every gamma_poll_interval_secs until reversal_start_time's deadline.
+# every gamma_poll_interval_secs until gamma_poll_deadline_secs gives up.
 [gamma_poll_delay_secs]
 default = 60
 
 [gamma_poll_interval_secs]
-default = 3
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
 
 # --- High-prob strategy — full-history top win rate (studies/unwind_safely/results/full_history_*_20260708_180120.md) ---
 # Top Win Rate per Asset:

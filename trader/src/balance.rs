@@ -9,8 +9,6 @@
 use std::sync::Mutex;
 
 const DRAWDOWN_LIMIT: f64 = 0.25;
-const CHECK_OFFSET_SECS: u64 = 120;
-const WINDOW_SECS: u64 = 300;
 
 struct GuardState {
     initial_balance: Option<f64>,
@@ -133,13 +131,17 @@ impl Default for GammaBalanceTracker {
     }
 }
 
-/// Seconds to sleep until the next check point (window_start + 120s), matching
-/// `_sleep_to_next_check`. `now` and the result are both Unix seconds.
-pub fn seconds_until_next_check(now: f64) -> f64 {
-    let window_start = ((now as u64) / WINDOW_SECS) * WINDOW_SECS;
-    let mut check_time = window_start + CHECK_OFFSET_SECS;
+/// Seconds to sleep until the next check point (window_start + offset_secs), matching
+/// `_sleep_to_next_check`. `now` and the result are both Unix seconds. `offset_secs`
+/// and `window_secs` were hardcoded (120/300) until 2026-07-11 — now sourced from
+/// config/CLI (`--balance-check-offset-secs`, `--period-secs`) so the balance
+/// checkpoint can be tuned without a rebuild — see
+/// `trader/doc/plan_gammapi_2026-07-11.md`.
+pub fn seconds_until_next_check(now: f64, offset_secs: u64, window_secs: u64) -> f64 {
+    let window_start = ((now as u64) / window_secs) * window_secs;
+    let mut check_time = window_start + offset_secs;
     if (check_time as f64) <= now {
-        check_time += WINDOW_SECS as u32 as u64;
+        check_time += window_secs;
     }
     check_time as f64 - now
 }
@@ -198,18 +200,31 @@ mod tests {
     #[test]
     fn check_offset_math() {
         // window starts at t=1000*300=300000... use a concrete example instead.
-        let window_start = 1_782_000_000u64 / WINDOW_SECS * WINDOW_SECS;
+        let window_start = 1_782_000_000u64 / 300 * 300;
         let now = window_start as f64 + 10.0; // 10s into the window
-        let secs = seconds_until_next_check(now);
+        let secs = seconds_until_next_check(now, 120, 300);
         assert!((secs - 110.0).abs() < 1e-9); // 120 - 10
     }
 
     #[test]
     fn check_offset_wraps_to_next_window_if_past_checkpoint() {
-        let window_start = 1_782_000_000u64 / WINDOW_SECS * WINDOW_SECS;
+        let window_start = 1_782_000_000u64 / 300 * 300;
         let now = window_start as f64 + 200.0; // past the +120s checkpoint
-        let secs = seconds_until_next_check(now);
+        let secs = seconds_until_next_check(now, 120, 300);
         assert!((secs - 220.0).abs() < 1e-9); // (300+120) - 200
+    }
+
+    #[test]
+    fn check_offset_math_with_non_default_params() {
+        // Same shape, different offset/window, to prove these are no longer hardcoded.
+        let window_start = 1_782_000_000u64 / 600 * 600;
+        let now = window_start as f64 + 30.0; // 30s into a 600s window
+        let secs = seconds_until_next_check(now, 200, 600);
+        assert!((secs - 170.0).abs() < 1e-9); // 200 - 30
+
+        let now_past = window_start as f64 + 250.0; // past the +200s checkpoint
+        let secs_past = seconds_until_next_check(now_past, 200, 600);
+        assert!((secs_past - 550.0).abs() < 1e-9); // (600+200) - 250
     }
 
     #[test]
