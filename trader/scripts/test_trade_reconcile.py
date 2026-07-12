@@ -131,6 +131,50 @@ class LoadCycleOpenPricesTests(unittest.TestCase):
             out = mod.load_cycle_open_prices(["ETH"], ["2026-07-11"], Path(d))
         self.assertEqual(out, {})
 
+    def test_stale_echo_tick_from_previous_cycle_is_skipped(self):
+        """Regression test for the 2026-07-12 +15000% Entry Delta bug:
+        doge-updown-5m-1783785600's first recorded tick was an exact
+        carry-over of the prior cycle's near-resolution price (dn=0.005),
+        relabeled with the new slug 0.2s before the feed caught up to the
+        real ~50/50 open (dn=0.405). The echo must be skipped so "cycle
+        open" reflects the genuine open, not the echo."""
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as d:
+            prices_dir = Path(d)
+            df = pd.DataFrame({
+                "ts": [1000.0, 1001.0, 1003.8, 1004.0, 1004.2],
+                "up": [0.995, 0.995, 0.995, 0.595, 0.595],
+                "dn": [0.005, 0.005, 0.005, 0.405, 0.405],
+                "slug": ["doge-updown-5m-700", "doge-updown-5m-700",
+                         "doge-updown-5m-1000", "doge-updown-5m-1000", "doge-updown-5m-1000"],
+            })
+            df.to_parquet(prices_dir / "DOGE_poly_2026-07-12.parquet", index=False)
+            out = mod.load_cycle_open_prices(["DOGE"], ["2026-07-12"], prices_dir)
+        self.assertEqual(out["doge-updown-5m-1000"], {"UP": 0.595, "DOWN": 0.405})
+        # the earlier cycle's own genuine open (not itself an echo) is untouched
+        self.assertEqual(out["doge-updown-5m-700"], {"UP": 0.995, "DOWN": 0.005})
+
+    def test_slug_with_only_a_single_echoed_tick_drops_out_cleanly(self):
+        """At most one leading row per slug can ever be flagged as an echo
+        (only the first row of a group can differ-slug-from-previous), so
+        the only way a slug disappears entirely from the output is if it
+        has exactly one recorded tick and that tick is an echo. Must
+        degrade to "missing from the dict" (→ "—" in the report), not
+        crash groupby on an empty group."""
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as d:
+            prices_dir = Path(d)
+            df = pd.DataFrame({
+                "ts": [1000.0, 1003.0],
+                "up": [0.50, 0.50],
+                "dn": [0.50, 0.50],
+                "slug": ["eth-updown-5m-700", "eth-updown-5m-1000"],
+            })
+            df.to_parquet(prices_dir / "ETH_poly_2026-07-12.parquet", index=False)
+            out = mod.load_cycle_open_prices(["ETH"], ["2026-07-12"], prices_dir)
+        self.assertNotIn("eth-updown-5m-1000", out)
+        self.assertEqual(out["eth-updown-5m-700"], {"UP": 0.50, "DOWN": 0.50})
+
 
 class SafeLoadCycleOpenPricesTests(unittest.TestCase):
     def test_never_raises_even_if_the_inner_function_blows_up(self):

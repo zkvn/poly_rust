@@ -562,11 +562,22 @@ def parse_backtest_csv(csv_text: str, asset: str) -> list:
 
 
 def load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
-    """slug -> {"UP": price, "DOWN": price} taken from the earliest poly tick
-    per slug (closest sample to cycle open) in the same local
+    """slug -> {"UP": price, "DOWN": price} taken from the earliest *genuine*
+    poly tick per slug (closest sample to cycle open) in the same local
     {asset}_poly_{date}.parquet files run_backtest_reconciliation already
     builds/syncs for the BT replay — reuses that data instead of making any
-    extra network calls just for the Entry Δ% column."""
+    extra network calls just for the Entry Δ% column.
+
+    A new cycle's very first recorded tick is occasionally a one-tick stale
+    echo of the *previous* cycle's near-resolution price, relabeled with the
+    new slug a fraction of a second before the feed catches up to the real
+    ~50/50 open — found 2026-07-12 via `doge-updown-5m-1783785600`, whose
+    first tick was up=0.995/dn=0.005 (an exact carry-over of the prior
+    cycle's last tick) with the genuine open (0.595/0.405) landing 0.2s
+    later. Using that echo as "cycle open" blew up Entry Δ% to +15000% for a
+    trade whose real open was nowhere near zero. Detected and dropped here:
+    a row is a stale echo iff its (up, dn) exactly matches the immediately
+    preceding row's (which belongs to a different, earlier slug)."""
     import pandas as pd
     out: dict = {}
     for asset in assets:
@@ -580,7 +591,13 @@ def load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
                 continue
             if df.empty:
                 continue
-            first = df.sort_values("ts").groupby("slug", as_index=False).first()
+            df = df.sort_values("ts").reset_index(drop=True)
+            is_stale_echo = (
+                (df["slug"] != df["slug"].shift(1))
+                & (df["up"] == df["up"].shift(1))
+                & (df["dn"] == df["dn"].shift(1))
+            )
+            first = df[~is_stale_echo].groupby("slug", as_index=False).first()
             for _, row in first.iterrows():
                 out[row["slug"]] = {"UP": float(row["up"]), "DOWN": float(row["dn"])}
     return out
