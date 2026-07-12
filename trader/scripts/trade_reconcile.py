@@ -561,28 +561,29 @@ def parse_backtest_csv(csv_text: str, asset: str) -> list:
     return rows
 
 
-def load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
-    """slug -> {"UP": price, "DOWN": price} taken from the earliest *genuine*
-    poly tick per slug (closest sample to cycle open) in the same local
-    {asset}_poly_{date}.parquet files run_backtest_reconciliation already
+def load_underlying_price_series(assets: list, dates: list, prices_dir: Path) -> dict:
+    """slug -> time-sorted [(ts, binance_price), ...] from the same local
+    {asset}_binance_{date}.parquet files run_backtest_reconciliation already
     builds/syncs for the BT replay — reuses that data instead of making any
-    extra network calls just for the Entry Δ% column.
+    extra network calls just for the Δ% columns.
 
-    A new cycle's very first recorded tick is occasionally a one-tick stale
-    echo of the *previous* cycle's near-resolution price, relabeled with the
-    new slug a fraction of a second before the feed catches up to the real
-    ~50/50 open — found 2026-07-12 via `doge-updown-5m-1783785600`, whose
-    first tick was up=0.995/dn=0.005 (an exact carry-over of the prior
-    cycle's last tick) with the genuine open (0.595/0.405) landing 0.2s
-    later. Using that echo as "cycle open" blew up Entry Δ% to +15000% for a
-    trade whose real open was nowhere near zero. Detected and dropped here:
-    a row is a stale echo iff its (up, dn) exactly matches the immediately
-    preceding row's (which belongs to a different, earlier slug)."""
+    Entry Δ%/Cycle Δ% originally used the CLOB (Polymarket order-book)
+    price — i.e. an implied probability in [0, 1] — as both numerator and
+    denominator. That's the wrong price entirely: see
+    trader/doc/incident_delta_pct_2026-07-12.md. A probability swinging from
+    0.44 to 0.95 is a real, large *probability* move but says nothing about
+    how far the actual asset moved, and trends toward the [0, 1] boundary
+    near cycle close regardless of the underlying's magnitude — that's what
+    produced deltas like +113% or +15000% for assets that only move
+    fractions of a percent in 5 minutes. The underlying (Binance) price is
+    the quantity these two columns should have been measuring all along:
+    it's also literally what the Polymarket "updown" market resolves
+    against (price at cycle close vs. price at cycle open)."""
     import pandas as pd
     out: dict = {}
     for asset in assets:
         for date in dates:
-            path = prices_dir / f"{asset}_poly_{date}.parquet"
+            path = prices_dir / f"{asset}_binance_{date}.parquet"
             if not path.exists():
                 continue
             try:
@@ -591,27 +592,41 @@ def load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
                 continue
             if df.empty:
                 continue
-            df = df.sort_values("ts").reset_index(drop=True)
-            is_stale_echo = (
-                (df["slug"] != df["slug"].shift(1))
-                & (df["up"] == df["up"].shift(1))
-                & (df["dn"] == df["dn"].shift(1))
-            )
-            first = df[~is_stale_echo].groupby("slug", as_index=False).first()
-            for _, row in first.iterrows():
-                out[row["slug"]] = {"UP": float(row["up"]), "DOWN": float(row["dn"])}
+            for slug, group in df.sort_values("ts").groupby("slug"):
+                out.setdefault(slug, []).extend(
+                    zip(group["ts"].tolist(), group["binance"].tolist())
+                )
+    for slug, ticks in out.items():
+        ticks.sort(key=lambda p: p[0])
     return out
 
 
-def _safe_load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
+def _safe_load_underlying_price_series(assets: list, dates: list, prices_dir: Path) -> dict:
     """Same defensive-by-design rule as the rest of the BT reconciliation
-    pipeline: a missing/corrupt price file must degrade the Entry Δ% column
-    to "—", never take down the report."""
+    pipeline: a missing/corrupt price file must degrade the Δ% columns to
+    "—", never take down the report."""
     try:
-        return load_cycle_open_prices(assets, dates, prices_dir)
+        return load_underlying_price_series(assets, dates, prices_dir)
     except Exception as e:
-        console.print(f"[yellow]⚠ Could not load cycle-open prices for Entry Δ%: {e}[/yellow]")
+        console.print(f"[yellow]⚠ Could not load underlying price series for Δ% columns: {e}[/yellow]")
         return {}
+
+
+def _underlying_price_at(ticks: list, ts: Optional[float]) -> Optional[float]:
+    """Price of the tick nearest `ts` (by |Δt|) in a time-sorted [(ts, price), ...]
+    series, or None if there are no ticks (missing local price data — e.g. HYPE
+    has no Binance market) or no target timestamp."""
+    if not ticks or not ts:
+        return None
+    return min(ticks, key=lambda p: abs(p[0] - ts))[1]
+
+
+def _cycle_open_close(ticks: list) -> tuple:
+    """(open_price, close_price) — first/last tick in a time-sorted
+    [(ts, price), ...] series, or (None, None) if empty."""
+    if not ticks:
+        return None, None
+    return ticks[0][1], ticks[-1][1]
 
 
 def filter_bt_rows_to_window(rows: list, from_ts: float, to_ts: float) -> list:
@@ -639,7 +654,7 @@ def _normalize_live_rows(rows: list) -> list:
 
 
 def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
-                      cycle_open_prices: Optional[dict] = None) -> tuple:
+                      underlying_prices: Optional[dict] = None) -> tuple:
     """One row per live trade: does the backtest agree?
 
     Status classification:
@@ -649,7 +664,7 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
       BT DID NOT FIRE  - bt had price data for the asset but skipped the cycle
       NO PRICE DATA    - bt couldn't run at all for this asset/date
     """
-    cycle_open_prices = cycle_open_prices or {}
+    underlying_prices = underlying_prices or {}
     bt_lookup: dict = {}
     for r in bt_rows:
         bt_lookup.setdefault((r["slug"], r["side"]), r)
@@ -664,15 +679,15 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
         bt_same = bt_lookup.get((lt["slug"], lt["side"]))
         bt_opp = bt_lookup.get((lt["slug"], opp_side))
 
-        entry_price = lt.get("token_price")
-        exit_price = lt.get("exit_price")
-        open_price = cycle_open_prices.get(lt["slug"], {}).get(lt["side"])
+        ticks = underlying_prices.get(lt["slug"], [])
+        open_p, close_p = _cycle_open_close(ticks)
+        entry_p = _underlying_price_at(ticks, lt.get("entry_ts"))
         extra = {
             "entry_time": t_minus_str(lt["slug"], lt.get("entry_ts")),
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "cycle_delta_pct": _pct_change(entry_price, exit_price),
-            "entry_delta_pct": _pct_change(open_price, entry_price),
+            "entry_price": lt.get("token_price"),
+            "exit_price": lt.get("exit_price"),
+            "cycle_delta_pct": _pct_change(open_p, close_p),
+            "entry_delta_pct": _pct_change(open_p, entry_p),
         }
 
         if bt_same:
@@ -709,31 +724,31 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
     return table, summary
 
 
-def build_bt_vs_live(bt_rows: list, live_rows: list, cycle_open_prices: Optional[dict] = None) -> list:
+def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional[dict] = None) -> list:
     """Cycles the backtest fired but live did not trade at all (either side).
 
     A live trade on the *opposite* side of a bt-fired cycle already shows up
     as SIDE DIFF in the Live vs BT table, so this only needs to exclude
     slugs live touched on any side — not check side equality itself.
     """
-    cycle_open_prices = cycle_open_prices or {}
+    underlying_prices = underlying_prices or {}
     live_slugs = {lt["slug"] for lt in live_rows}
     missed = []
     for r in bt_rows:
         if r["slug"] in live_slugs:
             continue
-        entry_price = r.get("token_price")
-        exit_price = r.get("exit_price")
-        open_price = cycle_open_prices.get(r["slug"], {}).get(r["side"])
+        ticks = underlying_prices.get(r["slug"], [])
+        open_p, close_p = _cycle_open_close(ticks)
+        entry_p = _underlying_price_at(ticks, r.get("entry_ts"))
         missed.append({
             "time": datetime.fromtimestamp(r["cycle_ts"], tz=HKT).strftime("%Y-%m-%d %H:%M:%S") if r["cycle_ts"] else "",
             "asset": r["asset"], "strategy": r["strategy"], "side": r["side"],
             "outcome": r["outcome"], "pnl": r["pnl"],
             "entry_time": t_minus_str(r["slug"], r.get("entry_ts")),
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "cycle_delta_pct": _pct_change(entry_price, exit_price),
-            "entry_delta_pct": _pct_change(open_price, entry_price),
+            "entry_price": r.get("token_price"),
+            "exit_price": r.get("exit_price"),
+            "cycle_delta_pct": _pct_change(open_p, close_p),
+            "entry_delta_pct": _pct_change(open_p, entry_p),
         })
     missed.sort(key=lambda x: x["time"])
     return missed
@@ -834,10 +849,10 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
 
     bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start.timestamp(), window_end.timestamp())
     live_norm = _normalize_live_rows(annotated_live_rows)
-    cycle_open_prices = _safe_load_cycle_open_prices(assets, dates, BACKTEST_PRICES_DIR)
+    underlying_prices = _safe_load_underlying_price_series(assets, dates, BACKTEST_PRICES_DIR)
 
-    live_vs_bt_rows, bt_summary = build_live_vs_bt(live_norm, bt_in_window, assets_with_data, cycle_open_prices)
-    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm, cycle_open_prices)
+    live_vs_bt_rows, bt_summary = build_live_vs_bt(live_norm, bt_in_window, assets_with_data, underlying_prices)
+    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm, underlying_prices)
 
     return live_vs_bt_rows, bt_summary, bt_vs_live_rows
 
@@ -883,11 +898,18 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
     lines.append(
         "**Entry Time** is T-seconds-before-cycle-close at the moment of entry "
         "(same convention as worker.rs's live \"T-Ns\" heartbeat logs). "
-        "**Cycle Δ%** is the held token's own price move, entry→exit "
-        "(`(exit − entry) / entry`). **Entry Δ%** is how far the price had "
-        "already moved from cycle open to the moment of entry "
-        "(`(entry − cycle_open) / cycle_open`) — how much signal had built up "
-        "before the trade was placed."
+        "**Entry Px**/**Exit Px** are the actual CLOB (Polymarket order-book) "
+        "prices traded. **Cycle Δ%** and **Entry Δ%**, by contrast, are computed "
+        "from the *underlying* (Binance) asset price, not CLOB — a CLOB "
+        "probability swinging from 0.44 to 0.95 isn't a meaningful \"price "
+        "move,\" it's just the market pricing in a near-certain outcome; see "
+        "`trader/doc/incident_delta_pct_2026-07-12.md`. **Cycle Δ%** is the "
+        "underlying's move over the whole cycle, open→close "
+        "(`(close − open) / open`) — this is literally what the market "
+        "resolves against. **Entry Δ%** is how far the underlying had already "
+        "moved from cycle open to the moment of entry "
+        "(`(entry − cycle_open) / cycle_open`) — how much of that move had "
+        "already happened before the trade was placed."
     )
     lines.append("")
     if live_vs_bt_rows:

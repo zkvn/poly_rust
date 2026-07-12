@@ -298,6 +298,26 @@ on the remote before the nightly sync runs.
   Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
   doesn't get lost.
 
+- **`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-11 00:00 —
+  found 2026-07-12, URGENT, not investigated (out of scope for that task).** Found while
+  verifying the Entry Δ%/Cycle Δ% underlying-price fix
+  (`trader/doc/incident_delta_pct_2026-07-12.md`): minute-coverage of both `{asset}_binance_*` and
+  `{asset}_poly_*` local data (checksum-confirmed identical to Oracle's own copy — not a sync
+  issue) drops from ~93% on 2026-07-10 to **~14-15%** on 2026-07-11 and 2026-07-12, for every
+  asset checked (ETH/DOGE/BTC) — a collector-wide problem, not per-asset. Pattern: most hourly raw
+  files (`price_feed/raw/{asset}_{binance,poly}_{date}_{HH}.parquet`) now contain data for only
+  the last ~10-60s of their hour (e.g. `ETH_binance_2026-07-12_10.parquet`, checked
+  2026-07-12 ~12:00 HKT, has 96 rows covering just 10:59:36–10:59:59) — consistent with the
+  collector stalling for most of every hour and only catching up right at/after the hourly
+  rotation. **Still actively happening as of this write-up.** This directly starves the live
+  trader's own price feed (not just backtest replay data), and independently explains at least
+  some of the "BT DID NOT FIRE" rows in `trader/doc/incident_bt_vs_live_discrepancy_2026-07-12.md`
+  (a tick-sparse cycle gives the backtest replay far fewer chances to observe an entry condition)
+  on top of that doc's balance-halt finding. Needs Oracle-side collector process
+  logs/journalctl to root-cause (crash-loop? stuck reconnect? resource exhaustion?) — not done
+  here since that's `price_feed`-collector-internals territory, not `trader`/reconciliation-script
+  territory, and touches the live collector process.
+
 </details>
 
 <details>

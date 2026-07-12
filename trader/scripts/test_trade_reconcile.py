@@ -111,76 +111,57 @@ class FmtHelpersTests(unittest.TestCase):
         self.assertEqual(mod._fmt_price(None), "—")
 
 
-class LoadCycleOpenPricesTests(unittest.TestCase):
-    def test_reads_earliest_tick_per_slug(self):
+class LoadUnderlyingPriceSeriesTests(unittest.TestCase):
+    """Regression coverage for incident_delta_pct_2026-07-13.md: Entry Δ%/
+    Cycle Δ% must be computed from the underlying (Binance) asset price,
+    not the CLOB (Polymarket order-book) probability price."""
+
+    def test_reads_and_sorts_ticks_per_slug(self):
         import pandas as pd
         with tempfile.TemporaryDirectory() as d:
             prices_dir = Path(d)
             df = pd.DataFrame({
                 "ts": [1005.0, 1000.0, 1002.0],
-                "up": [0.60, 0.50, 0.55],
-                "dn": [0.40, 0.50, 0.45],
+                "binance": [1801.0, 1800.0, 1800.5],
                 "slug": ["eth-updown-5m-1000"] * 3,
             })
-            df.to_parquet(prices_dir / "ETH_poly_2026-07-11.parquet", index=False)
-            out = mod.load_cycle_open_prices(["ETH"], ["2026-07-11"], prices_dir)
-        self.assertEqual(out["eth-updown-5m-1000"], {"UP": 0.50, "DOWN": 0.50})
+            df.to_parquet(prices_dir / "ETH_binance_2026-07-11.parquet", index=False)
+            out = mod.load_underlying_price_series(["ETH"], ["2026-07-11"], prices_dir)
+        self.assertEqual(out["eth-updown-5m-1000"],
+                          [(1000.0, 1800.0), (1002.0, 1800.5), (1005.0, 1801.0)])
 
     def test_missing_file_is_skipped_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
-            out = mod.load_cycle_open_prices(["ETH"], ["2026-07-11"], Path(d))
+            out = mod.load_underlying_price_series(["ETH"], ["2026-07-11"], Path(d))
         self.assertEqual(out, {})
 
-    def test_stale_echo_tick_from_previous_cycle_is_skipped(self):
-        """Regression test for the 2026-07-12 +15000% Entry Delta bug:
-        doge-updown-5m-1783785600's first recorded tick was an exact
-        carry-over of the prior cycle's near-resolution price (dn=0.005),
-        relabeled with the new slug 0.2s before the feed caught up to the
-        real ~50/50 open (dn=0.405). The echo must be skipped so "cycle
-        open" reflects the genuine open, not the echo."""
-        import pandas as pd
-        with tempfile.TemporaryDirectory() as d:
-            prices_dir = Path(d)
-            df = pd.DataFrame({
-                "ts": [1000.0, 1001.0, 1003.8, 1004.0, 1004.2],
-                "up": [0.995, 0.995, 0.995, 0.595, 0.595],
-                "dn": [0.005, 0.005, 0.005, 0.405, 0.405],
-                "slug": ["doge-updown-5m-700", "doge-updown-5m-700",
-                         "doge-updown-5m-1000", "doge-updown-5m-1000", "doge-updown-5m-1000"],
-            })
-            df.to_parquet(prices_dir / "DOGE_poly_2026-07-12.parquet", index=False)
-            out = mod.load_cycle_open_prices(["DOGE"], ["2026-07-12"], prices_dir)
-        self.assertEqual(out["doge-updown-5m-1000"], {"UP": 0.595, "DOWN": 0.405})
-        # the earlier cycle's own genuine open (not itself an echo) is untouched
-        self.assertEqual(out["doge-updown-5m-700"], {"UP": 0.995, "DOWN": 0.005})
 
-    def test_slug_with_only_a_single_echoed_tick_drops_out_cleanly(self):
-        """At most one leading row per slug can ever be flagged as an echo
-        (only the first row of a group can differ-slug-from-previous), so
-        the only way a slug disappears entirely from the output is if it
-        has exactly one recorded tick and that tick is an echo. Must
-        degrade to "missing from the dict" (→ "—" in the report), not
-        crash groupby on an empty group."""
-        import pandas as pd
-        with tempfile.TemporaryDirectory() as d:
-            prices_dir = Path(d)
-            df = pd.DataFrame({
-                "ts": [1000.0, 1003.0],
-                "up": [0.50, 0.50],
-                "dn": [0.50, 0.50],
-                "slug": ["eth-updown-5m-700", "eth-updown-5m-1000"],
-            })
-            df.to_parquet(prices_dir / "ETH_poly_2026-07-12.parquet", index=False)
-            out = mod.load_cycle_open_prices(["ETH"], ["2026-07-12"], prices_dir)
-        self.assertNotIn("eth-updown-5m-1000", out)
-        self.assertEqual(out["eth-updown-5m-700"], {"UP": 0.50, "DOWN": 0.50})
-
-
-class SafeLoadCycleOpenPricesTests(unittest.TestCase):
+class SafeLoadUnderlyingPriceSeriesTests(unittest.TestCase):
     def test_never_raises_even_if_the_inner_function_blows_up(self):
-        with patch.object(mod, "load_cycle_open_prices", side_effect=RuntimeError("boom")):
-            out = mod._safe_load_cycle_open_prices(["ETH"], ["2026-07-11"], Path("/tmp"))
+        with patch.object(mod, "load_underlying_price_series", side_effect=RuntimeError("boom")):
+            out = mod._safe_load_underlying_price_series(["ETH"], ["2026-07-11"], Path("/tmp"))
         self.assertEqual(out, {})
+
+
+class UnderlyingPriceAtTests(unittest.TestCase):
+    def test_returns_nearest_tick_by_absolute_time_delta(self):
+        ticks = [(1000.0, 100.0), (1010.0, 110.0), (1020.0, 120.0)]
+        self.assertEqual(mod._underlying_price_at(ticks, 1011.0), 110.0)
+        self.assertEqual(mod._underlying_price_at(ticks, 1004.0), 100.0)
+
+    def test_none_when_no_ticks_or_no_target_ts(self):
+        self.assertIsNone(mod._underlying_price_at([], 1000.0))
+        self.assertIsNone(mod._underlying_price_at([(1000.0, 100.0)], None))
+        self.assertIsNone(mod._underlying_price_at([(1000.0, 100.0)], 0.0))
+
+
+class CycleOpenCloseTests(unittest.TestCase):
+    def test_returns_first_and_last_tick(self):
+        ticks = [(1000.0, 100.0), (1010.0, 110.0), (1020.0, 120.0)]
+        self.assertEqual(mod._cycle_open_close(ticks), (100.0, 120.0))
+
+    def test_none_none_when_empty(self):
+        self.assertEqual(mod._cycle_open_close([]), (None, None))
 
 
 class FilterBtRowsToWindowTests(unittest.TestCase):
@@ -270,26 +251,34 @@ class BuildLiveVsBtTests(unittest.TestCase):
         self.assertAlmostEqual(summary["total_live_pnl"], 0.3)
         self.assertAlmostEqual(summary["total_bt_pnl"], 0.05)
 
-    def test_entry_exit_and_delta_columns_computed_from_live_row(self):
+    def test_entry_exit_and_delta_columns_computed_from_underlying_price(self):
+        """Entry Δ%/Cycle Δ% must come from the underlying (Binance) price
+        series, not the trade's own CLOB token_price/exit_price — see
+        incident_delta_pct_2026-07-13.md. Entry Px/Exit Px stay CLOB."""
         live = self._live(slug="eth-updown-5m-1000")
         live["entry_ts"] = 1291.0  # T-9s
-        live["token_price"] = 0.93
+        live["token_price"] = 0.93  # CLOB — shown as-is, not used for Δ%
         live["exit_price"] = 1.0
-        cycle_open_prices = {"eth-updown-5m-1000": {"UP": 0.50, "DOWN": 0.50}}
+        underlying_prices = {"eth-updown-5m-1000": [
+            (1000.0, 1800.0),   # cycle open
+            (1291.0, 1801.44),  # exact entry_ts tick
+            (1300.0, 1802.0),   # cycle close
+        ]}
         table, _ = mod.build_live_vs_bt([live], [self._bt(slug="eth-updown-5m-1000")], {"ETH"},
-                                         cycle_open_prices)
+                                         underlying_prices)
         r = table[0]
         self.assertEqual(r["entry_time"], "T-9s")
         self.assertAlmostEqual(r["entry_price"], 0.93)
         self.assertAlmostEqual(r["exit_price"], 1.0)
-        self.assertAlmostEqual(r["cycle_delta_pct"], (1.0 - 0.93) / 0.93 * 100)
-        self.assertAlmostEqual(r["entry_delta_pct"], (0.93 - 0.50) / 0.50 * 100)
+        self.assertAlmostEqual(r["cycle_delta_pct"], (1802.0 - 1800.0) / 1800.0 * 100)
+        self.assertAlmostEqual(r["entry_delta_pct"], (1801.44 - 1800.0) / 1800.0 * 100)
 
-    def test_entry_delta_is_none_without_cycle_open_price_data(self):
+    def test_deltas_are_none_without_underlying_price_data(self):
         live = self._live()
         live["token_price"] = 0.93
         table, _ = mod.build_live_vs_bt([live], [self._bt()], {"ETH"})
         self.assertIsNone(table[0]["entry_delta_pct"])
+        self.assertIsNone(table[0]["cycle_delta_pct"])
 
 
 class BuildBtVsLiveTests(unittest.TestCase):
@@ -319,18 +308,20 @@ class BuildBtVsLiveTests(unittest.TestCase):
         live = [{"slug": "s1", "side": "DOWN"}]
         self.assertEqual(mod.build_bt_vs_live(bt, live), [])
 
-    def test_entry_exit_and_delta_columns_computed_from_bt_row(self):
+    def test_entry_exit_and_delta_columns_computed_from_underlying_price(self):
         bt = [{"asset": "ETH", "slug": "eth-updown-5m-1000", "strategy": "high_prob",
                "side": "UP", "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1000.0,
                "entry_ts": 1291.0, "token_price": 0.93, "exit_price": 1.0}]
-        cycle_open_prices = {"eth-updown-5m-1000": {"UP": 0.50, "DOWN": 0.50}}
-        missed = mod.build_bt_vs_live(bt, live_rows=[], cycle_open_prices=cycle_open_prices)
+        underlying_prices = {"eth-updown-5m-1000": [
+            (1000.0, 1800.0), (1291.0, 1801.44), (1300.0, 1802.0),
+        ]}
+        missed = mod.build_bt_vs_live(bt, live_rows=[], underlying_prices=underlying_prices)
         r = missed[0]
         self.assertEqual(r["entry_time"], "T-9s")
         self.assertAlmostEqual(r["entry_price"], 0.93)
         self.assertAlmostEqual(r["exit_price"], 1.0)
-        self.assertAlmostEqual(r["cycle_delta_pct"], (1.0 - 0.93) / 0.93 * 100)
-        self.assertAlmostEqual(r["entry_delta_pct"], (0.93 - 0.50) / 0.50 * 100)
+        self.assertAlmostEqual(r["cycle_delta_pct"], (1802.0 - 1800.0) / 1800.0 * 100)
+        self.assertAlmostEqual(r["entry_delta_pct"], (1801.44 - 1800.0) / 1800.0 * 100)
 
 
 class SyncPriceFeedFromOracleTests(unittest.TestCase):
