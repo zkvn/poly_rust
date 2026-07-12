@@ -134,25 +134,29 @@ on the remote before the nightly sync runs.
   Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
   doesn't get lost.
 
-- **`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-11 00:00 —
-  found 2026-07-12, URGENT, not investigated (out of scope for that task).** Found while
-  verifying the Entry Δ%/Cycle Δ% underlying-price fix
-  (`trader/doc/incident_delta_pct_2026-07-12.md`): minute-coverage of both `{asset}_binance_*` and
-  `{asset}_poly_*` local data (checksum-confirmed identical to Oracle's own copy — not a sync
-  issue) drops from ~93% on 2026-07-10 to **~14-15%** on 2026-07-11 and 2026-07-12, for every
-  asset checked (ETH/DOGE/BTC) — a collector-wide problem, not per-asset. Pattern: most hourly raw
-  files (`price_feed/raw/{asset}_{binance,poly}_{date}_{HH}.parquet`) now contain data for only
-  the last ~10-60s of their hour (e.g. `ETH_binance_2026-07-12_10.parquet`, checked
-  2026-07-12 ~12:00 HKT, has 96 rows covering just 10:59:36–10:59:59) — consistent with the
-  collector stalling for most of every hour and only catching up right at/after the hourly
-  rotation. **Still actively happening as of this write-up.** This directly starves the live
-  trader's own price feed (not just backtest replay data), and independently explains at least
-  some of the "BT DID NOT FIRE" rows in `trader/doc/incident_bt_vs_live_discrepancy_2026-07-12.md`
-  (a tick-sparse cycle gives the backtest replay far fewer chances to observe an entry condition)
-  on top of that doc's balance-halt finding. Needs Oracle-side collector process
-  logs/journalctl to root-cause (crash-loop? stuck reconnect? resource exhaustion?) — not done
-  here since that's `price_feed`-collector-internals territory, not `trader`/reconciliation-script
-  territory, and touches the live collector process.
+- **`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-10 22:30 —
+  found 2026-07-12, root-caused same day, URGENT, still active, NOT FIXED (deliberately not
+  implemented — investigation/proposal only).** Full writeup:
+  `price_feed/doc/incident_collector_data_loss_2026-07-12.md`. Two compounding causes: (1)
+  `reconcile.rs`'s phase-2 WS/REST staleness detector (deployed 2026-07-10 22:30, see the
+  bba-feed-staleness entry below) fires far more than its ~1-incident/week design target — 179
+  restarts and counting in <2 days, very plausibly mostly benign near-resolution price divergence
+  in thin order books, not real feed failures; (2) **the actual data-destroyer**: each trigger
+  calls `std::process::exit(1)` directly, skipping the graceful-shutdown path that writes the
+  parquet footer, leaving the current hour's `.tmp` footerless — on restart, `open_for_hour`'s
+  carry-forward can't read a footerless file with a standard reader, so it silently recovers
+  nothing, then immediately truncates the same path open()ing a fresh writer — **destroying** the
+  still-there, still-recoverable-via-`recover_rust_parquet.py`-style raw-page-decoding bytes
+  before anyone (human or the collector itself) gets a chance to run that recovery. Confirmed via
+  exact timestamp correlation: every affected hourly file's data starts exactly at that hour's
+  *last* restart, not the hour's true start. Also disrupts the live trader's own NATS-fed price
+  feed, not just recorded data (poly-collector is upstream of trader-live.service). Historical
+  data is effectively unrecoverable at this point (already overwritten repeatedly) — the doc's
+  proposed fixes are forward-looking: make the reconcile-exit path graceful (write the footer
+  before exiting) and/or give `try_carry` the same raw-page-recovery fallback the standalone
+  script has, plus a guard-rail (don't truncate a same-hour `.tmp` you couldn't read — rename
+  aside instead, matching how `seal_orphaned_tmp` already handles a *previous*-hour orphan), plus
+  restart-count alerting so this doesn't go unnoticed for 2+ days again.
 
 - ~~`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
   found 2026-07-11 while scoping the balance-decrease halt.~~ **Fixed 2026-07-11 for the
