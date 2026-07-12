@@ -286,6 +286,18 @@ on the remote before the nightly sync runs.
   deploy, which sends SIGTERM) should keep auto-continuing whatever was persisted before, not
   come back halted. Full writeup: `trader/doc/plan_halt_persist_2026-07-11.md`.
 
+- **`price_feed` local poly data missing a whole 5-min cycle mid-day — found 2026-07-12, not
+  investigated (out of scope for that task).** While adding the Entry Δ% column to
+  `trade_reconcile.py`'s BT reconciliation tables, `backtest_prices/ETH_poly_2026-07-10.parquet`
+  (built from `price_feed/raw/` via `build_backtest_prices.py`, covering the full day
+  1783612800–1783699199) has zero rows for slug `eth-updown-5m-1783692300`
+  (2026-07-10 22:05–22:10 HKT) even though every neighboring cycle that day is present. No
+  obvious cause (no collector-restart log line found around that window) — could be a
+  genuine feed gap or a `build_backtest_prices.py` dedup/filter edge case. Not a correctness
+  bug in the recon report: `load_cycle_open_prices` already degrades a missing slug to "—" for
+  Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
+  doesn't get lost.
+
 </details>
 
 <details>
