@@ -618,6 +618,75 @@ class SafeRunBacktestReconciliationTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class RenderDataQualityTests(unittest.TestCase):
+    """price_feed/doc/incident_collector_data_loss_2026-07-12.md's proposed observer."""
+
+    def test_renders_flagged_rows(self):
+        lines = []
+        result = {
+            "hours_checked": 10,
+            "flagged": [
+                {"asset": "ETH", "kind": "binance", "date": "2026-07-11", "hour": 22,
+                 "coverage_pct": 28.3, "status": "GAP"},
+                {"asset": "DOGE", "kind": "poly", "date": "2026-07-11", "hour": 23,
+                 "coverage_pct": None, "status": "MISSING"},
+            ],
+        }
+        text = "\n".join(_render_data_quality_lines(lines, result))
+        self.assertIn("2/10 asset-hours flagged", text)
+        self.assertIn("ETH", text)
+        self.assertIn("GAP", text)
+        self.assertIn("28.3%", text)
+        self.assertIn("MISSING", text)
+
+    def test_no_gaps_shows_clean_message(self):
+        text = "\n".join(_render_data_quality_lines([], {"hours_checked": 24, "flagged": []}))
+        self.assertIn("24 asset-hours checked — no gaps", text)
+
+    def test_zero_hours_checked_shows_placeholder(self):
+        text = "\n".join(_render_data_quality_lines([], {"hours_checked": 0, "flagged": []}))
+        self.assertIn("No fully-elapsed hours to check yet", text)
+
+    def test_error_is_surfaced_not_swallowed(self):
+        text = "\n".join(_render_data_quality_lines([], {"error": "raw dir missing"}))
+        self.assertIn("Check failed: raw dir missing", text)
+
+
+def _render_data_quality_lines(lines: list, result: dict) -> list:
+    mod.render_data_quality(lines, result)
+    return lines
+
+
+class WriteMarkdownSummaryDataQualityTests(unittest.TestCase):
+    def test_data_quality_section_present_and_summary_line_shown(self):
+        result = {
+            "hours_checked": 5,
+            "flagged": [{"asset": "ETH", "kind": "binance", "date": "2026-07-11", "hour": 22,
+                         "coverage_pct": 10.0, "status": "GAP"}],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            path = mod.write_markdown_summary(
+                {"direction": {}, "stoploss": {}, "total_rows": 0}, {},
+                mod.datetime(2026, 7, 9, 20, 0, tzinfo=mod.HKT),
+                mod.datetime(2026, 7, 10, 20, 0, tzinfo=mod.HKT),
+                Path(d), bt_result=None, data_quality_result=result,
+            )
+            text = path.read_text()
+        self.assertIn("## Data Quality", text)
+        self.assertIn("Data quality:** 1/5 asset-hours flagged", text)
+
+    def test_missing_data_quality_result_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = mod.write_markdown_summary(
+                {"direction": {}, "stoploss": {}, "total_rows": 0}, {},
+                mod.datetime(2026, 7, 9, 20, 0, tzinfo=mod.HKT),
+                mod.datetime(2026, 7, 10, 20, 0, tzinfo=mod.HKT),
+                Path(d), bt_result=None, data_quality_result=None,
+            )
+            text = path.read_text()
+        self.assertIn("## Data Quality", text)
+
+
 class WriteMarkdownSummaryBtSectionTests(unittest.TestCase):
     """The BT Reconciliation section must always render — even on a
     0-live-trade day — since a missed-trade report matters most exactly

@@ -85,6 +85,17 @@ through `_23.parquet`). Not data loss, nothing to recover. July 1st (commit `87f
 PLAIN-encoding decode gap and recovered all 42 poly/book + 5 binance files) was the only genuine
 corruption incident found.
 
+**Daily tick-coverage check (added 2026-07-12):** `price_feed/scripts/data_quality.py` is a
+separate, lighter check from `recover_rust_parquet.py --check` above — it doesn't test whether a
+file is *readable*, it tests whether each fully-elapsed hour's sealed file has anywhere near the
+tick density a healthy collector should produce (flags **GAP**: file exists but <50% of its 60
+minutes have any tick, or **MISSING**: no sealed file at all). Built in response to
+`incident_collector_data_loss_2026-07-12.md` — a crash-loop can leave every individual file
+perfectly valid/readable (0 bad by `--check`) while still losing ~85% of the day's ticks, which
+`--check` alone can't see. Runs automatically as part of `trader/scripts/trade_reconcile.py`'s
+daily recon report ("## Data Quality" section) — no separate cron needed. Standalone:
+`python price_feed/scripts/data_quality.py --raw-dir ../raw --hours-back 24`.
+
 **`ParquetBuf.schema` field removed (2026-07-07, dead code):** the compiler flagged
 `ParquetBuf`'s `schema: Schema` field as never read. Confirmed dead, not just unread by accident —
 its only purpose was constructing the `ArrowWriter` in `ParquetBuf::open`, which bakes the schema
@@ -134,9 +145,11 @@ on the remote before the nightly sync runs.
   Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
   doesn't get lost.
 
-- **`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-10 22:30 —
-  found 2026-07-12, root-caused same day, URGENT, still active, NOT FIXED (deliberately not
-  implemented — investigation/proposal only).** Full writeup:
+- ~~`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-10 22:30 —
+  found 2026-07-12, root-caused same day, URGENT.~~ **Fixed 2026-07-12, same day** — see
+  "Trading engine — known incidents" below for the fix writeup (tuning + graceful-exit +
+  guard-rail + new data-quality observer, all locally tested including two live runs of the
+  actual binary). Original root-cause investigation preserved below. Full writeup:
   `price_feed/doc/incident_collector_data_loss_2026-07-12.md`. Two compounding causes: (1)
   `reconcile.rs`'s phase-2 WS/REST staleness detector (deployed 2026-07-10 22:30, see the
   bba-feed-staleness entry below) fires far more than its ~1-incident/week design target — 179
@@ -861,6 +874,63 @@ code). Summary:
 <summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
+
+### `price_feed` collector crash-loop destroying its own recoverable data (2026-07-12, fixed)
+
+Full root-cause: `price_feed/doc/incident_collector_data_loss_2026-07-12.md`. Plan:
+`price_feed/doc/plan_timeout_backtest_and_mismatch_reason_2026-07-12.md` (unrelated `trader`-side
+plan doc from the same day — this incident's own fix wasn't separately planned, it directly
+implements that incident doc's own "Proposed solutions" section). `poly-collector.service` had
+restarted 179 times in <2 days (2026-07-10 22:30 onward), driven entirely by `reconcile.rs`'s
+phase-2 WS/REST staleness detector — and, critically, each restart was *destroying* the current
+hour's still-recoverable data before anyone could run `recover_rust_parquet.py` on it, because the
+trigger called `std::process::exit(1)` directly, skipping the footer-write. Four independent
+fixes, all implemented and locally tested (see below):
+
+1. **Reduce false triggers.** `reconcile::MISMATCH_TOLERANCE` `0.03` → `0.04`,
+   `CONSECUTIVE_MISMATCHES_REQUIRED` `2` → `3`. New `is_near_cycle_close`/`NEAR_CLOSE_SKIP_SECS`
+   (10s): the reconcile check is now skipped entirely (debounce state reset, not just paused) in
+   the final 10s before a cycle closes, when a market's true price legitimately crashes toward 0/1
+   and the order book often goes thin — the shape behind most of the 179 false triggers.
+2. **Fix the amplifier — the real data-destroyer.** `spawn_reconcile_task` no longer calls
+   `std::process::exit(1)` directly; it sends the reason on a new `mpsc` channel that wakes
+   `run()`'s main `select!` loop, which flushes/seals every writer (footer written) through the
+   *same* path `SIGTERM` already uses, then exits — `Restart=always` still restarts on top of it,
+   but every restart now leaves a properly-sealed file behind, never a footerless `.tmp`.
+3. **Guard rail.** `ParquetBuf::open_for_hour` no longer silently truncates a same-hour `.tmp` it
+   couldn't carry-forward (a footerless leftover from some *other*, still-abrupt exit path) —
+   it renames it aside as `<name>.unrecovered-<unix_secs>` first (mirroring how
+   `seal_orphaned_tmp` already handles a *previous*-hour orphan), so `recover_rust_parquet.py` has
+   something to work with instead of the bytes being destroyed on the spot.
+4. **Independent data-quality observer**, since none of the above would have been *noticed* for
+   2+ days otherwise: new `price_feed/scripts/data_quality.py`, wired into
+   `trader/scripts/trade_reconcile.py`'s daily recon report as a new "Data Quality" section —
+   flags any fully-elapsed hour where a `(asset, kind)` pair's sealed file has <50% minute
+   coverage or is missing entirely, every single day, automatically, going forward.
+
+**Tested locally before deploy:** 37 `price_feed` unit tests (guard rail exercised against real
+footerless/empty/readable `.tmp` fixtures via `tempfile`) + 18 `reconcile.rs` tests (tolerance,
+debounce, near-close skip, including a regression test for this incident's own
+`rest_mid≈0`-across-many-assets shape) + 17 Python tests for the new observer. Beyond unit tests,
+ran the actual compiled binary locally against **live** Polymarket/Binance data twice: once with
+`MISMATCH_TOLERANCE` temporarily tightened to force a real trigger — confirmed the graceful-exit
+path fires and every resulting file passes `recover_rust_parquet.py --check` (0 bad) instead of
+being left footerless — and once at the real production thresholds for a clean 30s run + SIGTERM,
+also 0 bad files. `cargo fmt --all --check` / `cargo clippy --all-targets --all-features -D
+warnings` clean for `price_feed`; full `trader` suite (188 lib tests) unaffected.
+
+**Deployed 2026-07-12** via `deploy_oracle.py --price-feed-only` (dry-run checked first — scope
+was exactly cross-compile `price_feed` + rsync the binary + `systemctl restart poly-collector`,
+nothing else touched). `poly-collector` restarted clean at 15:08:55 HKT running the new binary.
+Verified post-deploy: **zero restarts and zero `RECONCILE-STALE` triggers** in the following 5+
+minutes — a stretch that, under the old thresholds, had been producing a restart roughly every
+5-30 minutes continuously since 2026-07-10 22:30. The in-progress hour's `.tmp` file sizes
+(checked directly on Oracle, since a still-open hour isn't sealed yet for `data_quality.py` to
+check automatically) scale proportionally with healthy pre-incident hours, not the ~5KB/hour
+crash-loop pattern. Pre-deploy hours still show as GAP/MISSING in the daily recon report's Data
+Quality section — that's the already-existing, already-documented damage from before the fix
+landed, not a new issue; the first fully-elapsed **post**-deploy hour will be the first one this
+report auto-confirms clean.
 
 ### `cargo fmt --all --check` cleaned up, both crates (2026-07-08, fixed)
 

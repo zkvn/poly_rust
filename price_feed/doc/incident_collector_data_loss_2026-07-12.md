@@ -1,9 +1,15 @@
-# Incident — `poly-collector` crash-looping and destroying its own recoverable data, ongoing since 2026-07-10 22:30
+# Incident — `poly-collector` crash-looping and destroying its own recoverable data, 2026-07-10 22:30 to 2026-07-12 15:08
 
-**Status as of this write-up: still active.** `poly-collector.service` on Oracle is alive right now
-but has restarted 179 times since 2026-07-10 22:30 and will keep doing so until fixed. No code
-changed as part of this investigation, per the request that motivated it — this is root-cause +
-proposed solutions only.
+**FIXED, same day as this write-up, and deployed.** Originally investigation/proposal-only (no
+code changed) — all four proposed solutions below were subsequently implemented, locally tested
+(37 `price_feed` unit tests including new guard-rail/reconcile coverage + 17 Python tests for the
+new data-quality observer, plus two live-data integration runs of the actual compiled binary),
+and deployed via `deploy_oracle.py --price-feed-only` at **2026-07-12 15:08:55 HKT**. Full fix
+writeup: README's "Trading engine — known incidents" → "`price_feed` collector crash-loop
+destroying its own recoverable data (2026-07-12, fixed)". Post-deploy: zero restarts and zero
+`RECONCILE-STALE` triggers in the 5+ minutes immediately following (previously averaging one
+restart every 5-30 minutes, continuously, since 2026-07-10 22:30 — 179 restarts total). The
+investigation below (root cause, evidence, proposed solutions) is preserved as originally written.
 
 ## Problem statement
 

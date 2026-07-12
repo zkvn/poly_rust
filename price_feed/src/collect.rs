@@ -272,6 +272,33 @@ fn book_schema() -> Schema {
 
 // ── Parquet writer ────────────────────────────────────────────────────────────
 
+/// Renames an unrecoverable `.tmp` aside as `<name>.unrecovered-<unix_secs>` instead of
+/// letting it be silently truncated by the caller's next `open()` — see
+/// `ParquetBuf::open_for_hour`'s guard-rail comment and
+/// `price_feed/doc/incident_collector_data_loss_2026-07-12.md`. Best-effort: a rename failure
+/// is logged but not fatal — the caller proceeds to open a fresh writer regardless, same
+/// behavior as before this guard rail existed.
+fn preserve_unrecovered_tmp(tmp_path: &Path) -> Option<PathBuf> {
+    let file_name = tmp_path.file_name()?.to_str()?;
+    let epoch_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let unrecovered = tmp_path.with_file_name(format!("{file_name}.unrecovered-{epoch_secs}"));
+    match fs::rename(tmp_path, &unrecovered) {
+        Ok(()) => {
+            eprintln!(
+                "  guard: {tmp_path:?} unreadable by carry (footerless?), preserved as {unrecovered:?} for recover_rust_parquet.py instead of truncating"
+            );
+            Some(unrecovered)
+        }
+        Err(e) => {
+            eprintln!("  guard: failed to preserve unreadable {tmp_path:?}: {e:#}");
+            None
+        }
+    }
+}
+
 struct ParquetBuf {
     path: PathBuf,
     writer: ArrowWriter<fs::File>,
@@ -320,6 +347,24 @@ impl ParquetBuf {
         let carry = carry_source
             .as_ref()
             .and_then(|p| Self::try_carry(p, &schema));
+
+        // Guard rail (price_feed/doc/incident_collector_data_loss_2026-07-12.md): the
+        // Self::open below unconditionally truncates tmp_path. If tmp_path itself exists but
+        // carry couldn't read it (e.g. footerless — left behind by an abrupt exit that skipped
+        // the graceful-shutdown footer write), that truncate would permanently destroy raw
+        // bytes recover_rust_parquet.py's page-scanner could otherwise still recover — before
+        // anyone gets the chance to run it. Preserve it under a new name instead, mirroring how
+        // seal_orphaned_tmp already leaves a *previous*-hour orphan in place ("for manual
+        // review") rather than destroying it on the same failure. Only for non-trivial files —
+        // a genuinely-empty .tmp (e.g. two restarts within the same second) has nothing worth
+        // keeping and would just accumulate clutter.
+        if carry.is_none()
+            && tmp_path.exists()
+            && tmp_path.metadata().map(|m| m.len()).unwrap_or(0) > 0
+        {
+            preserve_unrecovered_tmp(&tmp_path);
+        }
+
         let mut buf = Self::open(tmp_path, schema)?;
         if let Some(batches) = carry {
             let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -1167,16 +1212,21 @@ fn spawn_bba_task(
 }
 
 /// REST `/midpoint` ground-truth reconciliation for the 5m feed — see `reconcile.rs`'s doc
-/// comment for the detection design and why a confirmed mismatch exits the process rather
+/// comment for the detection design and why a confirmed mismatch restarts the process rather
 /// than attempting a surgical per-asset unsubscribe. Polls every `poll_secs` (default
 /// `reconcile::DEFAULT_POLL_SECS`, override via `--midpoint-poll-secs`); does nothing for an
-/// asset that has no WS-cached sample yet (nothing to reconcile against).
+/// asset that has no WS-cached sample yet (nothing to reconcile against), or that's within
+/// `reconcile::NEAR_CLOSE_SKIP_SECS` of its own cycle closing. On confirmed staleness, sends
+/// the reason on `shutdown_tx` and returns — `run()`'s main loop does the actual flush+exit,
+/// so every writer gets sealed (footer written) before the process restarts; see
+/// `price_feed/doc/incident_collector_data_loss_2026-07-12.md`.
 fn spawn_reconcile_task(
     http: Arc<reqwest::Client>,
     state: Arc<Mutex<Vec<AssetState>>>,
     slot_rx: watch::Receiver<Vec<Option<(U256, U256, String)>>>,
     assets: Vec<String>,
     poll_secs: u64,
+    shutdown_tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
     tokio::spawn(async move {
         let n = assets.len();
@@ -1190,7 +1240,21 @@ fn spawn_reconcile_task(
             let tokens = slot_rx.borrow().clone();
 
             for (i, slot) in tokens.iter().enumerate() {
-                let Some((up_id, ..)) = slot else { continue };
+                let Some((up_id, _dn_id, slug)) = slot else {
+                    continue;
+                };
+
+                // Skip entirely (and reset any partial debounce state) inside the final
+                // NEAR_CLOSE_SKIP_SECS of this slot's own cycle — see that constant's doc
+                // comment for why. Resetting here, not just skipping the check, matters: a
+                // mismatch counted just before entering this window must not combine with one
+                // counted just after (in what could already be the *next* cycle) to falsely
+                // confirm staleness across the boundary.
+                if reconcile::is_near_cycle_close(slug, now_secs_f64()) {
+                    recon_state[i] = Default::default();
+                    continue;
+                }
+
                 let cached_mid = {
                     let st = state.lock().unwrap();
                     st.get(i)
@@ -1205,12 +1269,21 @@ fn spawn_reconcile_task(
                 match reconcile::fetch_midpoint(&http, *up_id).await {
                     Ok(rest_mid) => {
                         if reconcile::check(&mut recon_state[i], cached_mid, rest_mid) {
-                            eprintln!(
-                                "[RECONCILE-STALE] {asset_name} rest_mid={rest_mid:.4} cached_mid={cached_mid:.4} diff={:.4} — confirmed via {} consecutive mismatches, exiting for systemd to restart",
+                            let reason = format!(
+                                "[RECONCILE-STALE] {asset_name} rest_mid={rest_mid:.4} cached_mid={cached_mid:.4} diff={:.4} — confirmed via {} consecutive mismatches, requesting graceful restart",
                                 (rest_mid - cached_mid).abs(),
                                 reconcile::CONSECUTIVE_MISMATCHES_REQUIRED,
                             );
-                            std::process::exit(1);
+                            eprintln!("{reason}");
+                            // Graceful, not std::process::exit: an abrupt exit skips the
+                            // footer-write on every open writer, leaving the current hour's
+                            // .tmp unreadable by the carry-forward path on the next restart —
+                            // see price_feed/doc/incident_collector_data_loss_2026-07-12.md.
+                            // Sending on this channel wakes run()'s main select loop, which
+                            // flushes/seals every writer through the same path SIGTERM already
+                            // uses, then exits — Restart=always still restarts on top of it.
+                            let _ = shutdown_tx.send(reason);
+                            return;
                         }
                     }
                     Err(e) => {
@@ -1375,6 +1448,12 @@ pub async fn run(
 
     let clob = ClobWsClient::default();
 
+    // Reconcile-triggered restarts request a graceful shutdown through this channel instead
+    // of exiting directly — see spawn_reconcile_task's doc comment and
+    // price_feed/doc/incident_collector_data_loss_2026-07-12.md.
+    let (reconcile_shutdown_tx, mut reconcile_shutdown_rx) =
+        tokio::sync::mpsc::unbounded_channel::<String>();
+
     // ── 5-min Polymarket feed ────────────────────────────────────────────────
     let state_5m = Arc::new(Mutex::new(vec![AssetState::default(); n]));
     let (slot_tx_5m, slot_rx_5m) = watch::channel(vec![None; n]);
@@ -1401,6 +1480,7 @@ pub async fn run(
         slot_rx_5m.clone(),
         assets.clone(),
         midpoint_poll_secs,
+        reconcile_shutdown_tx,
     );
     spawn_trade_task(clob.clone(), Arc::clone(&state_5m), slot_rx_5m);
 
@@ -1576,6 +1656,12 @@ pub async fn run(
                 flush_all(writers_5m, writers_15m, writers_4hr, binance_writers);
                 return Ok(());
             }
+
+            Some(reason) = reconcile_shutdown_rx.recv() => {
+                eprintln!("{reason} — flushing writers…");
+                flush_all(writers_5m, writers_15m, writers_4hr, binance_writers);
+                return Ok(());
+            }
         }
     }
 }
@@ -1652,5 +1738,167 @@ mod tests {
             payload,
             r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"server_ts":null}"#
         );
+    }
+
+    // ── ParquetBuf / open_for_hour guard rail ──────────────────────────────
+    // price_feed/doc/incident_collector_data_loss_2026-07-12.md
+
+    /// Writes a validly-footed (readable) parquet file with 0 rows — enough to exercise the
+    /// carry-succeeds path without needing to construct real row data.
+    fn write_sealed_empty(path: &std::path::Path, schema: Schema) {
+        ParquetBuf::open(path.to_path_buf(), schema)
+            .unwrap()
+            .finish()
+            .unwrap();
+    }
+
+    #[test]
+    fn preserve_unrecovered_tmp_renames_and_keeps_the_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ETH_binance_2026-07-12_10.parquet.tmp");
+        fs::write(&tmp, b"garbage, not a real parquet file").unwrap();
+
+        let renamed = preserve_unrecovered_tmp(&tmp).expect("rename should succeed");
+
+        assert!(!tmp.exists(), "original path must no longer exist");
+        assert!(renamed.exists());
+        assert!(
+            renamed
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("ETH_binance_2026-07-12_10.parquet.tmp.unrecovered-"),
+            "unexpected name: {renamed:?}"
+        );
+        assert_eq!(
+            fs::read(&renamed).unwrap(),
+            b"garbage, not a real parquet file"
+        );
+    }
+
+    #[test]
+    fn preserve_unrecovered_tmp_missing_file_returns_none_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does_not_exist.parquet.tmp");
+        assert!(preserve_unrecovered_tmp(&missing).is_none());
+    }
+
+    /// The core regression case: a footerless .tmp (simulating what an abrupt
+    /// std::process::exit leaves behind) must survive a restart instead of being truncated.
+    #[test]
+    fn open_for_hour_preserves_a_footerless_tmp_instead_of_truncating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ETH_binance_2026-07-12_10.parquet.tmp");
+        let final_path = dir.path().join("ETH_binance_2026-07-12_10.parquet");
+        let garbage = b"partially written, no footer, courtesy of an abrupt exit";
+        fs::write(&tmp, garbage).unwrap();
+
+        let buf = ParquetBuf::open_for_hour(tmp.clone(), &final_path, binance_schema()).unwrap();
+        buf.finish().unwrap();
+
+        // The original garbage must be preserved somewhere under a *.unrecovered-* name, not
+        // silently gone.
+        let preserved: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains(".unrecovered-"))
+            })
+            .collect();
+        assert_eq!(preserved.len(), 1, "expected exactly one preserved file");
+        assert_eq!(fs::read(&preserved[0]).unwrap(), garbage);
+
+        // And the hour's .tmp path itself must now be a fresh, validly-sealed writer, not the
+        // truncated garbage.
+        assert!(tmp.exists());
+        assert_ne!(fs::read(&tmp).unwrap(), garbage);
+    }
+
+    /// A genuinely empty .tmp (0 bytes — e.g. two restarts within the same second) has
+    /// nothing worth preserving; the guard rail must not fire for it.
+    #[test]
+    fn open_for_hour_does_not_preserve_a_truly_empty_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ETH_binance_2026-07-12_10.parquet.tmp");
+        let final_path = dir.path().join("ETH_binance_2026-07-12_10.parquet");
+        fs::write(&tmp, b"").unwrap();
+
+        let buf = ParquetBuf::open_for_hour(tmp, &final_path, binance_schema()).unwrap();
+        buf.finish().unwrap();
+
+        let preserved_count = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.contains(".unrecovered-"))
+            })
+            .count();
+        assert_eq!(preserved_count, 0);
+    }
+
+    /// A readable (validly-footed) same-hour .tmp is the normal carry-forward success path —
+    /// the guard rail must not fire, and its rows must actually be carried into the new writer.
+    #[test]
+    fn open_for_hour_carries_forward_a_readable_tmp_without_triggering_the_guard_rail() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ETH_binance_2026-07-12_10.parquet.tmp");
+        let final_path = dir.path().join("ETH_binance_2026-07-12_10.parquet");
+        write_sealed_empty(&tmp, binance_schema());
+
+        let buf = ParquetBuf::open_for_hour(tmp, &final_path, binance_schema()).unwrap();
+        buf.finish().unwrap();
+
+        let preserved_count = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.contains(".unrecovered-"))
+            })
+            .count();
+        assert_eq!(
+            preserved_count, 0,
+            "guard rail must not fire on a readable tmp"
+        );
+    }
+
+    /// A readable already-sealed `final_path` (the "previous process already gracefully
+    /// sealed this hour" case, e.g. a mid-hour restart during a deploy) must carry forward too,
+    /// and must never itself be touched by the guard rail (only tmp_path is ever opened for
+    /// writing by this function).
+    #[test]
+    fn open_for_hour_carries_forward_from_final_path_when_no_tmp_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ETH_binance_2026-07-12_10.parquet.tmp");
+        let final_path = dir.path().join("ETH_binance_2026-07-12_10.parquet");
+        write_sealed_empty(&final_path, binance_schema());
+
+        let buf = ParquetBuf::open_for_hour(tmp, &final_path, binance_schema()).unwrap();
+        buf.finish().unwrap();
+
+        assert!(
+            final_path.exists(),
+            "final_path must never be touched/removed"
+        );
+    }
+
+    /// Neither tmp_path nor final_path exists (the common case: first hour ever for this
+    /// asset) — must just open a fresh writer, no guard rail, no panic.
+    #[test]
+    fn open_for_hour_with_nothing_to_carry_just_opens_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ETH_binance_2026-07-12_10.parquet.tmp");
+        let final_path = dir.path().join("ETH_binance_2026-07-12_10.parquet");
+
+        let buf = ParquetBuf::open_for_hour(tmp.clone(), &final_path, binance_schema()).unwrap();
+        buf.finish().unwrap();
+        assert!(tmp.exists());
     }
 }

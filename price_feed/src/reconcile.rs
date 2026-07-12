@@ -36,15 +36,60 @@ pub const DEFAULT_POLL_SECS: u64 = 5;
 /// single transient hiccup (a momentary CDN/cache lag on Polymarket's REST side, or an
 /// unlucky race where the WS updates a moment after our REST call fires) restarting the
 /// whole collector process needlessly. At the default 5s poll interval this confirms genuine
-/// staleness within ~10s — comfortably faster than the 2026-07-10 incidents' 205s, and the
+/// staleness within ~15s — comfortably faster than the 2026-07-10 incidents' 205s, and the
 /// debounce means a restart (which briefly interrupts every asset, not just the stale one)
 /// only fires on persistent, ground-truth-verified divergence.
-pub const CONSECUTIVE_MISMATCHES_REQUIRED: u32 = 2;
+///
+/// Raised 2 -> 3 (`price_feed/doc/incident_collector_data_loss_2026-07-12.md`): at 2, this
+/// mechanism alone triggered 179 restarts in under 2 days, most plausibly benign
+/// near-resolution price divergence (see `NEAR_CLOSE_SKIP_SECS`) rather than genuine feed
+/// failures — one extra confirmation cheaply cuts transient/borderline cases without giving
+/// up meaningfully on detection speed for a real, sustained gap.
+pub const CONSECUTIVE_MISMATCHES_REQUIRED: u32 = 3;
 
 /// How far apart the REST midpoint and the WS-cached midpoint may be (both in `[0, 1]`)
 /// before counting as a mismatch — wider than normal bid/ask-spread noise between the two
 /// sources.
-pub const MISMATCH_TOLERANCE: f64 = 0.03;
+///
+/// Widened 0.03 -> 0.04 same incident/reasoning as `CONSECUTIVE_MISMATCHES_REQUIRED` above.
+pub const MISMATCH_TOLERANCE: f64 = 0.04;
+
+/// This project's only reconciled market length — `spawn_reconcile_task` (`collect.rs`) is
+/// only ever wired to the 5-min feed's slot channel, never 15m/4h, so every slug it evaluates
+/// is a `-5m-` cycle.
+pub const CYCLE_LENGTH_SECS: f64 = 300.0;
+
+/// Skip the reconcile check entirely in the final stretch before a cycle closes. A market's
+/// true price legitimately crashes toward 0 or 1 as the outcome becomes near-certain, and the
+/// order book often goes thin/quiet right then too (few market makers still quoting this close
+/// to resolution) — which can make the WS-cached mid lag the REST mid for a few ticks even
+/// though nothing is actually broken. Found 2026-07-12
+/// (`price_feed/doc/incident_collector_data_loss_2026-07-12.md`): a large fraction of this
+/// mechanism's 179 restarts in <2 days showed exactly this shape (`rest_mid` near 0 or 1,
+/// recurring across many *different*, unrelated assets at essentially random times) —
+/// consistent with benign near-resolution divergence being treated as a real feed failure far
+/// more often than the ~1-incident/week this was designed for.
+pub const NEAR_CLOSE_SKIP_SECS: f64 = 10.0;
+
+/// Seconds remaining until `slug`'s own cycle closes, as of `now` (both wall-clock unix
+/// seconds) — `None` if `slug` doesn't parse as a `..-<cycle_start>` slug (defensive; the
+/// caller treats an unparseable slug the same as "not near close," never suppressing recovery
+/// outright just because a slug looked unusual).
+pub fn seconds_until_cycle_close(slug: &str, now: f64) -> Option<f64> {
+    let cycle_start: f64 = slug.rsplit('-').next()?.parse().ok()?;
+    Some(cycle_start + CYCLE_LENGTH_SECS - now)
+}
+
+/// Whether `slug`'s cycle is within `NEAR_CLOSE_SKIP_SECS` of closing — including already past
+/// its nominal close (`secs_left <= 0`), since a cycle can linger a moment past close before
+/// the next slot rotation lands and the WS/REST divergence risk doesn't disappear at exactly
+/// `secs_left == 0`.
+pub fn is_near_cycle_close(slug: &str, now: f64) -> bool {
+    match seconds_until_cycle_close(slug, now) {
+        Some(secs_left) => secs_left <= NEAR_CLOSE_SKIP_SECS,
+        None => false,
+    }
+}
 
 /// Per-asset debounce state for the reconciliation loop.
 #[derive(Debug, Default, Clone, Copy)]
@@ -178,6 +223,65 @@ mod tests {
         let cached_mid = 0.4300; // frozen WS cache during the real incident
         let rest_mid = 0.8650; // the real price at the time, per python's independent feed
         assert!(!check(&mut s, cached_mid, rest_mid)); // 1st confirmation
-        assert!(check(&mut s, cached_mid, rest_mid)); // 2nd — confirmed stale
+        assert!(!check(&mut s, cached_mid, rest_mid)); // 2nd
+        assert!(check(&mut s, cached_mid, rest_mid)); // 3rd — confirmed stale
+    }
+
+    /// Golden-incident regression — 2026-07-12: this exact shape (rest_mid near zero,
+    /// recurring across many unrelated assets) drove 179 restarts in <2 days. A single
+    /// isolated near-zero reading, one poll apart, must not confirm at the new threshold —
+    /// distinguishes "briefly noisy near resolution" from "persistently stale."
+    #[test]
+    fn a_single_near_zero_blip_does_not_confirm_at_the_raised_threshold() {
+        let mut s = ReconcileState::default();
+        assert!(!check(&mut s, 0.11, 0.005));
+        assert!(!check(&mut s, 0.11, 0.005));
+        // Would have confirmed at the old CONSECUTIVE_MISMATCHES_REQUIRED=2; must not here.
+    }
+
+    #[test]
+    fn seconds_until_cycle_close_computes_from_slug_trailing_timestamp() {
+        // eth-updown-5m-1000 -> cycle_start=1000, closes at 1300.
+        assert_eq!(
+            seconds_until_cycle_close("eth-updown-5m-1000", 1290.0),
+            Some(10.0)
+        );
+        assert_eq!(
+            seconds_until_cycle_close("eth-updown-5m-1000", 1000.0),
+            Some(300.0)
+        );
+    }
+
+    #[test]
+    fn seconds_until_cycle_close_none_for_unparseable_slug() {
+        assert_eq!(seconds_until_cycle_close("not-a-slug-", 1000.0), None);
+        assert_eq!(seconds_until_cycle_close("", 1000.0), None);
+    }
+
+    #[test]
+    fn is_near_cycle_close_true_inside_the_skip_window() {
+        // closes at 1300; 1291 is 9s out, inside the 10s window.
+        assert!(is_near_cycle_close("eth-updown-5m-1000", 1291.0));
+    }
+
+    #[test]
+    fn is_near_cycle_close_true_exactly_at_the_boundary() {
+        assert!(is_near_cycle_close("eth-updown-5m-1000", 1290.0)); // exactly 10s out
+    }
+
+    #[test]
+    fn is_near_cycle_close_false_outside_the_skip_window() {
+        // closes at 1300; 1289 is 11s out, just outside the 10s window.
+        assert!(!is_near_cycle_close("eth-updown-5m-1000", 1289.0));
+    }
+
+    #[test]
+    fn is_near_cycle_close_true_past_nominal_close() {
+        assert!(is_near_cycle_close("eth-updown-5m-1000", 1305.0)); // 5s past close
+    }
+
+    #[test]
+    fn is_near_cycle_close_false_for_unparseable_slug_never_suppresses_recovery() {
+        assert!(!is_near_cycle_close("garbage", 1000.0));
     }
 }

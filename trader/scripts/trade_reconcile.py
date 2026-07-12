@@ -78,6 +78,21 @@ BUILD_PRICES_SCRIPT = REPO_ROOT / "scripts" / "build_backtest_prices.py"
 PRICE_FEED_SYNC_SCRIPT = REPO_ROOT.parent / "price_feed" / "scripts" / "sync_oracle.sh"
 LIVE_LOG_PATH = REPO_ROOT / "live_logs" / "live.log"
 
+# ---------------------------------------------------------------------------
+# Data quality — independent tick-coverage observer
+# (price_feed/doc/incident_collector_data_loss_2026-07-12.md). Runs every
+# daily recon so a repeat of that incident (collector crash-looping, ~85% of
+# ticks silently missing for 2+ days) shows up in the report automatically
+# instead of requiring someone to notice by chance.
+# ---------------------------------------------------------------------------
+PRICE_FEED_RAW_DIR = REPO_ROOT.parent / "price_feed" / "raw"
+sys.path.insert(0, str(REPO_ROOT.parent / "price_feed" / "scripts"))
+try:
+    from data_quality import safe_check_data_quality  # noqa: E402
+except ImportError:
+    def safe_check_data_quality(*_args, **_kwargs):  # type: ignore[misc]
+        return {"hours_checked": 0, "flagged": [], "error": "data_quality module not importable"}
+
 CSV_COLUMNS = [
     "logged_at", "slug", "strategy", "side", "entry_ts", "token_price",
     "exit_price", "outcome", "pnl", "exit_attempts", "exit_last_error",
@@ -1033,6 +1048,58 @@ def _fmt_pnl(v) -> str:
     return f"{v:+.4f}" if v is not None else "—"
 
 
+def render_data_quality(lines: list, result: dict) -> None:
+    """price_feed/doc/incident_collector_data_loss_2026-07-12.md's proposed observer,
+    rendered every day so a repeat of that incident (2+ days of silent ~85% data loss) shows
+    up here automatically."""
+    lines.append("## Data Quality")
+    lines.append("")
+    lines.append(
+        "Independent tick-coverage check of `price_feed/raw/`'s sealed hourly files for every "
+        "fully-elapsed hour in this window — added after the collector crash-loop incident "
+        "(`price_feed/doc/incident_collector_data_loss_2026-07-12.md`) went unnoticed for 2+ "
+        "days. Flags an hour as **GAP** (file exists, <50% of its 60 minutes have any tick) or "
+        "**MISSING** (no sealed file at all)."
+    )
+    lines.append("")
+
+    if result.get("error"):
+        lines.append(f"*Check failed: {result['error']}*")
+        lines.append("")
+        return
+
+    hours_checked = result.get("hours_checked", 0)
+    flagged = result.get("flagged", [])
+    if hours_checked == 0:
+        lines.append("*No fully-elapsed hours to check yet in this window.*")
+        lines.append("")
+        return
+
+    if not flagged:
+        lines.append(f"{hours_checked} asset-hours checked — no gaps. 🎯")
+        lines.append("")
+        return
+
+    lines.append(
+        f"**{len(flagged)}/{hours_checked} asset-hours flagged.** "
+        f"If this spans many consecutive hours across every asset, suspect the collector "
+        f"itself (crash-loop, NATS/WS outage) rather than a per-asset feed issue — see the "
+        f"incident doc above for exactly this shape."
+    )
+    lines.append("")
+    lines.extend([
+        "| Date | Hour (HKT) | Asset | Kind | Status | Coverage |",
+        "|---|---|---|---|---|---|",
+    ])
+    for f in flagged:
+        cov = f"{f['coverage_pct']:.1f}%" if f.get("coverage_pct") is not None else "—"
+        lines.append(
+            f"| {f['date']} | {f['hour']:02d}:00 | {f['asset']} | {f['kind']} | "
+            f"{f['status']} | {cov} |"
+        )
+    lines.append("")
+
+
 def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, bt_vs_live_rows: list) -> None:
     lines.append("## Backtest Reconciliation")
     lines.append("")
@@ -1244,6 +1311,7 @@ def _render_failed_exit_audit(lines: list, rows: list) -> None:
 def write_markdown_summary(
     summary: dict, perf_stats: dict, window_start: datetime, window_end: datetime,
     out_dir: Path, bt_result: Optional[tuple] = None,
+    data_quality_result: Optional[dict] = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1295,7 +1363,18 @@ def write_markdown_summary(
     if total_stops:
         api_narrative += f", {good_stops} good stops, {costly_stops} costly"
     lines.append(f"> **Gamma cross-check:** {api_narrative}")
+    dq = data_quality_result or {}
+    dq_flagged = dq.get("flagged", [])
+    dq_checked = dq.get("hours_checked", 0)
+    if dq.get("error"):
+        lines.append(f"> **Data quality:** check failed ({dq['error']})")
+    elif dq_checked:
+        lines.append(
+            f"> **Data quality:** {len(dq_flagged)}/{dq_checked} asset-hours flagged"
+            + (" — see below" if dq_flagged else " — no gaps 🎯")
+        )
     lines.append("")
+    render_data_quality(lines, dq)
 
     if not perf_stats:
         lines.append("> **No trades in this window.** The bot was not active during this period.")
@@ -1572,6 +1651,12 @@ def main() -> None:
     log_dir = REPO_ROOT / "live_logs"
     out_dir = REPO_ROOT / "results" / "daily_recon"
 
+    # Independent of --no-bt / whether there are any trades this window — a repeat of
+    # incident_collector_data_loss_2026-07-12.md matters most exactly on a quiet day.
+    console.print("[dim]Syncing price_feed/raw from Oracle for the data quality check...[/dim]")
+    sync_price_feed_from_oracle(PRICE_FEED_SYNC_SCRIPT)
+    data_quality_result = safe_check_data_quality(PRICE_FEED_RAW_DIR, window_start, window_end)
+
     files = find_trade_logs(log_dir)
     if not files:
         console.print(f"[yellow]No trade logs found in {log_dir}/[/yellow]")
@@ -1583,7 +1668,7 @@ def main() -> None:
         bt_result = None if args.no_bt else _safe_run_backtest_reconciliation(window_start, window_end, [])
         md_path = write_markdown_summary(
             {"direction": {}, "stoploss": {}, "total_rows": 0}, {}, window_start, window_end, out_dir,
-            bt_result=bt_result,
+            bt_result=bt_result, data_quality_result=data_quality_result,
         )
         if not args.no_push:
             git_commit_push([md_path], f"recon: {window_start:%Y-%m-%d} — 0 trades")
@@ -1597,7 +1682,10 @@ def main() -> None:
 
     bt_result = None if args.no_bt else _safe_run_backtest_reconciliation(window_start, window_end, annotated)
 
-    md_path = write_markdown_summary(summary, perf_stats, window_start, window_end, out_dir, bt_result=bt_result)
+    md_path = write_markdown_summary(
+        summary, perf_stats, window_start, window_end, out_dir,
+        bt_result=bt_result, data_quality_result=data_quality_result,
+    )
 
     if not args.no_push:
         direction = summary["direction"]
