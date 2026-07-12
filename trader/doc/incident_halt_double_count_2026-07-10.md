@@ -73,3 +73,16 @@ re-armed by the correction. Both are exercised by new tests in
   (provisional loss corrected to a win, followed by one real loss, must
   *not* halt at `halt_prob = 2`) and the reverse/engage/clear transitions.
 - `cargo clippy --all-targets --all-features -- -D warnings` clean.
+
+## Design note (confirmed 2026-07-10, not a bug)
+
+While diagnosing this, we noticed `HaltTracker` never resets its loss count
+on an intervening WIN — despite being documented as a "consecutive-loss"/
+"loss-streak" halt, `halt_rev`/`halt_prob` actually tracks total losses
+within the HKT session, in any order, not a true consecutive streak (a
+`Loss, Win, Win, Win, Loss` sequence still trips `halt_max=2` even though
+the losses are never back-to-back). Raised with the user and confirmed as
+the intended behavior, not a bug — session-total loss counting is what
+should ship. No code change from this; noted here only so the "consecutive"
+naming in comments/config keys isn't misread as a mismatch with the actual
+semantics.

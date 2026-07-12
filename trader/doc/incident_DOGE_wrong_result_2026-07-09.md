@@ -226,3 +226,35 @@ longer clobber `Confirming`/`EnrichOnly`; the watcher polls every 1s and gives u
 at `reversal_start_time` seconds after the position closed, halting (not guessing) on
 timeout via the existing halt/`entry_suppressed`/`/resume` plumbing; `trade_reconcile.py`
 untouched, per direction; diagnostic log lines added on every previously-silent branch.
+
+## 7. Follow-on refinements (2026-07-09, same day; extended 2026-07-11)
+
+Two more changes to the same watcher, same day as the fix above:
+
+1. **Polling cadence became delayed and config-driven**, not an immediate hardcoded 1s
+   loop — Gamma "usually won't give you anything until 20-60s after cycle end," so the
+   watcher now waits `gamma_poll_delay_secs` (new per-asset config, default 60s, clamped
+   to the deadline) before its first attempt, then retries every
+   `gamma_poll_interval_secs` (new per-asset config, default 3s).
+2. **A balance-based override on the halt itself.** If Gamma still hasn't resolved at the
+   deadline, `bin/live.rs` also checks a new `GammaBalanceTracker` (`balance.rs`) — a
+   rolling comparison of the account's balance at this cycle's periodic checkpoint against
+   the previous cycle's checkpoint. If balance is up, the slot does **not** halt — the
+   provisional record still stands, unverified, but new entries continue
+   (`Action::GammaUnresolvedContinued` instead of `Action::GammaHaltEngaged`, still
+   Telegram-alerted). An unknown/failed balance sample fails safe to *not* skipping the
+   halt, matching this doc's own "halt over guess" rule (§6). Never clears a halt from
+   another source (manual `/halt`, loss-streak, drawdown) — only ever *adds* suppression.
+
+   **Risk tradeoff accepted here, worth being explicit about:** this is a deliberate
+   loosening of the exact halt this incident introduced. A wrong provisional WIN/LOSS can
+   now go un-halted — and so un-flagged for manual review — if the rest of the account
+   happens to be net up that cycle. The mitigating factor is that the provisional record
+   itself is unchanged and still marked unverified in the CSV/Telegram either way, so
+   `trade_reconcile.py`'s independent daily Gamma cross-check still catches it the next
+   day even if the live halt doesn't fire same-day.
+
+**Extended 2026-07-11** — Gamma's deadline decoupled from `reversal_start_time` (now its own
+`gamma_poll_deadline_secs`, default 600s) and the balance-decrease halt scoped to the specific
+asset+strategy involved instead of process-wide. Full plan: `plan_gammapi_2026-07-11.md`
+(same directory).

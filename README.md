@@ -159,39 +159,6 @@ on the remote before the nightly sync runs.
   Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
   doesn't get lost.
 
-- ~~`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-10 22:30 —
-  found 2026-07-12, root-caused same day, URGENT.~~ **Fixed 2026-07-12, same day** — see
-  "Trading engine — known incidents" below for the fix writeup (tuning + graceful-exit +
-  guard-rail + new data-quality observer, all locally tested including two live runs of the
-  actual binary). Original root-cause investigation preserved below. Full writeup:
-  `price_feed/doc/incident_collector_data_loss_2026-07-12.md`. Two compounding causes: (1)
-  `reconcile.rs`'s phase-2 WS/REST staleness detector (deployed 2026-07-10 22:30, see the
-  bba-feed-staleness entry below) fires far more than its ~1-incident/week design target — 179
-  restarts and counting in <2 days, very plausibly mostly benign near-resolution price divergence
-  in thin order books, not real feed failures; (2) **the actual data-destroyer**: each trigger
-  calls `std::process::exit(1)` directly, skipping the graceful-shutdown path that writes the
-  parquet footer, leaving the current hour's `.tmp` footerless — on restart, `open_for_hour`'s
-  carry-forward can't read a footerless file with a standard reader, so it silently recovers
-  nothing, then immediately truncates the same path open()ing a fresh writer — **destroying** the
-  still-there, still-recoverable-via-`recover_rust_parquet.py`-style raw-page-decoding bytes
-  before anyone (human or the collector itself) gets a chance to run that recovery. Confirmed via
-  exact timestamp correlation: every affected hourly file's data starts exactly at that hour's
-  *last* restart, not the hour's true start. Also disrupts the live trader's own NATS-fed price
-  feed, not just recorded data (poly-collector is upstream of trader-live.service). Historical
-  data is effectively unrecoverable at this point (already overwritten repeatedly) — the doc's
-  proposed fixes are forward-looking: make the reconcile-exit path graceful (write the footer
-  before exiting) and/or give `try_carry` the same raw-page-recovery fallback the standalone
-  script has, plus a guard-rail (don't truncate a same-hour `.tmp` you couldn't read — rename
-  aside instead, matching how `seal_orphaned_tmp` already handles a *previous*-hour orphan), plus
-  restart-count alerting so this doesn't go unnoticed for 2+ days again.
-
-- ~~`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
-  found 2026-07-11 while scoping the balance-decrease halt.~~ **Fixed 2026-07-11 for the
-  command/balance-driven call sites** (see below) — deliberately left alone for the 2
-  SIGINT/SIGTERM shutdown handlers, by choice: restarts (including every `deploy_trader.sh`
-  deploy, which sends SIGTERM) should keep auto-continuing whatever was persisted before, not
-  come back halted. Full writeup: `trader/doc/plan_halt_persist_2026-07-11.md`.
-
 - **Backtest reconciliation config-drift gap — flagged 2026-07-10, not fixed (deliberately
   deferred).** The new "Backtest Reconciliation" section in the daily recon report
   (`trader/scripts/trade_reconcile.py`, see `trader/doc/feature_bt_recon_2026-07-10.md`) runs
@@ -204,27 +171,6 @@ on the remote before the nightly sync runs.
   mirroring how `btc_5mins`'s own backtest recon does it via `read_latest_snapshot`). Not
   blocking — but a silent mismatch here would otherwise look like a real trading-logic bug in the
   report, so flagging rather than letting it get lost in a commit message.
-
-- ~~`build_backtest_prices.py` broken — `ModuleNotFoundError: recover_live_tmp` — found
-  2026-07-10.~~ **Done, same day.** `price_feed/scripts/recover_live_tmp.py` had been renamed to
-  `recover_rust_parquet.py` (poly/binance/book recovery split into separate functions:
-  `recover_rust_poly_parquet` etc.) at some point after `build_backtest_prices.py` was written,
-  leaving its import pointing at a module that no longer existed — found while wiring up the
-  backtest reconciliation feature's price-data build step (any date's poly recovery path would
-  have hit this). Fixed the import + call site to the new name; no logic changes.
-
-- ~~`build_backtest_prices.py::build_binance()` silently empty for any date after
-  2026-07-05.~~ **Done, same day.** It date-filtered `btc_5mins/prices/{asset}_binance.parquet`
-  (the old Python collector's merged output), which stopped updating on 2026-07-05 when that
-  collector was fully retired. Every backtest date after that filtered to zero binance rows —
-  no price series means no signal, so the Rust engine could never fire a single trade regardless
-  of config. This is what made the very first "Backtest Reconciliation" report look like a
-  config-drift or halt-carryover problem (`BT DID NOT FIRE` on both live trades, 2026-07-10):
-  it was actually "the backtest had no binance data at all." Confirmed via ETH/2026-07-03 (12
-  trades, before the cutoff) vs ETH/2026-07-09 (0 trades, after) under the identical config.
-  Fixed to source from `price_feed/raw/` (this project's own collector, which was recording
-  binance ticks there all along) the same way `build_poly()` already did — see
-  `trader/scripts/build_backtest_prices.py`'s docstring.
 
 - **Backtest reconciliation halt-state-drift gap — flagged 2026-07-10, not fixed (deliberately
   deferred).** Once the binance-data bug above was fixed and the backtest could actually fire
@@ -254,44 +200,6 @@ on the remote before the nightly sync runs.
   fix). Left alone for now — same rationale as the halt-state-drift gap above, not something to
   bundle into an unrelated fix.
 
-- ~~`price_feed`'s bba/price WS feed can silently stop delivering for one asset (no error, no
-  close) — real incident 2026-07-10.~~ **Done, same day** (in two steps, one of which was
-  itself a production incident — worth reading in full before touching this code again).
-  Root cause: `poly-collector`'s shared best_bid_ask/price_change subscription went quiet for
-  DOGE (205s) and separately ETH (205s) on 2026-07-10, causing the Rust trader to miss two
-  real entry signals (python's independent-feed sibling bot caught both). First fix attempt (a
-  5s silence timer forcing an unsubscribe+resubscribe) was deployed and caused a *worse*
-  problem — a continuous resubscribe storm firing every ~5s for nearly every asset, since
-  `best_bid_ask`/`price_change` are change events, not a heartbeat, and plenty of legitimate
-  quiet stretches exceed 5s. Rolled back same session. Landed instead in two phases: **phase 1**
-  (`price_feed/src/staleness.rs`) is a pure observe-only silence logger, no recovery action.
-  **Phase 2** (`price_feed/src/reconcile.rs`) is the real fix — polls Polymarket's REST
-  `GET /midpoint` (every 5s by default, `--midpoint-poll-secs` to override) and only declares
-  an asset stale on a confirmed *ground-truth mismatch* against the WS-cached price (debounced
-  over 2 consecutive polls), never from elapsed silence alone, so a genuinely quiet market
-  can't false-positive no matter how long it stays quiet. On confirmed staleness it logs and
-  exits the process, relying on `poly-collector.service`'s existing `Restart=always` — not a
-  surgical per-asset unsubscribe, which turned out to be unsafe here too (the SDK refcounts a
-  subscription per asset *across every independent subscriber* sharing the connection — 4
-  registrations per asset in this codebase, not the 2 first assumed; unsubscribing only 2
-  would silently no-op). Validated in Docker (real NATS + real Polymarket network, including a
-  forced-trigger test proving the full exit→restart cycle recovers cleanly with
-  `restart: unless-stopped`) before deploying to Oracle, then soak-verified there against the
-  real 3-asset production feed with zero false triggers. See
-  `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` (§0 for the first incident, §8 for
-  phase 1, §10 for phase 2 as actually built) for the full story.
-
-- ~~DOGE WIN/LOSS mismatch (2026-07-09).~~ **Done, same day**: full root cause, accepted
-  design, and Q&A in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4/§6.
-  `on_cycle_open`/`on_cycle_close` no longer clobber `Confirming`/`EnrichOnly` on a cycle
-  boundary; the resolution watcher now retries Gamma every 1s and halts new entries
-  (existing `entry_suppressed`/`/resume` mechanism) rather than guessing if it doesn't
-  resolve within the asset's own `reversal_start_time`. 7 new `worker.rs` unit tests
-  (`cargo test --lib worker::` 45/45); `cargo clippy --all-targets --all-features -D
-  warnings` and `cargo fmt --all --check` both clean. Deployed to Oracle via
-  `./scripts/deploy_trader.sh` — `trader-live.service` restarted clean, no open position
-  at restart time (checked `live_state_*.json` for any Holding-family state first).
-
 - **Pre-existing `config.rs`/`config_log.rs` test drift — found 2026-07-09, not fixed
   (out of scope for that task).** `cargo test --lib` fails 4 tests unrelated to any recent
   change: `config::tests::{default_fallback,load_and_resolve_btc,
@@ -301,21 +209,6 @@ on the remote before the nightly sync runs.
   specific historical calibration (comments cite 2026-07-05/07/08 dates) — the actual
   config file has since been recalibrated, so the hardcoded expected numbers no longer
   match. Confirmed pre-existing via `git stash` (same 4 failures on a clean checkout).
-
-- ~~`price_feed` clippy cleanup — flagged 2026-07-08.~~ **Done, same day** (`88673cd`): all 12
-  pre-existing errors (7x `collapsible_if` -> let-chains, 3x `ptr_arg` `&PathBuf` -> `&Path`, 1x
-  `too_many_arguments` allowed with justification) fixed, no behavior change — `cargo build`,
-  `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and
-  `cargo fmt --all --check` all clean.
-
-- ~~`rust-toolchain.toml` pin — flagged 2026-07-08.~~ **Done, same day**: added
-  `rust-toolchain.toml` (`channel = "1.96.1"`, `components = ["rustfmt", "clippy"]`) at the repo
-  root. Tested in isolation before it went anywhere near `main` (see "Trading engine — known
-  incidents" below for the full writeup) — the one real risk (the aarch64 `cross`/Docker
-  toolchain needing to fetch something new) did happen once, cost ~13s, and was a one-time,
-  cacheable cost, not a recurring one: a second `cross build` for both `trader` and `price_feed`
-  after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
-  confirmed clean end-to-end with the pin in place.
 
 - **Backfill hour-14 gap on Oracle (2026-07-02, price_feed) — still open.** While iterating the
   hourly-seal fix live, an intermediate (partially-fixed) binary was stopped mid-hour and
@@ -952,6 +845,59 @@ restart-count correlation against Oracle's journalctl that every flagged hour ma
 2-8 crash-loop restarts, and the two unflagged hours inside the window had zero restarts — a 1:1
 match. All flagged hours fall before the 15:08:55 deploy; hours after it (checked via a fresh
 `data_quality.py --hours-back 6` run) are 100% clean. Full writeup: `trader/doc/audit_data_2026-07-12.md`.
+
+### Halt state didn't reach disk immediately on `/halt`/`/resume`/balance events (2026-07-11, fixed)
+
+In-memory `entry_suppressed` flipped right away but the on-disk state only caught up whenever some
+other event happened to persist that slot next — a crash/restart in between silently reverted the
+halt. Fixed for all 6 command/balance-driven call sites (SIGINT/SIGTERM deliberately excluded — see
+doc). Full writeup: `trader/doc/plan_halt_persist_2026-07-11.md`.
+
+### `price_feed`'s bba/price WS feed can silently stop delivering for one asset (2026-07-10, fixed)
+
+Polymarket's shared best_bid_ask/price_change subscription went quiet for DOGE and ETH (205s each),
+missing two real entry signals. A first-attempt 5s silence-timer fix caused a worse resubscribe
+storm and was rolled back same session; landed instead as an observe-only silence logger plus a
+REST ground-truth cross-check (`GET /midpoint`) that only restarts the process on a confirmed
+mismatch, never from elapsed silence alone. Full writeup:
+`price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md`.
+
+### `build_backtest_prices.py::build_binance()` silently empty for any date after 2026-07-05 (2026-07-10, fixed)
+
+Sourced from the retired old Python collector's merged output, which stopped updating 2026-07-05 —
+every backtest date after that got zero binance rows, making the first "Backtest Reconciliation"
+report misread "no price data at all" as a config-drift or halt-carryover bug. Fixed to source from
+`price_feed/raw/` (this project's own collector) like `build_poly()` already did.
+
+### `build_backtest_prices.py` broken — stale import after a collector rename (2026-07-10, fixed)
+
+`recover_live_tmp` had been renamed to `recover_rust_parquet` (recovery split into per-kind
+functions), leaving an import pointing at a module that no longer existed. Fixed the import + call
+site; no logic change.
+
+### `/halt`/`/resume` can now scope to one strategy, not just one asset (2026-07-10, added)
+
+`/halt <asset> [strategy]` accepts an optional strategy argument, e.g. `/halt eth high_prob` no
+longer also halts `eth reversal`. Full writeup: `trader/doc/plan_halt_per_strategy_2026-07-10.md`.
+
+### ETH `high_prob` halted on a phantom second loss (2026-07-10, fixed)
+
+A Gamma correction from LOSS→WIN never decremented `HaltTracker`'s loss count, so a later real loss
+double-counted and tripped the 2-loss halt on only one actual loss. Fixed by applying the
+loss-count delta on any Gamma correction. Full writeup:
+`trader/doc/incident_halt_double_count_2026-07-10.md`.
+
+### DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09, fixed; refined 2026-07-10/11)
+
+Provisional WIN/LOSS is scored from the trader's own Binance ticks at cycle close, not Polymarket's
+actual settlement, and a cycle-boundary bug was clobbering the async Gamma correction before it
+could ever fire — so a real loss got Telegram-alerted as a win with no correction. Fixed same day
+(watcher no longer clobbers `Confirming`, retries Gamma and halts new entries if unresolved by
+deadline), then refined twice more: config-driven poll cadence + a balance-based override on the
+halt (2026-07-09), then a longer, asset/strategy-scoped Gamma deadline with a scoped
+balance-decrease halt (2026-07-11). Full writeup:
+`trader/doc/incident_DOGE_wrong_result_2026-07-09.md`; follow-on plan:
+`trader/doc/plan_gammapi_2026-07-11.md`.
 
 ### `cargo fmt --all --check` cleaned up, both crates (2026-07-08, fixed)
 
@@ -1693,175 +1639,5 @@ live price crossing a trigger band and need to grab the current price immediatel
 GTC buy would risk missing the entry window entirely if price moves away before a passive limit
 fills. `../btc_5mins` makes the same choice (`TradingEngine.place()` is always a market order for
 entries).
-
-</details>
-
-<details>
-<summary><strong>DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09, fixed same day)</strong></summary>
-
-## DOGE trade logged/alerted as WIN despite Polymarket resolving it a LOSS (2026-07-09)
-
-Full writeup: `trader/doc/incident_DOGE_wrong_result_2026-07-09.md`.
-
-`✅ DOGE TRADE WIN | 04:50:00 | DOWN ↓ | high_prob ... pnl=+$0.0704` was sent, but the
-daily `trade_reconcile.py` Gamma cross-check independently confirmed the real Polymarket
-resolution was the opposite outcome (a loss). Two separate causes, both confirmed from
-`live.log` and the CSV/recon report:
-
-1. **The pnl itself was only ever a provisional estimate.** `worker.rs::on_cycle_close`
-   scores WIN/LOSS from the trader's own Binance tick stream (`last_binance >
-   cycle_open_binance`) at cycle close, not from Polymarket's actual settlement — a
-   deliberate design (the async `Confirming` → `ApiResult` flow exists specifically to
-   correct it), but the Telegram message reports it with no "estimated" qualifier, so it
-   reads as final.
-2. **The correction that should have caught it was silently dropped.** `live.log` shows
-   the Gamma resolution watcher polling normally (7 logged attempts) then going silent
-   with no timeout message and no correction — because both `on_cycle_open` and
-   `on_cycle_close`'s fallback unconditionally reset `self.state` to `Watching` on *every*
-   cycle boundary, including while a worker is still `Confirming` a previous trade's async
-   Gamma result. `on_cycle_open` is the one that actually fires here — it runs within
-   about a second of `Confirming` being set (same ticker tick as `CycleClose`, separated
-   only by an async Gamma metadata fetch), so under normal operation the correction path
-   drops its answer essentially every time, not just on a slow resolution — see the doc's
-   §3a correction. Separately, the *daily* Python reconciliation did catch this mismatch
-   correctly, but only commits the finding to git — no Telegram alert wired up — so it
-   stayed invisible same-day either way.
-
-**Direction (2026-07-09):** halt over guess. Fix implemented (see the doc's §4/§6):
-`on_cycle_open`/`on_cycle_close` no longer clobber `Confirming`/`EnrichOnly`; the
-resolution watcher now retries Gamma every 1s (free — neither strategy can enter near a
-fresh cycle's start anyway) until either it resolves or the asset's own
-`reversal_start_time` deadline elapses, at which point it halts new entries for that
-asset/strategy (existing `entry_suppressed`/`/resume` mechanism) and alerts, leaving the
-provisional record for manual review rather than guessing. `trade_reconcile.py` → Telegram
-wiring explicitly stayed out of scope (Python kept separate from the live Rust path).
-
-**Update (2026-07-09):** two follow-on changes to the same watcher.
-
-1. **Polling cadence is now delayed and config-driven, not an immediate hardcoded 1s
-   loop.** Gamma "usually won't give you anything until 20-60s after cycle end," so the
-   watcher now waits `gamma_poll_delay_secs` (new per-asset config, default 60s, clamped
-   to the deadline) before its first attempt, then retries every
-   `gamma_poll_interval_secs` (new per-asset config, default 3s). The overall deadline is
-   unchanged (`reversal_start_time`, still 120s default). Both new fields live in
-   `strategy_*.toml` next to `reversal_start_time`, resolved through the same
-   per-asset/`default`-fallback machinery (`config.rs`).
-2. **A balance-based override on the halt itself.** If Gamma still hasn't resolved at the
-   deadline, `bin/live.rs` now also checks a new `GammaBalanceTracker` (`balance.rs`) — a
-   rolling comparison of the account's balance at this cycle's periodic checkpoint (the
-   same fetch `BalanceGuard` already does once per cycle, no extra API calls) against the
-   previous cycle's checkpoint. If balance is up, the slot does **not** halt — the
-   provisional record still stands as logged, unverified, but new entries continue
-   (`Action::GammaUnresolvedContinued` instead of `Action::GammaHaltEngaged`, still
-   Telegram-alerted). An unknown/failed balance sample fails safe to *not* skipping the
-   halt (`Event::ApiResultTimeout`'s `balance_increased` defaults to `false`), matching
-   this doc's own "halt over guess" rule above. This never clears a halt from another
-   source (manual `/halt`, loss-streak, drawdown) — `Worker::on_api_result_timeout` only
-   ever *adds* `entry_suppressed = true` in the non-balance-increased branch, never clears
-   it in the other.
-
-   **Risk tradeoff accepted here, worth being explicit about:** this is a deliberate
-   loosening of the exact halt this incident introduced. A wrong provisional WIN/LOSS can
-   now go un-halted — and so un-flagged for manual review — if the rest of the account
-   happens to be net up that cycle. The mitigating factor is that the provisional record
-   itself is unchanged and still marked unverified in the CSV/Telegram either way, so
-   `trade_reconcile.py`'s independent daily Gamma cross-check still catches it the next
-   day even if the live halt doesn't fire same-day.
-
-**Update (2026-07-11):** extended Gamma's window and scoped the balance-decrease halt to
-the specific asset+strategy involved, instead of process-wide. Full plan:
-`trader/doc/plan_gammapi_2026-07-11.md`.
-
-1. **Gamma deadline decoupled from `reversal_start_time`, extended to 10 minutes.**
-   `gamma_poll_deadline_secs` is now its own `strategy_*.toml` field (default `600`,
-   same per-asset/`default`-fallback shape as the other two Gamma fields) rather than
-   reusing `reversal_start_time` (120s). `gamma_poll_delay_secs` is unchanged (still 60s
-   before the first poll); `gamma_poll_interval_secs`'s default moved from 3s to 20s. A
-   `Confirming` position already survives a cycle boundary if Gamma is still unresolved
-   when the next cycle opens (see the 2026-07-09 fix above), so the longer window doesn't
-   require any change to that machinery — it just gives Gamma more real time before the
-   watcher gives up and halts for manual review.
-2. **New scoped balance-decrease halt, additive to the existing 25% global guard.** The
-   existing `BalanceGuard` (halts every asset/strategy process-wide if balance drops >25%
-   from the session-start baseline) stays as-is, as a coarse backstop. New: at the same
-   per-cycle checkpoint (now config-driven — `--balance-check-offset-secs`, default 120,
-   was a hardcoded const in `balance.rs`), if `GammaBalanceTracker` shows balance dropped
-   vs. the *previous* cycle's checkpoint, `bin/live.rs` halts only the `AssetSlot`s
-   currently `Worker::is_confirming()` (a trade whose WIN/LOSS is still awaiting Gamma) —
-   e.g. if only ETH `high_prob` has a trade pending, only ETH `high_prob` halts; every
-   other asset/strategy keeps trading. If two or more assets/strategies have a trade
-   pending at the same checkpoint, a single account-wide balance sample can't attribute
-   the drop to just one, so every currently-pending one halts (still not literally "the
-   whole thing" — idle slots are untouched). If balance is up instead, no halt — the
-   pending trade(s) keep being polled exactly as before, all the way to
-   `gamma_poll_deadline_secs`.
-3. **Gamma status reporting was already "quiet unless it matters."** Re-verified against
-   this change rather than modified: a clean Gamma confirmation (agrees with the
-   provisional Binance-based result) has only ever logged to `live.log`
-   (`Action::ApiResultNote`), never Telegram; a mismatch (`Action::LogTradeCorrection`)
-   and a deadline timeout (`Action::GammaHaltEngaged`/`GammaUnresolvedContinued`) have
-   always sent a Telegram alert. Only the displayed window in the timeout message's text
-   changed, from `reversal_start_time` to `gamma_poll_deadline_secs`.
-
-**Update (2026-07-11, second):** a halt now reaches disk immediately, not on the next unrelated
-event. Full plan: `trader/doc/plan_halt_persist_2026-07-11.md`.
-
-`Worker::on_control`/`on_balance` (`worker.rs`) both return `vec![Action::Persist]`, but every
-`bin/live.rs` call site that fired `Event::Control(..)`/`Event::Balance(..)` discarded that return
-value — the in-memory `entry_suppressed` flipped immediately, but the on-disk
-`live_state_<asset>_<strategy>.json` only caught up whenever some other event happened to persist
-that slot next (e.g. its next trade). A crash or restart in between silently reverted the halt.
-Fixed by two small helpers, `apply_control`/`apply_balance_halt`, that call `.step()` then
-`persist(slot)` in one place, wired into the 6 call sites where an immediate write is
-unambiguously correct: global `/halt`/`/resume`, scoped `/halt <asset> [strategy]`/`/resume`, the
-25%-drawdown backstop, and the new scoped balance-decrease halt above. **Deliberately excluded:**
-the 2 SIGINT/SIGTERM shutdown handlers, which also fire `Event::Control(ControlEvent::Halt)` and
-also discard it — that call has been a no-op since it was first written (2026-07-03) and stays
-that way by choice: `deploy_trader.sh` sends SIGTERM on every routine deploy, and the intent is
-for a restart to auto-continue whatever halt/resume state was already persisted, not come back
-halted just because the process happened to restart. New tests:
-`apply_control_halt_persists_immediately`, `apply_control_resume_persists_immediately`,
-`apply_balance_halt_persists_immediately` (`bin/live.rs`), each building a real `AssetSlot` against
-a scratch state file and asserting the on-disk `entry_suppressed` flips before any other event
-could have persisted it.
-
-### `/halt`/`/resume` can now scope to one strategy, not just one asset (2026-07-10, added)
-
-Full writeup: `trader/doc/plan_halt_per_strategy_2026-07-10.md`.
-
-`/halt <asset>` previously halted every strategy running on that asset together (e.g. `/halt eth`
-stopped both ETH `high_prob` and ETH `reversal`). `/halt <asset> [strategy]` now accepts an
-optional third argument — `/halt eth high_prob` halts only ETH `high_prob`, leaving ETH `reversal`
-running; `/halt eth` (no strategy) keeps the old all-strategies-for-this-asset behavior. Same for
-`/resume`. No changes to `Worker`, entry gating, or persistence were needed — `Worker` is already
-one instance per `(asset, strategy)` pair with its own persisted halt state, so this was purely a
-Telegram command-parsing/dispatch change (`telegram/commands.rs`, `telegram/control.rs`,
-`bin/live.rs`, `telegram/mod.rs`). An unrecognized strategy name (anything but `high_prob` or
-`reversal`) is rejected with `Command::Invalid` rather than silently ignored.
-
-### ETH high_prob halted on a phantom second loss (2026-07-10, fixed)
-
-Full writeup: `trader/doc/incident_halt_double_count_2026-07-10.md`.
-
-A 22:24 HKT stop-loss tripped `halt_prob=2` ("2 consecutive losses"), but only one real loss
-had happened that session. Root cause: a provisional LOSS logged at an earlier cycle-close had
-already incremented `HaltTracker`'s loss count, then Gamma's `ApiResult` corrected it to a WIN
-two minutes later (`on_api_result`'s `Confirming` flip branch, `Action::LogTradeCorrection`) —
-but that path never adjusted `self.halt`, so the phantom count sat at 1 for the rest of the
-session until the real stop-loss pushed it to 2. **Fix:** `HaltTracker::correct_trade`
-(`backtest.rs`) now applies the loss-count delta between a Confirming record's original and
-corrected outcome — decrementing a phantom loss (Loss → Win) or counting a missed one
-(Win → Loss) — and can itself emit `Action::HaltEngaged`/new `Action::HaltClearedByCorrection`
-if the correction crosses the threshold in either direction. Covered by new tests in
-`worker.rs`/`backtest.rs` reproducing this exact timeline.
-
-**Design note (confirmed 2026-07-10):** while diagnosing this, we noticed `HaltTracker` never
-resets its loss count on an intervening WIN — despite being documented as a "consecutive-loss"/
-"loss-streak" halt, `halt_rev`/`halt_prob` actually tracks total losses within the HKT session,
-in any order, not a true consecutive streak (a `Loss, Win, Win, Win, Loss` sequence still trips
-`halt_max=2` even though the losses are never back-to-back). Raised with the user and **confirmed
-as the intended behavior, not a bug** — session-total loss counting is what should ship. No code
-change from this; noted here only so the "consecutive" naming in comments/config keys isn't
-misread as a mismatch with the actual semantics.
 
 </details>
