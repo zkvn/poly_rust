@@ -8,10 +8,13 @@ enum OutputFormat {
     /// Aligned, human-readable table (default) — unchanged from before this
     /// flag existed.
     Table,
-    /// `slug,strategy,side,token_price,exit_price,outcome,pnl` — header
-    /// always printed, one row per trade, no summary line. For scripts
-    /// (e.g. trader/scripts/trade_reconcile.py's backtest reconciliation)
-    /// to parse via csv.DictReader instead of regexing the table.
+    /// `slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts` —
+    /// header always printed, one row per trade, no summary line. For
+    /// scripts (e.g. trader/scripts/trade_reconcile.py's backtest
+    /// reconciliation) to parse via csv.DictReader instead of regexing the
+    /// table. `entry_ts` (added for the Entry Time / T-seconds column in
+    /// trade_reconcile.py's BT reconciliation tables) is appended last to
+    /// keep the first 7 columns byte-stable for any other consumer.
     Csv,
 }
 
@@ -74,17 +77,18 @@ fn main() -> anyhow::Result<()> {
 /// present (even with zero trades) so a script's `csv.DictReader` never has
 /// to special-case an empty result.
 fn format_csv(trades: &[TradeRecord]) -> String {
-    let mut out = String::from("slug,strategy,side,token_price,exit_price,outcome,pnl\n");
+    let mut out = String::from("slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts\n");
     for t in trades {
         out.push_str(&format!(
-            "{},{},{},{:.6},{:.6},{},{:.6}\n",
+            "{},{},{},{:.6},{:.6},{},{:.6},{:.3}\n",
             t.slug,
             t.strategy,
             t.side.as_str(),
             t.token_price,
             t.exit_price,
             t.outcome.as_str(),
-            t.pnl
+            t.pnl,
+            t.entry_ts
         ));
     }
     out
@@ -173,7 +177,7 @@ mod tests {
     fn csv_header_always_present_even_with_no_trades() {
         assert_eq!(
             format_csv(&[]),
-            "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
+            "slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts\n"
         );
     }
 
@@ -183,11 +187,11 @@ mod tests {
         let mut lines = out.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "slug,strategy,side,token_price,exit_price,outcome,pnl"
+            "slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts"
         );
         assert_eq!(
             lines.next().unwrap(),
-            "eth-updown-5m-1783046100,high_prob,UP,0.930000,1.000000,WIN,0.075300"
+            "eth-updown-5m-1783046100,high_prob,UP,0.930000,1.000000,WIN,0.075300,1783046105.000"
         );
         assert!(lines.next().is_none(), "csv format prints no summary line");
     }

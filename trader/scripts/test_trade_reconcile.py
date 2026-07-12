@@ -47,8 +47,8 @@ class SlugCycleTsTests(unittest.TestCase):
 class ParseBacktestCsvTests(unittest.TestCase):
     def test_parses_rows_and_tags_asset(self):
         csv_text = (
-            "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
-            "eth-updown-5m-1783046100,high_prob,UP,0.930000,1.000000,WIN,0.075300\n"
+            "slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts\n"
+            "eth-updown-5m-1783046100,high_prob,UP,0.930000,1.000000,WIN,0.075300,1783046105.000\n"
         )
         rows = mod.parse_backtest_csv(csv_text, "ETH")
         self.assertEqual(len(rows), 1)
@@ -59,10 +59,84 @@ class ParseBacktestCsvTests(unittest.TestCase):
         self.assertEqual(r["outcome"], "WIN")
         self.assertAlmostEqual(r["pnl"], 0.0753)
         self.assertEqual(r["cycle_ts"], 1783046100.0)
+        self.assertAlmostEqual(r["entry_ts"], 1783046105.0)
+        self.assertAlmostEqual(r["token_price"], 0.93)
+        self.assertAlmostEqual(r["exit_price"], 1.0)
 
     def test_header_only_csv_yields_no_rows(self):
-        csv_text = "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
+        csv_text = "slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts\n"
         self.assertEqual(mod.parse_backtest_csv(csv_text, "ETH"), [])
+
+    def test_missing_entry_ts_column_defaults_to_zero(self):
+        """Older backtest binaries (pre entry_ts column) must not crash the parse."""
+        csv_text = (
+            "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
+            "eth-updown-5m-1783046100,high_prob,UP,0.930000,1.000000,WIN,0.075300\n"
+        )
+        rows = mod.parse_backtest_csv(csv_text, "ETH")
+        self.assertEqual(rows[0]["entry_ts"], 0.0)
+
+
+class TMinusStrTests(unittest.TestCase):
+    def test_computes_seconds_before_cycle_close(self):
+        # 5-min cycle from ts=1000 closes at ts=1300; entry at ts=1291 -> T-9s
+        self.assertEqual(mod.t_minus_str("eth-updown-5m-1000", 1291.0), "T-9s")
+
+    def test_missing_or_zero_entry_ts_returns_placeholder(self):
+        self.assertEqual(mod.t_minus_str("eth-updown-5m-1000", None), "—")
+        self.assertEqual(mod.t_minus_str("eth-updown-5m-1000", 0.0), "—")
+
+    def test_entry_after_cycle_close_shows_t_plus(self):
+        self.assertEqual(mod.t_minus_str("eth-updown-5m-1000", 1310.0), "T+10s")
+
+
+class PctChangeTests(unittest.TestCase):
+    def test_computes_percent_change(self):
+        self.assertAlmostEqual(mod._pct_change(0.5, 0.6), 20.0)
+
+    def test_none_when_base_missing_or_zero(self):
+        self.assertIsNone(mod._pct_change(None, 0.6))
+        self.assertIsNone(mod._pct_change(0.0, 0.6))
+        self.assertIsNone(mod._pct_change(None, None))
+
+
+class FmtHelpersTests(unittest.TestCase):
+    def test_fmt_pct(self):
+        self.assertEqual(mod._fmt_pct(7.53), "+7.5%")
+        self.assertEqual(mod._fmt_pct(-3.2), "-3.2%")
+        self.assertEqual(mod._fmt_pct(None), "—")
+
+    def test_fmt_price(self):
+        self.assertEqual(mod._fmt_price(0.93), "0.9300")
+        self.assertEqual(mod._fmt_price(None), "—")
+
+
+class LoadCycleOpenPricesTests(unittest.TestCase):
+    def test_reads_earliest_tick_per_slug(self):
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as d:
+            prices_dir = Path(d)
+            df = pd.DataFrame({
+                "ts": [1005.0, 1000.0, 1002.0],
+                "up": [0.60, 0.50, 0.55],
+                "dn": [0.40, 0.50, 0.45],
+                "slug": ["eth-updown-5m-1000"] * 3,
+            })
+            df.to_parquet(prices_dir / "ETH_poly_2026-07-11.parquet", index=False)
+            out = mod.load_cycle_open_prices(["ETH"], ["2026-07-11"], prices_dir)
+        self.assertEqual(out["eth-updown-5m-1000"], {"UP": 0.50, "DOWN": 0.50})
+
+    def test_missing_file_is_skipped_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = mod.load_cycle_open_prices(["ETH"], ["2026-07-11"], Path(d))
+        self.assertEqual(out, {})
+
+
+class SafeLoadCycleOpenPricesTests(unittest.TestCase):
+    def test_never_raises_even_if_the_inner_function_blows_up(self):
+        with patch.object(mod, "load_cycle_open_prices", side_effect=RuntimeError("boom")):
+            out = mod._safe_load_cycle_open_prices(["ETH"], ["2026-07-11"], Path("/tmp"))
+        self.assertEqual(out, {})
 
 
 class FilterBtRowsToWindowTests(unittest.TestCase):
@@ -152,6 +226,27 @@ class BuildLiveVsBtTests(unittest.TestCase):
         self.assertAlmostEqual(summary["total_live_pnl"], 0.3)
         self.assertAlmostEqual(summary["total_bt_pnl"], 0.05)
 
+    def test_entry_exit_and_delta_columns_computed_from_live_row(self):
+        live = self._live(slug="eth-updown-5m-1000")
+        live["entry_ts"] = 1291.0  # T-9s
+        live["token_price"] = 0.93
+        live["exit_price"] = 1.0
+        cycle_open_prices = {"eth-updown-5m-1000": {"UP": 0.50, "DOWN": 0.50}}
+        table, _ = mod.build_live_vs_bt([live], [self._bt(slug="eth-updown-5m-1000")], {"ETH"},
+                                         cycle_open_prices)
+        r = table[0]
+        self.assertEqual(r["entry_time"], "T-9s")
+        self.assertAlmostEqual(r["entry_price"], 0.93)
+        self.assertAlmostEqual(r["exit_price"], 1.0)
+        self.assertAlmostEqual(r["cycle_delta_pct"], (1.0 - 0.93) / 0.93 * 100)
+        self.assertAlmostEqual(r["entry_delta_pct"], (0.93 - 0.50) / 0.50 * 100)
+
+    def test_entry_delta_is_none_without_cycle_open_price_data(self):
+        live = self._live()
+        live["token_price"] = 0.93
+        table, _ = mod.build_live_vs_bt([live], [self._bt()], {"ETH"})
+        self.assertIsNone(table[0]["entry_delta_pct"])
+
 
 class BuildBtVsLiveTests(unittest.TestCase):
     """Cycles the backtest fired but live never traded (either side)."""
@@ -179,6 +274,19 @@ class BuildBtVsLiveTests(unittest.TestCase):
                "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1.0}]
         live = [{"slug": "s1", "side": "DOWN"}]
         self.assertEqual(mod.build_bt_vs_live(bt, live), [])
+
+    def test_entry_exit_and_delta_columns_computed_from_bt_row(self):
+        bt = [{"asset": "ETH", "slug": "eth-updown-5m-1000", "strategy": "high_prob",
+               "side": "UP", "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1000.0,
+               "entry_ts": 1291.0, "token_price": 0.93, "exit_price": 1.0}]
+        cycle_open_prices = {"eth-updown-5m-1000": {"UP": 0.50, "DOWN": 0.50}}
+        missed = mod.build_bt_vs_live(bt, live_rows=[], cycle_open_prices=cycle_open_prices)
+        r = missed[0]
+        self.assertEqual(r["entry_time"], "T-9s")
+        self.assertAlmostEqual(r["entry_price"], 0.93)
+        self.assertAlmostEqual(r["exit_price"], 1.0)
+        self.assertAlmostEqual(r["cycle_delta_pct"], (1.0 - 0.93) / 0.93 * 100)
+        self.assertAlmostEqual(r["entry_delta_pct"], (0.93 - 0.50) / 0.50 * 100)
 
 
 class SyncPriceFeedFromOracleTests(unittest.TestCase):

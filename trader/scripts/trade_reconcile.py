@@ -510,6 +510,37 @@ def slug_cycle_ts(slug: str) -> float:
         return 0.0
 
 
+# This project only ever trades 5-min updown cycles (see every slug's
+# "-5m-" segment) — no per-market cycle length to look up.
+CYCLE_LEN_SECS = 300.0
+
+
+def t_minus_str(slug: str, entry_ts: Optional[float]) -> str:
+    """T-Ns before cycle close at the moment of entry, matching the same
+    T-Ns convention worker.rs already logs live (e.g. "T-9s" order-placed
+    heartbeat lines) — so this column reads the same way as those logs."""
+    if not entry_ts:
+        return "—"
+    secs_left = slug_cycle_ts(slug) + CYCLE_LEN_SECS - entry_ts
+    return f"T-{secs_left:.0f}s" if secs_left >= 0 else f"T+{-secs_left:.0f}s"
+
+
+def _pct_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    """(b - a) / a * 100, or None if either side is missing or a is zero
+    (nothing to divide by)."""
+    if not a or b is None:
+        return None
+    return (b - a) / a * 100
+
+
+def _fmt_pct(v: Optional[float]) -> str:
+    return f"{v:+.1f}%" if v is not None else "—"
+
+
+def _fmt_price(v: Optional[float]) -> str:
+    return f"{v:.4f}" if v is not None else "—"
+
+
 def parse_backtest_csv(csv_text: str, asset: str) -> list:
     """Parse `backtest --format csv` stdout into normalized row dicts."""
     rows = []
@@ -523,8 +554,47 @@ def parse_backtest_csv(csv_text: str, asset: str) -> list:
             "outcome": row.get("outcome", "").strip().upper(),
             "pnl": _safe_float(row.get("pnl")),
             "cycle_ts": slug_cycle_ts(slug),
+            "entry_ts": _safe_float(row.get("entry_ts")),
+            "token_price": _safe_float(row.get("token_price")),
+            "exit_price": _safe_float(row.get("exit_price")),
         })
     return rows
+
+
+def load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
+    """slug -> {"UP": price, "DOWN": price} taken from the earliest poly tick
+    per slug (closest sample to cycle open) in the same local
+    {asset}_poly_{date}.parquet files run_backtest_reconciliation already
+    builds/syncs for the BT replay — reuses that data instead of making any
+    extra network calls just for the Entry Δ% column."""
+    import pandas as pd
+    out: dict = {}
+    for asset in assets:
+        for date in dates:
+            path = prices_dir / f"{asset}_poly_{date}.parquet"
+            if not path.exists():
+                continue
+            try:
+                df = pd.read_parquet(path)
+            except Exception:
+                continue
+            if df.empty:
+                continue
+            first = df.sort_values("ts").groupby("slug", as_index=False).first()
+            for _, row in first.iterrows():
+                out[row["slug"]] = {"UP": float(row["up"]), "DOWN": float(row["dn"])}
+    return out
+
+
+def _safe_load_cycle_open_prices(assets: list, dates: list, prices_dir: Path) -> dict:
+    """Same defensive-by-design rule as the rest of the BT reconciliation
+    pipeline: a missing/corrupt price file must degrade the Entry Δ% column
+    to "—", never take down the report."""
+    try:
+        return load_cycle_open_prices(assets, dates, prices_dir)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not load cycle-open prices for Entry Δ%: {e}[/yellow]")
+        return {}
 
 
 def filter_bt_rows_to_window(rows: list, from_ts: float, to_ts: float) -> list:
@@ -544,11 +614,15 @@ def _normalize_live_rows(rows: list) -> list:
             "side": r.get("side", "").strip().upper(),
             "outcome": r.get("outcome", "").strip().upper(),
             "pnl": _safe_float(r.get("pnl")),
+            "entry_ts": _safe_float(r.get("entry_ts")),
+            "token_price": _safe_float(r.get("token_price")),
+            "exit_price": _safe_float(r.get("exit_price")),
         })
     return out
 
 
-def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set) -> tuple:
+def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
+                      cycle_open_prices: Optional[dict] = None) -> tuple:
     """One row per live trade: does the backtest agree?
 
     Status classification:
@@ -558,6 +632,7 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set) -> t
       BT DID NOT FIRE  - bt had price data for the asset but skipped the cycle
       NO PRICE DATA    - bt couldn't run at all for this asset/date
     """
+    cycle_open_prices = cycle_open_prices or {}
     bt_lookup: dict = {}
     for r in bt_rows:
         bt_lookup.setdefault((r["slug"], r["side"]), r)
@@ -572,6 +647,17 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set) -> t
         bt_same = bt_lookup.get((lt["slug"], lt["side"]))
         bt_opp = bt_lookup.get((lt["slug"], opp_side))
 
+        entry_price = lt.get("token_price")
+        exit_price = lt.get("exit_price")
+        open_price = cycle_open_prices.get(lt["slug"], {}).get(lt["side"])
+        extra = {
+            "entry_time": t_minus_str(lt["slug"], lt.get("entry_ts")),
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "cycle_delta_pct": _pct_change(entry_price, exit_price),
+            "entry_delta_pct": _pct_change(open_price, entry_price),
+        }
+
         if bt_same:
             total_bt_pnl += bt_same["pnl"]
             diff_pnl = lt["pnl"] - bt_same["pnl"]
@@ -581,21 +667,21 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set) -> t
             else:
                 n_outcome_diff += 1
                 status = f"OUTCOME DIFF (live={lt['outcome']} bt={bt_same['outcome']})"
-            table.append({**lt, "bt_outcome": bt_same["outcome"], "bt_pnl": bt_same["pnl"],
+            table.append({**lt, **extra, "bt_outcome": bt_same["outcome"], "bt_pnl": bt_same["pnl"],
                           "diff_pnl": diff_pnl, "status": status})
         elif bt_opp:
             n_side_diff += 1
             total_bt_pnl += bt_opp["pnl"]
-            table.append({**lt, "bt_outcome": bt_opp["outcome"], "bt_pnl": bt_opp["pnl"],
+            table.append({**lt, **extra, "bt_outcome": bt_opp["outcome"], "bt_pnl": bt_opp["pnl"],
                           "diff_pnl": lt["pnl"] - bt_opp["pnl"],
                           "status": f"SIDE DIFF (bt side={opp_side})"})
         elif lt["asset"] not in assets_with_data:
             n_no_data += 1
-            table.append({**lt, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
+            table.append({**lt, **extra, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
                           "status": "NO PRICE DATA"})
         else:
             n_not_fired += 1
-            table.append({**lt, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
+            table.append({**lt, **extra, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
                           "status": "BT DID NOT FIRE"})
 
     summary = {
@@ -606,22 +692,31 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set) -> t
     return table, summary
 
 
-def build_bt_vs_live(bt_rows: list, live_rows: list) -> list:
+def build_bt_vs_live(bt_rows: list, live_rows: list, cycle_open_prices: Optional[dict] = None) -> list:
     """Cycles the backtest fired but live did not trade at all (either side).
 
     A live trade on the *opposite* side of a bt-fired cycle already shows up
     as SIDE DIFF in the Live vs BT table, so this only needs to exclude
     slugs live touched on any side — not check side equality itself.
     """
+    cycle_open_prices = cycle_open_prices or {}
     live_slugs = {lt["slug"] for lt in live_rows}
     missed = []
     for r in bt_rows:
         if r["slug"] in live_slugs:
             continue
+        entry_price = r.get("token_price")
+        exit_price = r.get("exit_price")
+        open_price = cycle_open_prices.get(r["slug"], {}).get(r["side"])
         missed.append({
             "time": datetime.fromtimestamp(r["cycle_ts"], tz=HKT).strftime("%Y-%m-%d %H:%M:%S") if r["cycle_ts"] else "",
             "asset": r["asset"], "strategy": r["strategy"], "side": r["side"],
             "outcome": r["outcome"], "pnl": r["pnl"],
+            "entry_time": t_minus_str(r["slug"], r.get("entry_ts")),
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "cycle_delta_pct": _pct_change(entry_price, exit_price),
+            "entry_delta_pct": _pct_change(open_price, entry_price),
         })
     missed.sort(key=lambda x: x["time"])
     return missed
@@ -722,9 +817,10 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
 
     bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start.timestamp(), window_end.timestamp())
     live_norm = _normalize_live_rows(annotated_live_rows)
+    cycle_open_prices = _safe_load_cycle_open_prices(assets, dates, BACKTEST_PRICES_DIR)
 
-    live_vs_bt_rows, bt_summary = build_live_vs_bt(live_norm, bt_in_window, assets_with_data)
-    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm)
+    live_vs_bt_rows, bt_summary = build_live_vs_bt(live_norm, bt_in_window, assets_with_data, cycle_open_prices)
+    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm, cycle_open_prices)
 
     return live_vs_bt_rows, bt_summary, bt_vs_live_rows
 
@@ -767,14 +863,28 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
 
     lines.append("### Live vs BT")
     lines.append("")
+    lines.append(
+        "**Entry Time** is T-seconds-before-cycle-close at the moment of entry "
+        "(same convention as worker.rs's live \"T-Ns\" heartbeat logs). "
+        "**Cycle Δ%** is the held token's own price move, entry→exit "
+        "(`(exit − entry) / entry`). **Entry Δ%** is how far the price had "
+        "already moved from cycle open to the moment of entry "
+        "(`(entry − cycle_open) / cycle_open`) — how much signal had built up "
+        "before the trade was placed."
+    )
+    lines.append("")
     if live_vs_bt_rows:
         lines.extend([
-            "| Time | Asset | Strategy | Side | Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status |",
-            "|---|---|---|---|---|---|---|---|---|---|",
+            "| Time | Asset | Strategy | Side | Entry Time | Entry Px | Exit Px | Cycle Δ% | Entry Δ% | "
+            "Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
         ])
         for r in live_vs_bt_rows:
             lines.append(
                 f"| {r['time']} | {r['asset']} | {r['strategy']} | {r['side']} | "
+                f"{r.get('entry_time', '—')} | {_fmt_price(r.get('entry_price'))} | "
+                f"{_fmt_price(r.get('exit_price'))} | {_fmt_pct(r.get('cycle_delta_pct'))} | "
+                f"{_fmt_pct(r.get('entry_delta_pct'))} | "
                 f"{r['outcome']} | {r['pnl']:+.4f} | {r.get('bt_outcome') or '—'} | "
                 f"{_fmt_pnl(r.get('bt_pnl'))} | {_fmt_pnl(r.get('diff_pnl'))} | {r['status']} |"
             )
@@ -792,15 +902,19 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
         )
         lines.append("")
         lines.extend([
-            "| Cycle (HKT) | Asset | Strategy | Side | BT Outcome | BT PnL |",
-            "|---|---|---|---|---|---|",
+            "| Cycle (HKT) | Asset | Strategy | Side | Entry Time | Entry Px | Exit Px | "
+            "Cycle Δ% | Entry Δ% | BT Outcome | BT PnL |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ])
         for r in bt_vs_live_rows:
             lines.append(
                 f"| {r['time']} | {r['asset']} | {r['strategy']} | {r['side']} | "
+                f"{r.get('entry_time', '—')} | {_fmt_price(r.get('entry_price'))} | "
+                f"{_fmt_price(r.get('exit_price'))} | {_fmt_pct(r.get('cycle_delta_pct'))} | "
+                f"{_fmt_pct(r.get('entry_delta_pct'))} | "
                 f"{r['outcome']} | {r['pnl']:+.4f} |"
             )
-        lines.append(f"| **Total** | | | | | **{missed_pnl:+.4f}** |")
+        lines.append(f"| **Total** | | | | | | | | | | **{missed_pnl:+.4f}** |")
         lines.append("")
     else:
         lines.append("None — every cycle the backtest fired, live also traded. \U0001f3af")
