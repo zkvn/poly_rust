@@ -147,6 +147,18 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **Live trader's heartbeat cadence (30s) is too coarse to forensically resolve a `SawLowSignal`
+  sub-threshold dip — found 2026-07-12, not fixed.** While auditing whether Rust's DOGE
+  `reversal` engine should have caught a 09:33:40 entry the Python bot (`btc_5mins`) took
+  (`trader/doc/audit_trades_2026-07-12.md` §2), the only thing that could confirm whether Rust's
+  own `SawLowSignal` latched in the ~40s before entry was raw tick data — which had been
+  destroyed for that exact hour by the `price_feed` collector-crash-loop bug (separate item
+  below, fixed same day). Even on intact data, `live.log`'s 30s heartbeat cadence
+  (`worker.rs`'s periodic status print) is too coarse to resolve a sub-second dip-and-recover —
+  the signal is explicitly designed to catch swings a 5s *or* 30s sampler can miss. Logging an
+  explicit tick-level saw-low latch/no-latch event (not just periodic heartbeats) would close
+  this observability gap for future incidents, independent of the parquet-destruction bug.
+
 - **`price_feed` local poly data missing a whole 5-min cycle mid-day — found 2026-07-12, not
   investigated (out of scope for that task).** While adding the Entry Δ% column to
   `trade_reconcile.py`'s BT reconciliation tables, `backtest_prices/ETH_poly_2026-07-10.parquet`
