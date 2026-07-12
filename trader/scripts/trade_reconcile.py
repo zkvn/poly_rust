@@ -76,6 +76,7 @@ BUILD_PRICES_SCRIPT = REPO_ROOT / "scripts" / "build_backtest_prices.py"
 # ourselves before building backtest price data rather than assuming
 # something else already did.
 PRICE_FEED_SYNC_SCRIPT = REPO_ROOT.parent / "price_feed" / "scripts" / "sync_oracle.sh"
+LIVE_LOG_PATH = REPO_ROOT / "live_logs" / "live.log"
 
 CSV_COLUMNS = [
     "logged_at", "slug", "strategy", "side", "entry_ts", "token_price",
@@ -629,6 +630,143 @@ def _cycle_open_close(ticks: list) -> tuple:
     return ticks[0][1], ticks[-1][1]
 
 
+# ---------------------------------------------------------------------------
+# BT vs Live mismatch-reason classification — trader/doc/incident_bt_vs_live_
+# discrepancy_2026-07-12.md + trader/doc/plan_timeout_backtest_and_mismatch_
+# reason_2026-07-12.md. Investigation-grade labels, not hard verdicts: a
+# missed cycle inside a reconstructed halt window is a confident match, but
+# "config changed"/"sparse tick data" are pointers for a human to verify, not
+# proof of causation (see plan doc's "Non-goals" — most config edits don't
+# touch entry-decision params, so that label alone doesn't mean the change
+# caused the mismatch).
+# ---------------------------------------------------------------------------
+
+# Real time recovered from a heartbeat line's own slug+T-Ns offset, same
+# technique as trader/doc/audit_retry_doge_2026-07-03.md.
+_HEARTBEAT_RE = re.compile(r"heartbeat \S+ \(\S+\) slug=(\S+) T-(-?\d+)s")
+
+# Ordered (pattern, reason) — first match wins if several could apply to the
+# same line (they don't overlap in practice, but order is still meaningful:
+# a more specific label should win over a generic one). NOTE: this treats
+# every halt as a single *global* on/off window, not per-asset/per-strategy
+# scoped, even though some sources (e.g. Gamma-unresolved, a single-asset
+# `/halt <ASSET>`) are narrower in reality — a deliberate simplification
+# (see plan doc): the dominant, highest-impact source observed in practice
+# (balance-drawdown) already is global, and getting per-asset scoping exactly
+# right would require modeling far more of worker.rs's control-event state
+# than this investigation-grade classifier needs to be useful.
+_HALT_OPEN_PATTERNS = [
+    (re.compile(r"BALANCE DRAWDOWN"), "balance drawdown >25% (session)"),
+    (re.compile(r"GAMMA UNRESOLVED — HALTED"), "Gamma-unresolved halt"),
+    # Must require "halt" itself, not just the 🛑 emoji — that emoji is also
+    # used on unrelated "STOP LOSS triggered" trade alerts (found 2026-07-12:
+    # a false-positive halt-open at 14:49:52 from an ETH stop-loss line,
+    # ~2min before the real balance-drawdown halt at 14:51:57, which threw
+    # off both the reconstructed start time and the reason label).
+    (re.compile(r"telegram\] sent: 🛑.*[Hh]alt"), "manual /halt"),
+]
+_HALT_CLOSE_RE = re.compile(r"telegram\] sent: ▶️ Resumed|HALT RESET")
+
+
+def build_halt_windows(live_log_path: Path, window_end: datetime) -> list:
+    """[(start_ts, end_ts, reason), ...] reconstructed from live.log: track
+    the most recently-seen heartbeat's real timestamp, attach it to the next
+    halt-open/halt-close line encountered. An open halt with no matching
+    close before `window_end` (e.g. still active at report-generation time)
+    stays open through `window_end`. A missing/unreadable log just means
+    this context is unavailable — not fatal, same fallback pattern as
+    `parse_gamma_timeout_events`."""
+    windows = []
+    try:
+        lines = live_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return windows
+
+    last_real_ts = None
+    open_start = None
+    open_reason = None
+    for line in lines:
+        hb = _HEARTBEAT_RE.search(line)
+        if hb:
+            slug, t_minus = hb.group(1), int(hb.group(2))
+            last_real_ts = slug_cycle_ts(slug) + CYCLE_LEN_SECS - t_minus
+            continue
+        if last_real_ts is None:
+            continue
+
+        if open_start is None:
+            for pattern, reason in _HALT_OPEN_PATTERNS:
+                if pattern.search(line):
+                    open_start, open_reason = last_real_ts, reason
+                    break
+        elif _HALT_CLOSE_RE.search(line):
+            windows.append((open_start, last_real_ts, open_reason))
+            open_start = open_reason = None
+
+    if open_start is not None:
+        windows.append((open_start, window_end.timestamp(), open_reason))
+    return windows
+
+
+def _safe_build_halt_windows(live_log_path: Path, window_end: datetime) -> list:
+    try:
+        return build_halt_windows(live_log_path, window_end)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not build halt windows for mismatch reasons: {e}[/yellow]")
+        return []
+
+
+def get_config_last_change_ts(config_dir: Path) -> Optional[float]:
+    """Unix ts of the most recent git commit touching the resolved (latest)
+    strategy_*.toml — best-effort via `git log`; None if git/the repo isn't
+    available or the file has no history, same optional-enrichment fallback
+    pattern as everything else in this module."""
+    try:
+        files = sorted(config_dir.glob("strategy_*.toml"))
+        if not files:
+            return None
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", files[-1].name],
+            cwd=config_dir, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return float(result.stdout.strip())
+    except Exception:
+        return None
+
+
+def _safe_get_config_last_change_ts(config_dir: Path) -> Optional[float]:
+    try:
+        return get_config_last_change_ts(config_dir)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not resolve config change time for mismatch reasons: {e}[/yellow]")
+        return None
+
+
+SPARSE_TICK_THRESHOLD = 60  # a full 5-min cycle at this project's usual ~4Hz
+# binance sample rate is ~1200 ticks; 60 is a conservative floor well below
+# any normal cycle, chosen to only flag genuinely gappy cycles, not quiet ones.
+
+
+def classify_mismatch_reason(
+    cycle_ts: float, halt_windows: list, config_change_ts: Optional[float],
+    window_end_ts: float, tick_count: Optional[int],
+) -> str:
+    """Priority order, first match wins — see module doc comment above."""
+    for start, end, reason in halt_windows:
+        if start <= cycle_ts <= end:
+            start_str = datetime.fromtimestamp(start, tz=HKT).strftime("%H:%M")
+            end_str = datetime.fromtimestamp(end, tz=HKT).strftime("%H:%M")
+            return f"live halted: {reason} {start_str}–{end_str}"
+    if config_change_ts is not None and cycle_ts <= config_change_ts <= window_end_ts:
+        change_str = datetime.fromtimestamp(config_change_ts, tz=HKT).strftime("%Y-%m-%d %H:%M")
+        return f"config changed {change_str} same-window (verify params)"
+    if tick_count is not None and tick_count < SPARSE_TICK_THRESHOLD:
+        return f"sparse tick data ({tick_count} ticks this cycle)"
+    return "unexplained"
+
+
 def filter_bt_rows_to_window(rows: list, from_ts: float, to_ts: float) -> list:
     return [r for r in rows if from_ts <= r["cycle_ts"] < to_ts]
 
@@ -654,7 +792,8 @@ def _normalize_live_rows(rows: list) -> list:
 
 
 def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
-                      underlying_prices: Optional[dict] = None) -> tuple:
+                      underlying_prices: Optional[dict] = None,
+                      mismatch_ctx: Optional[dict] = None) -> tuple:
     """One row per live trade: does the backtest agree?
 
     Status classification:
@@ -663,8 +802,17 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
       SIDE DIFF        - bt fired the opposite side for that slug
       BT DID NOT FIRE  - bt had price data for the asset but skipped the cycle
       NO PRICE DATA    - bt couldn't run at all for this asset/date
+
+    `reason` (see classify_mismatch_reason) is only computed for genuine
+    mismatches (OUTCOME DIFF/SIDE DIFF/BT DID NOT FIRE) — MATCH needs no
+    explanation, and NO PRICE DATA already is one.
     """
     underlying_prices = underlying_prices or {}
+    mismatch_ctx = mismatch_ctx or {}
+    halt_windows = mismatch_ctx.get("halt_windows", [])
+    config_change_ts = mismatch_ctx.get("config_change_ts")
+    window_end_ts = mismatch_ctx.get("window_end_ts", 0.0)
+
     bt_lookup: dict = {}
     for r in bt_rows:
         bt_lookup.setdefault((r["slug"], r["side"]), r)
@@ -682,6 +830,11 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
         ticks = underlying_prices.get(lt["slug"], [])
         open_p, close_p = _cycle_open_close(ticks)
         entry_p = _underlying_price_at(ticks, lt.get("entry_ts"))
+        cycle_ts = slug_cycle_ts(lt["slug"])
+        mismatch_reason = classify_mismatch_reason(
+            cycle_ts, halt_windows, config_change_ts, window_end_ts,
+            len(ticks) if ticks else None,
+        )
         extra = {
             "entry_time": t_minus_str(lt["slug"], lt.get("entry_ts")),
             "entry_price": lt.get("token_price"),
@@ -695,26 +848,27 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
             diff_pnl = lt["pnl"] - bt_same["pnl"]
             if bt_same["outcome"] == lt["outcome"]:
                 n_match += 1
-                status = "MATCH"
+                status, reason = "MATCH", "—"
             else:
                 n_outcome_diff += 1
                 status = f"OUTCOME DIFF (live={lt['outcome']} bt={bt_same['outcome']})"
+                reason = mismatch_reason
             table.append({**lt, **extra, "bt_outcome": bt_same["outcome"], "bt_pnl": bt_same["pnl"],
-                          "diff_pnl": diff_pnl, "status": status})
+                          "diff_pnl": diff_pnl, "status": status, "reason": reason})
         elif bt_opp:
             n_side_diff += 1
             total_bt_pnl += bt_opp["pnl"]
             table.append({**lt, **extra, "bt_outcome": bt_opp["outcome"], "bt_pnl": bt_opp["pnl"],
                           "diff_pnl": lt["pnl"] - bt_opp["pnl"],
-                          "status": f"SIDE DIFF (bt side={opp_side})"})
+                          "status": f"SIDE DIFF (bt side={opp_side})", "reason": mismatch_reason})
         elif lt["asset"] not in assets_with_data:
             n_no_data += 1
             table.append({**lt, **extra, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
-                          "status": "NO PRICE DATA"})
+                          "status": "NO PRICE DATA", "reason": "—"})
         else:
             n_not_fired += 1
             table.append({**lt, **extra, "bt_outcome": None, "bt_pnl": None, "diff_pnl": None,
-                          "status": "BT DID NOT FIRE"})
+                          "status": "BT DID NOT FIRE", "reason": mismatch_reason})
 
     summary = {
         "n_live": len(live_rows), "n_match": n_match, "n_outcome_diff": n_outcome_diff,
@@ -724,14 +878,21 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
     return table, summary
 
 
-def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional[dict] = None) -> list:
+def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional[dict] = None,
+                      mismatch_ctx: Optional[dict] = None) -> list:
     """Cycles the backtest fired but live did not trade at all (either side).
 
     A live trade on the *opposite* side of a bt-fired cycle already shows up
     as SIDE DIFF in the Live vs BT table, so this only needs to exclude
-    slugs live touched on any side — not check side equality itself.
+    slugs live touched on any side — not check side equality itself. Every
+    row here is by definition a mismatch, so `reason` is always computed.
     """
     underlying_prices = underlying_prices or {}
+    mismatch_ctx = mismatch_ctx or {}
+    halt_windows = mismatch_ctx.get("halt_windows", [])
+    config_change_ts = mismatch_ctx.get("config_change_ts")
+    window_end_ts = mismatch_ctx.get("window_end_ts", 0.0)
+
     live_slugs = {lt["slug"] for lt in live_rows}
     missed = []
     for r in bt_rows:
@@ -740,6 +901,10 @@ def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional
         ticks = underlying_prices.get(r["slug"], [])
         open_p, close_p = _cycle_open_close(ticks)
         entry_p = _underlying_price_at(ticks, r.get("entry_ts"))
+        reason = classify_mismatch_reason(
+            r["cycle_ts"], halt_windows, config_change_ts, window_end_ts,
+            len(ticks) if ticks else None,
+        )
         missed.append({
             "time": datetime.fromtimestamp(r["cycle_ts"], tz=HKT).strftime("%Y-%m-%d %H:%M:%S") if r["cycle_ts"] else "",
             "asset": r["asset"], "strategy": r["strategy"], "side": r["side"],
@@ -749,6 +914,7 @@ def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional
             "exit_price": r.get("exit_price"),
             "cycle_delta_pct": _pct_change(open_p, close_p),
             "entry_delta_pct": _pct_change(open_p, entry_p),
+            "reason": reason,
         })
     missed.sort(key=lambda x: x["time"])
     return missed
@@ -850,9 +1016,15 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
     bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start.timestamp(), window_end.timestamp())
     live_norm = _normalize_live_rows(annotated_live_rows)
     underlying_prices = _safe_load_underlying_price_series(assets, dates, BACKTEST_PRICES_DIR)
+    mismatch_ctx = {
+        "halt_windows": _safe_build_halt_windows(LIVE_LOG_PATH, window_end),
+        "config_change_ts": _safe_get_config_last_change_ts(CONFIG_DIR),
+        "window_end_ts": window_end.timestamp(),
+    }
 
-    live_vs_bt_rows, bt_summary = build_live_vs_bt(live_norm, bt_in_window, assets_with_data, underlying_prices)
-    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm, underlying_prices)
+    live_vs_bt_rows, bt_summary = build_live_vs_bt(
+        live_norm, bt_in_window, assets_with_data, underlying_prices, mismatch_ctx)
+    bt_vs_live_rows = build_bt_vs_live(bt_in_window, live_norm, underlying_prices, mismatch_ctx)
 
     return live_vs_bt_rows, bt_summary, bt_vs_live_rows
 
@@ -909,14 +1081,20 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
         "resolves against. **Entry Δ%** is how far the underlying had already "
         "moved from cycle open to the moment of entry "
         "(`(entry − cycle_open) / cycle_open`) — how much of that move had "
-        "already happened before the trade was placed."
+        "already happened before the trade was placed. **Reason** classifies "
+        "*why* a mismatch happened, where determinable — see "
+        "`trader/doc/incident_bt_vs_live_discrepancy_2026-07-12.md` and "
+        "`trader/doc/plan_timeout_backtest_and_mismatch_reason_2026-07-12.md` "
+        "for the method and its limits (labels are investigation-grade "
+        "pointers, not proof of causation, except for a halt window — a "
+        "cycle live was actually suppressed for is a confident explanation)."
     )
     lines.append("")
     if live_vs_bt_rows:
         lines.extend([
             "| Time | Asset | Strategy | Side | Entry Time | Entry Px | Exit Px | Cycle Δ% | Entry Δ% | "
-            "Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+            "Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status | Reason |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
         ])
         for r in live_vs_bt_rows:
             lines.append(
@@ -925,7 +1103,8 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
                 f"{_fmt_price(r.get('exit_price'))} | {_fmt_pct(r.get('cycle_delta_pct'))} | "
                 f"{_fmt_pct(r.get('entry_delta_pct'))} | "
                 f"{r['outcome']} | {r['pnl']:+.4f} | {r.get('bt_outcome') or '—'} | "
-                f"{_fmt_pnl(r.get('bt_pnl'))} | {_fmt_pnl(r.get('diff_pnl'))} | {r['status']} |"
+                f"{_fmt_pnl(r.get('bt_pnl'))} | {_fmt_pnl(r.get('diff_pnl'))} | {r['status']} | "
+                f"{r.get('reason', '—')} |"
             )
         lines.append("")
     else:
@@ -942,8 +1121,8 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
         lines.append("")
         lines.extend([
             "| Cycle (HKT) | Asset | Strategy | Side | Entry Time | Entry Px | Exit Px | "
-            "Cycle Δ% | Entry Δ% | BT Outcome | BT PnL |",
-            "|---|---|---|---|---|---|---|---|---|---|---|",
+            "Cycle Δ% | Entry Δ% | BT Outcome | BT PnL | Reason |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ])
         for r in bt_vs_live_rows:
             lines.append(
@@ -951,9 +1130,9 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
                 f"{r.get('entry_time', '—')} | {_fmt_price(r.get('entry_price'))} | "
                 f"{_fmt_price(r.get('exit_price'))} | {_fmt_pct(r.get('cycle_delta_pct'))} | "
                 f"{_fmt_pct(r.get('entry_delta_pct'))} | "
-                f"{r['outcome']} | {r['pnl']:+.4f} |"
+                f"{r['outcome']} | {r['pnl']:+.4f} | {r.get('reason', '—')} |"
             )
-        lines.append(f"| **Total** | | | | | | | | | | **{missed_pnl:+.4f}** |")
+        lines.append(f"| **Total** | | | | | | | | | | **{missed_pnl:+.4f}** | |")
         lines.append("")
     else:
         lines.append("None — every cycle the backtest fired, live also traded. \U0001f3af")

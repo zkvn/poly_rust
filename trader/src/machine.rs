@@ -65,6 +65,7 @@ pub struct Machine {
     sl: f64,     // strategy-specific absolute SL floor (0 = disabled)
     sl_pnl: f64, // PnL-relative SL (0 = disabled)
     unwind_pnl: f64,
+    unwind_time: f64, // max holding time cap, seconds (0 = disabled)
     trade_size: f64,
     gate_params: GateParams,
 }
@@ -104,6 +105,7 @@ impl Machine {
             sl: p.sl_reversal,
             sl_pnl: p.sl_pnl_rev,
             unwind_pnl: p.unwind_pnl_rev,
+            unwind_time: p.unwind_time_rev,
             trade_size: p.trade_size_usdc,
             gate_params: GateParams {
                 spread_premium_limit: p.spread_premium_limit,
@@ -148,6 +150,7 @@ impl Machine {
             sl: p.sl_high_prob,
             sl_pnl: p.sl_pnl_hp,
             unwind_pnl: p.unwind_pnl_hp,
+            unwind_time: p.unwind_time_hp,
             trade_size: p.trade_size_usdc,
             gate_params: GateParams {
                 spread_premium_limit: p.spread_premium_limit,
@@ -229,17 +232,56 @@ impl Machine {
             return self.emit(h, Outcome::Unwind, tp_exit, pnl);
         }
 
+        // 4. Max holding time (checked last, after every other exit condition —
+        // matches worker.rs's live ordering and the original Python
+        // _replay_cycle order; see trader/doc/plan_unwind_time_2026-07-08.md).
+        if let Some(rec) = self.check_timeout(&h, tick.ts, exit_price) {
+            return Some(rec);
+        }
+
         None
     }
 
-    /// Process a binance tick. Evaluates entry when Watching.
-    pub fn on_binance(&mut self, tick: BinanceTick) {
+    /// Process a binance tick. Evaluates entry when Watching; while Holding,
+    /// only the max-holding-time check applies (try_enter is a no-op unless
+    /// Watching, so it's skipped rather than called-and-ignored) — a position
+    /// can time out on a binance-only tick since unwind_time is a pure
+    /// elapsed-time cap, not conditioned on a poly crossing.
+    pub fn on_binance(&mut self, tick: BinanceTick) -> Option<TradeRecord> {
         // Update binance signals (always)
         self.delta_pct.on_binance(tick);
         self.latest_binance.on_binance(tick);
         self.last_binance = tick.price;
 
+        if let TradeState::Holding(h) = &self.state {
+            let h = h.clone();
+            let exit_price = if h.side == Side::Up {
+                self.latest_poly.up()
+            } else {
+                self.latest_poly.dn()
+            };
+            return self.check_timeout(&h, tick.ts, exit_price);
+        }
+
         self.try_enter(tick.ts);
+        None
+    }
+
+    /// Force-close a held position once it's been open >= `unwind_time`, at
+    /// whatever the current market price is (win or lose) — a pure
+    /// elapsed-time cap, not a PnL-based decision. `exit_price` is the
+    /// caller's freshest known price for the held side (the current poly
+    /// tick's own price from `on_poly`, or the last cached poly reading from
+    /// `on_binance`). Excluded from `HaltTracker`'s loss-streak count by
+    /// construction — `Outcome::is_loss_for_halt()` only matches `Loss |
+    /// StopLoss` — same as worker.rs's live behavior.
+    fn check_timeout(&mut self, h: &HoldingData, now: f64, exit_price: f64) -> Option<TradeRecord> {
+        if self.unwind_time <= 0.0 || (now - h.entry_ts) < self.unwind_time {
+            return None;
+        }
+        let shares = self.trade_size / h.token_price;
+        let pnl = round4(shares * exit_price - self.trade_size);
+        self.emit(h.clone(), Outcome::Timeout, exit_price, pnl)
     }
 
     /// Entry evaluation, shared by `on_poly` and `on_binance` — see the module
@@ -404,6 +446,175 @@ mod tests {
             end_ts: start + 300.0,
             open_binance: 60_000.0,
         }
+    }
+
+    /// Shared entry dance for the timeout tests below — same DOWN-reversal
+    /// setup as `unwind_fires_on_poly_tick`, landing in `Holding` with
+    /// `entry_ts=1240.0` (entry fires immediately on the recovery poly tick itself, using the delta_pct already cached from the ts=1200 binance tick — same mechanism as `entry_fires_on_poly_tick_using_cached_delta`), `token_price=0.70` (the ts=1240 poly tick's `dn`).
+    fn enter_down_position(p: &AssetParams) -> Machine {
+        let mut m = Machine::new_reversal(p);
+        m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", false);
+
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        });
+        m.on_binance(BinanceTick {
+            ts: 1200.0,
+            price: 59_900.0,
+        });
+        m.on_poly(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        });
+        m.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        });
+        assert!(m.is_holding(), "setup: expected Holding after entry");
+        m
+    }
+
+    #[test]
+    fn timeout_force_closes_after_unwind_time_elapsed_on_poly_tick() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut m = enter_down_position(&p);
+
+        // entry_ts=1240, threshold=30s -> fires at ts>=1270. dn=0.65 avoids
+        // both SL (<=0.50) and unwind (>=0.73) so only timeout can explain it.
+        let rec = m.on_poly(PolyTick {
+            ts: 1270.0,
+            up: 0.35,
+            dn: 0.65,
+        });
+        assert!(rec.is_some(), "expected a TIMEOUT record");
+        let rec = rec.unwrap();
+        assert_eq!(rec.outcome, Outcome::Timeout);
+        assert!((rec.exit_price - 0.65).abs() < 1e-9);
+        // pnl = shares*exit - trade_size = (1.0/0.70)*0.65 - 1.0
+        assert!(
+            (rec.pnl - (0.65 / 0.70 - 1.0)).abs() < 0.0001,
+            "pnl={}",
+            rec.pnl
+        );
+        assert!(
+            !m.is_holding(),
+            "state must return to Watching after timeout"
+        );
+    }
+
+    #[test]
+    fn timeout_force_closes_on_binance_only_tick() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut m = enter_down_position(&p);
+
+        // No further PolyTick after entry — only a BinanceTick past the
+        // threshold. exit_price must come from the cached latest_poly.dn()
+        // (0.70, from the ts=1240 poly tick), not a poly tick of its own.
+        let rec = m.on_binance(BinanceTick {
+            ts: 1270.0,
+            price: 59_850.0,
+        });
+        assert!(
+            rec.is_some(),
+            "expected a TIMEOUT record from the binance path"
+        );
+        let rec = rec.unwrap();
+        assert_eq!(rec.outcome, Outcome::Timeout);
+        assert!(
+            (rec.exit_price - 0.70).abs() < 1e-9,
+            "exit_price={}",
+            rec.exit_price
+        );
+        // exit_price == token_price (0.70) -> flat pnl (shares*0.70 - 1.0 == 0)
+        assert!(rec.pnl.abs() < 1e-9, "pnl={}", rec.pnl);
+    }
+
+    #[test]
+    fn timeout_does_not_fire_before_threshold_elapsed() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut m = enter_down_position(&p);
+
+        let rec = m.on_poly(PolyTick {
+            ts: 1269.0, // entry_ts + 29s, 1s short of the 30s threshold
+            up: 0.35,
+            dn: 0.65,
+        });
+        assert!(rec.is_none(), "must not fire before the threshold elapses");
+        assert!(m.is_holding(), "position must still be open");
+    }
+
+    #[test]
+    fn timeout_disabled_when_unwind_time_zero() {
+        let p = btc_params(); // unwind_time_rev defaults to 0.0 (disabled)
+        let mut m = enter_down_position(&p);
+
+        let rec = m.on_poly(PolyTick {
+            ts: 1250.0 + 10_000.0, // far past any reasonable threshold
+            up: 0.35,
+            dn: 0.65,
+        });
+        assert!(
+            rec.is_none(),
+            "unwind_time=0.0 must disable the timeout check entirely"
+        );
+        assert!(m.is_holding());
+    }
+
+    #[test]
+    fn stoploss_takes_priority_over_timeout_on_same_tick() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0; // also eligible to fire on this same tick
+        let mut m = enter_down_position(&p);
+
+        // ts=1280 (>= entry_ts+30, timeout-eligible) AND dn=0.45 (<= 0.70-0.20
+        // sl_pnl floor, SL-eligible) — SL must win per the fixed check order.
+        let rec = m.on_poly(PolyTick {
+            ts: 1270.0,
+            up: 0.55,
+            dn: 0.45,
+        });
+        assert!(rec.is_some());
+        assert_eq!(
+            rec.unwrap().outcome,
+            Outcome::StopLoss,
+            "stop-loss must be checked before timeout, matching the fixed exit-chain order"
+        );
+    }
+
+    #[test]
+    fn timeout_pnl_can_be_positive_or_negative() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+
+        // Positive: exit above entry (0.70), but below the 0.73 unwind threshold.
+        let mut m_up = enter_down_position(&p);
+        let rec_up = m_up
+            .on_poly(PolyTick {
+                ts: 1270.0,
+                up: 0.28,
+                dn: 0.72,
+            })
+            .unwrap();
+        assert_eq!(rec_up.outcome, Outcome::Timeout);
+        assert!(rec_up.pnl > 0.0, "pnl={}", rec_up.pnl);
+
+        // Negative: exit below entry (0.70), but above the 0.50 sl_pnl floor.
+        let mut m_dn = enter_down_position(&p);
+        let rec_dn = m_dn
+            .on_poly(PolyTick {
+                ts: 1270.0,
+                up: 0.35,
+                dn: 0.65,
+            })
+            .unwrap();
+        assert_eq!(rec_dn.outcome, Outcome::Timeout);
+        assert!(rec_dn.pnl < 0.0, "pnl={}", rec_dn.pnl);
     }
 
     #[test]

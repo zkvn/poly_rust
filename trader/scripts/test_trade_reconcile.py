@@ -112,7 +112,7 @@ class FmtHelpersTests(unittest.TestCase):
 
 
 class LoadUnderlyingPriceSeriesTests(unittest.TestCase):
-    """Regression coverage for incident_delta_pct_2026-07-13.md: Entry Δ%/
+    """Regression coverage for incident_delta_pct_2026-07-12.md: Entry Δ%/
     Cycle Δ% must be computed from the underlying (Binance) asset price,
     not the CLOB (Polymarket order-book) probability price."""
 
@@ -162,6 +162,160 @@ class CycleOpenCloseTests(unittest.TestCase):
 
     def test_none_none_when_empty(self):
         self.assertEqual(mod._cycle_open_close([]), (None, None))
+
+
+class BuildHaltWindowsTests(unittest.TestCase):
+    """trader/doc/incident_bt_vs_live_discrepancy_2026-07-12.md's halt-window
+    reconstruction, promoted from a one-off investigation script."""
+
+    def _log(self, tmpdir: Path, lines: list) -> Path:
+        path = tmpdir / "live.log"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_balance_drawdown_halt_closed_by_resume(self):
+        # slug cycle_ts=1000, cycle_end=1300. T-100 -> real_ts=1200. T-40 -> real_ts=1260.
+        lines = [
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1000 T-100s binance=1800 up=0.5 dn=0.5",
+            "[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries on all assets.",
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1000 T-40s binance=1800 up=0.5 dn=0.5",
+            "[telegram] sent: ▶️ Resumed all assets (BTC, ETH, DOGE).",
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            log_path = self._log(Path(d), lines)
+            windows = mod.build_halt_windows(log_path, mod.datetime(2026, 1, 1, tzinfo=mod.HKT))
+        self.assertEqual(len(windows), 1)
+        start, end, reason = windows[0]
+        self.assertEqual(start, 1200.0)
+        self.assertEqual(end, 1260.0)
+        self.assertEqual(reason, "balance drawdown >25% (session)")
+
+    def test_stop_loss_telegram_line_is_not_mistaken_for_a_halt(self):
+        """Regression test: a '🛑 <asset> STOP LOSS triggered' trade alert
+        shares the same emoji as real halt messages but isn't one — found
+        2026-07-12 as a false-positive halt-open 2min before a genuine
+        balance-drawdown halt. Only the real halt (which also says "halt")
+        should open a window."""
+        lines = [
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1000 T-100s binance=1800 up=0.5 dn=0.5",
+            "[telegram] sent: \U0001f6d1 <b>ETH</b> STOP LOSS triggered | 14:49:52 | T-7s | UP ↑ | high_prob",
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1000 T-40s binance=1800 up=0.5 dn=0.5",
+            "[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries on all assets.",
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1300 T-260s binance=1800 up=0.5 dn=0.5",
+            "[telegram] sent: ▶️ Resumed all assets (BTC, ETH, DOGE).",
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            log_path = self._log(Path(d), lines)
+            windows = mod.build_halt_windows(log_path, mod.datetime(2026, 1, 1, tzinfo=mod.HKT))
+        self.assertEqual(len(windows), 1)
+        start, end, reason = windows[0]
+        self.assertEqual(start, 1260.0, "must open at the real BALANCE DRAWDOWN line, not the stop-loss alert")
+        self.assertEqual(reason, "balance drawdown >25% (session)")
+
+    def test_unresumed_halt_stays_open_through_window_end(self):
+        lines = [
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1300 T-200s binance=1800 up=0.5 dn=0.5",
+            "[telegram] sent: \U0001f6d1 Halted all assets (BTC, ETH, DOGE) — new entries suppressed, open positions still managed.",
+        ]
+        window_end = mod.datetime(2026, 1, 1, tzinfo=mod.HKT)
+        with tempfile.TemporaryDirectory() as d:
+            log_path = self._log(Path(d), lines)
+            windows = mod.build_halt_windows(log_path, window_end)
+        self.assertEqual(len(windows), 1)
+        start, end, reason = windows[0]
+        self.assertEqual(start, 1400.0)  # 1300 + 300 - 200
+        self.assertEqual(end, window_end.timestamp())
+        self.assertEqual(reason, "manual /halt")
+
+    def test_halt_line_before_any_heartbeat_is_ignored_not_fatal(self):
+        lines = [
+            "[live] BALANCE DRAWDOWN >25% from session baseline — halting new entries on all assets.",
+            "[live] heartbeat ETH (high_prob) slug=eth-updown-5m-1000 T-100s binance=1800 up=0.5 dn=0.5",
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            log_path = self._log(Path(d), lines)
+            windows = mod.build_halt_windows(log_path, mod.datetime(2026, 1, 1, tzinfo=mod.HKT))
+        self.assertEqual(windows, [])
+
+    def test_missing_log_file_returns_empty_not_fatal(self):
+        windows = mod.build_halt_windows(Path("/nonexistent/live.log"), mod.datetime(2026, 1, 1, tzinfo=mod.HKT))
+        self.assertEqual(windows, [])
+
+
+class SafeBuildHaltWindowsTests(unittest.TestCase):
+    def test_never_raises_even_if_the_inner_function_blows_up(self):
+        with patch.object(mod, "build_halt_windows", side_effect=RuntimeError("boom")):
+            out = mod._safe_build_halt_windows(Path("/tmp"), mod.datetime(2026, 1, 1, tzinfo=mod.HKT))
+        self.assertEqual(out, [])
+
+
+class GetConfigLastChangeTsTests(unittest.TestCase):
+    def test_returns_git_commit_ts_of_latest_config_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            (config_dir / "strategy_20260709.toml").write_text("trade_assets = []\n")
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="1783900000\n", stderr="")) as run_mock:
+                ts = mod.get_config_last_change_ts(config_dir)
+            self.assertEqual(ts, 1783900000.0)
+            run_mock.assert_called_once()
+
+    def test_none_when_no_config_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(mod.get_config_last_change_ts(Path(d)))
+
+    def test_none_when_git_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            (config_dir / "strategy_20260709.toml").write_text("trade_assets = []\n")
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=128, stdout="", stderr="not a git repository")):
+                self.assertIsNone(mod.get_config_last_change_ts(config_dir))
+
+
+class SafeGetConfigLastChangeTsTests(unittest.TestCase):
+    def test_never_raises_even_if_the_inner_function_blows_up(self):
+        with patch.object(mod, "get_config_last_change_ts", side_effect=RuntimeError("boom")):
+            out = mod._safe_get_config_last_change_ts(Path("/tmp"))
+        self.assertIsNone(out)
+
+
+class ClassifyMismatchReasonTests(unittest.TestCase):
+    def test_halt_window_match(self):
+        windows = [(1000.0, 1300.0, "manual /halt")]
+        reason = mod.classify_mismatch_reason(1100.0, windows, None, 2000.0, None)
+        self.assertIn("live halted: manual /halt", reason)
+
+    def test_config_change_in_window(self):
+        # config changed at ts=1500, which is >= cycle_ts (1100) and <= window_end (2000)
+        reason = mod.classify_mismatch_reason(1100.0, [], 1500.0, 2000.0, None)
+        self.assertIn("config changed", reason)
+
+    def test_config_change_before_cycle_is_not_flagged(self):
+        # config changed at ts=900, before this cycle -> not "same-window" going forward
+        reason = mod.classify_mismatch_reason(1100.0, [], 900.0, 2000.0, None)
+        self.assertEqual(reason, "unexplained")
+
+    def test_sparse_tick_data(self):
+        reason = mod.classify_mismatch_reason(1100.0, [], None, 2000.0, 5)
+        self.assertIn("sparse tick data (5 ticks", reason)
+
+    def test_dense_tick_data_is_not_flagged_sparse(self):
+        reason = mod.classify_mismatch_reason(1100.0, [], None, 2000.0, 1200)
+        self.assertEqual(reason, "unexplained")
+
+    def test_unexplained_fallback(self):
+        reason = mod.classify_mismatch_reason(1100.0, [], None, 2000.0, None)
+        self.assertEqual(reason, "unexplained")
+
+    def test_priority_halt_beats_config_and_sparse_data(self):
+        windows = [(1000.0, 1300.0, "manual /halt")]
+        reason = mod.classify_mismatch_reason(1100.0, windows, 1500.0, 2000.0, 5)
+        self.assertIn("live halted", reason)
+
+    def test_priority_config_beats_sparse_data(self):
+        reason = mod.classify_mismatch_reason(1100.0, [], 1500.0, 2000.0, 5)
+        self.assertIn("config changed", reason)
 
 
 class FilterBtRowsToWindowTests(unittest.TestCase):
@@ -216,6 +370,7 @@ class BuildLiveVsBtTests(unittest.TestCase):
         self.assertEqual(table[0]["status"], "MATCH")
         self.assertEqual(summary["n_match"], 1)
         self.assertEqual(summary["n_outcome_diff"], 0)
+        self.assertEqual(table[0]["reason"], "—", "a MATCH needs no explanation")
 
     def test_outcome_diff_when_same_slug_side_different_outcome(self):
         live = self._live(outcome="WIN", pnl=0.0753)
@@ -224,6 +379,17 @@ class BuildLiveVsBtTests(unittest.TestCase):
         self.assertIn("OUTCOME DIFF", table[0]["status"])
         self.assertEqual(summary["n_outcome_diff"], 1)
         self.assertAlmostEqual(table[0]["diff_pnl"], 0.0753 - 0.0326)
+        self.assertEqual(table[0]["reason"], "unexplained")
+
+    def test_mismatch_reason_uses_halt_window_context(self):
+        live = self._live(slug="eth-updown-5m-1000", outcome="WIN")
+        bt = self._bt(slug="eth-updown-5m-1000", outcome="UNWIND")
+        mismatch_ctx = {
+            "halt_windows": [(900.0, 1100.0, "manual /halt")],
+            "config_change_ts": None, "window_end_ts": 2000.0,
+        }
+        table, _ = mod.build_live_vs_bt([live], [bt], {"ETH"}, mismatch_ctx=mismatch_ctx)
+        self.assertIn("live halted: manual /halt", table[0]["reason"])
 
     def test_side_diff_when_bt_fired_opposite_side(self):
         live = self._live(side="UP")
@@ -254,7 +420,7 @@ class BuildLiveVsBtTests(unittest.TestCase):
     def test_entry_exit_and_delta_columns_computed_from_underlying_price(self):
         """Entry Δ%/Cycle Δ% must come from the underlying (Binance) price
         series, not the trade's own CLOB token_price/exit_price — see
-        incident_delta_pct_2026-07-13.md. Entry Px/Exit Px stay CLOB."""
+        incident_delta_pct_2026-07-12.md. Entry Px/Exit Px stay CLOB."""
         live = self._live(slug="eth-updown-5m-1000")
         live["entry_ts"] = 1291.0  # T-9s
         live["token_price"] = 0.93  # CLOB — shown as-is, not used for Δ%
@@ -291,6 +457,17 @@ class BuildBtVsLiveTests(unittest.TestCase):
         self.assertEqual(len(missed), 1)
         self.assertEqual(missed[0]["asset"], "ETH")
         self.assertAlmostEqual(missed[0]["pnl"], 0.3)
+        self.assertEqual(missed[0]["reason"], "unexplained", "every row here is a mismatch by definition")
+
+    def test_reason_uses_halt_window_context(self):
+        bt = [{"asset": "ETH", "slug": "eth-updown-5m-1000", "strategy": "high_prob",
+               "side": "UP", "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1000.0}]
+        mismatch_ctx = {
+            "halt_windows": [(900.0, 1100.0, "balance drawdown >25% (session)")],
+            "config_change_ts": None, "window_end_ts": 2000.0,
+        }
+        missed = mod.build_bt_vs_live(bt, live_rows=[], mismatch_ctx=mismatch_ctx)
+        self.assertIn("live halted: balance drawdown", missed[0]["reason"])
 
     def test_cycle_live_traded_same_side_is_not_missed(self):
         bt = [{"asset": "ETH", "slug": "s1", "strategy": "high_prob", "side": "UP",

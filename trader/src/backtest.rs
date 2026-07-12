@@ -299,7 +299,9 @@ fn replay_cycle(
             }
             MergedTick::Binance(bt) => {
                 for m in machines.iter_mut() {
-                    m.on_binance(bt);
+                    if let Some(rec) = m.on_binance(bt) {
+                        completed.push(rec);
+                    }
                 }
             }
         }
