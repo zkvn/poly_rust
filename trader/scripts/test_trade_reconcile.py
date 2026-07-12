@@ -724,5 +724,61 @@ class WriteMarkdownSummaryBtSectionTests(unittest.TestCase):
         self.assertIn("would-be PnL +0.3000", text)
 
 
+class MakeSectionsCollapsibleTests(unittest.TestCase):
+    def test_wraps_each_top_level_section_in_details(self):
+        lines = [
+            "# Title", "", "> summary line", "",
+            "## Data Quality", "", "row content here", "",
+            "## Performance", "", "### Sub Header", "perf content", "",
+        ]
+        out = mod._make_sections_collapsible(lines)
+        text = "\n".join(out)
+        self.assertEqual(out.count("<details>"), 2)
+        self.assertEqual(out.count("</details>"), 2)
+        self.assertIn("<summary><strong>Data Quality</strong></summary>", text)
+        self.assertIn("<summary><strong>Performance</strong></summary>", text)
+        # preamble before the first '## ' stays outside any <details> block
+        self.assertLess(out.index("> summary line"), out.index("<details>"))
+        # original header text is preserved inside the block (anchors still work)
+        self.assertIn("## Data Quality", text)
+
+    def test_sub_headers_do_not_start_their_own_section(self):
+        lines = ["## Performance", "", "### Sub Header", "content", ""]
+        out = mod._make_sections_collapsible(lines)
+        self.assertEqual(out.count("<details>"), 1)
+
+    def test_no_top_level_headers_is_a_noop_besides_identity(self):
+        lines = ["# Title", "", "> just a summary, no trades", ""]
+        out = mod._make_sections_collapsible(lines)
+        self.assertEqual(out, lines)
+
+    def test_last_section_is_closed_at_end_of_document(self):
+        lines = ["## Only Section", "", "content", ""]
+        out = mod._make_sections_collapsible(lines)
+        self.assertIn("</details>", out)
+        self.assertLess(out.index("</details>"), len(out) - 1 if out[-1] == "" else len(out))
+        self.assertEqual(out[-1], "")
+        self.assertEqual(out[-2], "</details>")
+
+    def test_write_markdown_summary_output_is_collapsible(self):
+        result = {
+            "hours_checked": 5,
+            "flagged": [{"asset": "ETH", "kind": "binance", "date": "2026-07-11", "hour": 22,
+                         "coverage_pct": 10.0, "status": "GAP"}],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            path = mod.write_markdown_summary(
+                {"direction": {}, "stoploss": {}, "total_rows": 0}, {},
+                mod.datetime(2026, 7, 9, 20, 0, tzinfo=mod.HKT),
+                mod.datetime(2026, 7, 10, 20, 0, tzinfo=mod.HKT),
+                Path(d), bt_result=None, data_quality_result=result,
+            )
+            text = path.read_text()
+        self.assertIn("<details>", text)
+        self.assertIn("<summary><strong>Data Quality</strong></summary>", text)
+        self.assertIn("## Data Quality", text)
+        self.assertIn("<summary><strong>Backtest Reconciliation</strong></summary>", text)
+
+
 if __name__ == "__main__":
     unittest.main()

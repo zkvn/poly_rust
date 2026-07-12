@@ -1308,6 +1308,42 @@ def _render_failed_exit_audit(lines: list, rows: list) -> None:
 # Markdown report
 # ---------------------------------------------------------------------------
 
+def _make_sections_collapsible(lines: list) -> list:
+    """Wrap every top-level '## ' section in a collapsible <details> block.
+    Closed by default: the blockquote one-liners at the top of the report
+    (Performance/Gamma/Data quality) already surface the headline numbers, so
+    a long section — the Data Quality gap table in particular, which can run
+    to 200+ rows during an incident — doesn't force scrolling past it to
+    reach everything below. The original '## Header' line is kept inside the
+    block (not just in <summary>) so in-page anchors keep working once
+    expanded."""
+    out: list = []
+    open_section = False
+
+    def close_section() -> None:
+        nonlocal open_section
+        if open_section:
+            while out and out[-1] == "":
+                out.pop()
+            out.append("")
+            out.append("</details>")
+            out.append("")
+            open_section = False
+
+    for line in lines:
+        if line.startswith("## "):
+            close_section()
+            out.append("<details>")
+            out.append(f"<summary><strong>{line[3:].strip()}</strong></summary>")
+            out.append("")
+            out.append(line)
+            open_section = True
+        else:
+            out.append(line)
+    close_section()
+    return out
+
+
 def write_markdown_summary(
     summary: dict, perf_stats: dict, window_start: datetime, window_end: datetime,
     out_dir: Path, bt_result: Optional[tuple] = None,
@@ -1577,6 +1613,8 @@ def write_markdown_summary(
         lines.append("")
         lines.append("*Unavailable this run — see recon_cron.log for the reason.*")
         lines.append("")
+
+    lines = _make_sections_collapsible(lines)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

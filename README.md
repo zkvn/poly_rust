@@ -96,6 +96,20 @@ perfectly valid/readable (0 bad by `--check`) while still losing ~85% of the day
 daily recon report ("## Data Quality" section) — no separate cron needed. Standalone:
 `python price_feed/scripts/data_quality.py --raw-dir ../raw --hours-back 24`.
 
+**Daily recon report sections are collapsible (added 2026-07-12):** every top-level `##` section
+in `trade_recon_*.md` (Data Quality, Performance, Stoploss & Unwind Audit, Gamma Cross-Check,
+Backtest Reconciliation) is wrapped in a closed-by-default `<details>` block
+(`trade_reconcile.py::_make_sections_collapsible`) — the blockquote one-liners at the top of the
+report already carry the headline numbers, so a big table (e.g. a 200+ row Data Quality section
+during an incident) doesn't force scrolling past it. Click a section's bold title to expand it.
+
+**First report run after the 2026-07-12 crash-loop fix still showed 208/286 flagged asset-hours —
+this is expected, not a regression:** the daily window is a fixed `20:00 HKT → 20:00 HKT` trading
+day, and the fix deployed mid-window (15:08:55 HKT), so the report correctly showed the prior
+~19 hours of real historical damage plus a clean tail after the deploy. Root-caused and confirmed
+via restart-count correlation in `trader/doc/audit_data_2026-07-12.md` — self-resolves the next
+day once the window fully post-dates the deploy.
+
 **`ParquetBuf.schema` field removed (2026-07-07, dead code):** the compiler flagged
 `ParquetBuf`'s `schema: Schema` field as never read. Confirmed dead, not just unread by accident —
 its only purpose was constructing the `ArrowWriter` in `ParquetBuf::open`, which bakes the schema
@@ -931,6 +945,13 @@ crash-loop pattern. Pre-deploy hours still show as GAP/MISSING in the daily reco
 Quality section — that's the already-existing, already-documented damage from before the fix
 landed, not a new issue; the first fully-elapsed **post**-deploy hour will be the first one this
 report auto-confirms clean.
+
+**Follow-up audit (2026-07-12, same day):** the first full recon report after the deploy showed
+208/286 asset-hours flagged, which could look like the fix hadn't worked. Confirmed via
+restart-count correlation against Oracle's journalctl that every flagged hour matches an hour with
+2-8 crash-loop restarts, and the two unflagged hours inside the window had zero restarts — a 1:1
+match. All flagged hours fall before the 15:08:55 deploy; hours after it (checked via a fresh
+`data_quality.py --hours-back 6` run) are 100% clean. Full writeup: `trader/doc/audit_data_2026-07-12.md`.
 
 ### `cargo fmt --all --check` cleaned up, both crates (2026-07-08, fixed)
 
