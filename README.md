@@ -122,73 +122,44 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **Backfill hour-14 gap on Oracle (2026-07-02, price_feed) — still open.** While iterating the
-  hourly-seal fix live, an intermediate (partially-fixed) binary was stopped mid-hour and
-  overwrote the original `{asset}_{type}_2026-07-02_14.parquet` files, losing the 14:00–14:09 HKT
-  window (~9 min, all assets, `raw/` + `raw_15_mins/` + `raw_4hr/`). The 14:00–14:09 rows were
-  backed up to `/home/ubuntu/apps/poly_rust/price_feed/_14_backup/` on Oracle **before** the
-  overwrite happened. The 15:00 HKT seal has since completed (confirmed — Oracle's `_14.parquet`
-  is now a stable, no-writer-holding-it-open file covering 14:10–15:00), so the merge can be done
-  any time: for every file in `_14_backup/<dir>/`, `pd.concat` it with the current
-  `<dir>/<file>`, sort by `ts`, drop exact-duplicate rows, write back — then delete `_14_backup/`.
-  Not urgent — low-stakes recorder data, not trading capital — but should be cleaned up so the
-  historical record for that hour is complete. **Not yet done as of 2026-07-02 15:xx HKT** — the
-  local dev-machine merge done the same day (combining old-daily + hourly + live `.tmp` into one
-  file per asset/type for testing) pulled from Oracle's `_14.parquet` as-is and therefore does
-  **not** include this backfilled window either; re-run the merge after backfilling on Oracle if
-  the 14:00–14:09 window matters for whatever you're testing.
+- **`price_feed` local poly data missing a whole 5-min cycle mid-day — found 2026-07-12, not
+  investigated (out of scope for that task).** While adding the Entry Δ% column to
+  `trade_reconcile.py`'s BT reconciliation tables, `backtest_prices/ETH_poly_2026-07-10.parquet`
+  (built from `price_feed/raw/` via `build_backtest_prices.py`, covering the full day
+  1783612800–1783699199) has zero rows for slug `eth-updown-5m-1783692300`
+  (2026-07-10 22:05–22:10 HKT) even though every neighboring cycle that day is present. No
+  obvious cause (no collector-restart log line found around that window) — could be a
+  genuine feed gap or a `build_backtest_prices.py` dedup/filter edge case. Not a correctness
+  bug in the recon report: `load_cycle_open_prices` already degrades a missing slug to "—" for
+  Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
+  doesn't get lost.
 
-- **Binance data gap 2026-07-02 00:00–13:50 HKT — backfilled 2026-07-05 from btc_5mins.** Binance
-  recording was down for this window (see the git-branch-convention incident above: a branch
-  predating the Binance feature was deployed over the box, and it took until ~13:50 to get Binance
-  recording running again under the new hourly-seal code). The old daily-rotation
-  `{asset}_binance_2026-07-02.parquet` files are 0 bytes for this reason — no page bytes were ever
-  written natively for this recorder. **BTC only** has since been backfilled for local `raw/`
-  (`BTC_binance_2026-07-02_00.parquet` through `_12.parquet` created, `_13.parquet` merged) using
-  the sibling `btc_5mins` project's independently-recorded `prices/BTC_binance.parquet` (its own
-  python WS collector was live and gap-free for this window). Backfilled rows have real `ts`/
-  `binance`/`slug` values but **null `server_ts`/`latency_ms`** (btc_5mins never captured Binance's
-  `E` field or network latency) — filter `server_ts.notna()` to distinguish native vs backfilled
-  rows. Also lower density than native (~1 Hz vs ~4 Hz sampling). Pre-backfill originals saved to
-  `raw/_pre_python_backfill_2026-07-05/`. Other assets (ETH/SOL/BNB/XRP/DOGE/HYPE) remain
-  unfilled for this window — btc_5mins only records BTC. A separate ~6.4h gap on 2026-07-03
-  08:15–14:38 HKT (unrelated collector restart) was backfilled the same way and same day.
+- **`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-11 00:00 —
+  found 2026-07-12, URGENT, not investigated (out of scope for that task).** Found while
+  verifying the Entry Δ%/Cycle Δ% underlying-price fix
+  (`trader/doc/incident_delta_pct_2026-07-12.md`): minute-coverage of both `{asset}_binance_*` and
+  `{asset}_poly_*` local data (checksum-confirmed identical to Oracle's own copy — not a sync
+  issue) drops from ~93% on 2026-07-10 to **~14-15%** on 2026-07-11 and 2026-07-12, for every
+  asset checked (ETH/DOGE/BTC) — a collector-wide problem, not per-asset. Pattern: most hourly raw
+  files (`price_feed/raw/{asset}_{binance,poly}_{date}_{HH}.parquet`) now contain data for only
+  the last ~10-60s of their hour (e.g. `ETH_binance_2026-07-12_10.parquet`, checked
+  2026-07-12 ~12:00 HKT, has 96 rows covering just 10:59:36–10:59:59) — consistent with the
+  collector stalling for most of every hour and only catching up right at/after the hourly
+  rotation. **Still actively happening as of this write-up.** This directly starves the live
+  trader's own price feed (not just backtest replay data), and independently explains at least
+  some of the "BT DID NOT FIRE" rows in `trader/doc/incident_bt_vs_live_discrepancy_2026-07-12.md`
+  (a tick-sparse cycle gives the backtest replay far fewer chances to observe an entry condition)
+  on top of that doc's balance-halt finding. Needs Oracle-side collector process
+  logs/journalctl to root-cause (crash-loop? stuck reconnect? resource exhaustion?) — not done
+  here since that's `price_feed`-collector-internals territory, not `trader`/reconciliation-script
+  territory, and touches the live collector process.
 
-- ~~`price_feed` clippy cleanup — flagged 2026-07-08.~~ **Done, same day** (`88673cd`): all 12
-  pre-existing errors (7x `collapsible_if` -> let-chains, 3x `ptr_arg` `&PathBuf` -> `&Path`, 1x
-  `too_many_arguments` allowed with justification) fixed, no behavior change — `cargo build`,
-  `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and
-  `cargo fmt --all --check` all clean.
-
-- ~~`rust-toolchain.toml` pin — flagged 2026-07-08.~~ **Done, same day**: added
-  `rust-toolchain.toml` (`channel = "1.96.1"`, `components = ["rustfmt", "clippy"]`) at the repo
-  root. Tested in isolation before it went anywhere near `main` (see "Trading engine — known
-  incidents" below for the full writeup) — the one real risk (the aarch64 `cross`/Docker
-  toolchain needing to fetch something new) did happen once, cost ~13s, and was a one-time,
-  cacheable cost, not a recurring one: a second `cross build` for both `trader` and `price_feed`
-  after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
-  confirmed clean end-to-end with the pin in place.
-
-- ~~DOGE WIN/LOSS mismatch (2026-07-09).~~ **Done, same day**: full root cause, accepted
-  design, and Q&A in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4/§6.
-  `on_cycle_open`/`on_cycle_close` no longer clobber `Confirming`/`EnrichOnly` on a cycle
-  boundary; the resolution watcher now retries Gamma every 1s and halts new entries
-  (existing `entry_suppressed`/`/resume` mechanism) rather than guessing if it doesn't
-  resolve within the asset's own `reversal_start_time`. 7 new `worker.rs` unit tests
-  (`cargo test --lib worker::` 45/45); `cargo clippy --all-targets --all-features -D
-  warnings` and `cargo fmt --all --check` both clean. Deployed to Oracle via
-  `./scripts/deploy_trader.sh` — `trader-live.service` restarted clean, no open position
-  at restart time (checked `live_state_*.json` for any Holding-family state first).
-
-- **Pre-existing `config.rs`/`config_log.rs` test drift — found 2026-07-09, not fixed
-  (out of scope for that task).** `cargo test --lib` fails 4 tests unrelated to any recent
-  change: `config::tests::{default_fallback,load_and_resolve_btc,
-  unwind_time_falls_back_to_default_and_resolves_asset_override}` and
-  `config_log::tests::write_and_read_roundtrip`. The first three load the *latest*
-  `strategy_*.toml` from disk (`load_latest`) and assert hardcoded values pinned to a
-  specific historical calibration (comments cite 2026-07-05/07/08 dates) — the actual
-  config file has since been recalibrated, so the hardcoded expected numbers no longer
-  match. Confirmed pre-existing via `git stash` (same 4 failures on a clean checkout).
+- ~~`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
+  found 2026-07-11 while scoping the balance-decrease halt.~~ **Fixed 2026-07-11 for the
+  command/balance-driven call sites** (see below) — deliberately left alone for the 2
+  SIGINT/SIGTERM shutdown handlers, by choice: restarts (including every `deploy_trader.sh`
+  deploy, which sends SIGTERM) should keep auto-continuing whatever was persisted before, not
+  come back halted. Full writeup: `trader/doc/plan_halt_persist_2026-07-11.md`.
 
 - **Backtest reconciliation config-drift gap — flagged 2026-07-10, not fixed (deliberately
   deferred).** The new "Backtest Reconciliation" section in the daily recon report
@@ -279,44 +250,73 @@ on the remote before the nightly sync runs.
   `price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md` (§0 for the first incident, §8 for
   phase 1, §10 for phase 2 as actually built) for the full story.
 
-- ~~`entry_suppressed` isn't persisted immediately when set by a `Control`/`Balance` event —
-  found 2026-07-11 while scoping the balance-decrease halt.~~ **Fixed 2026-07-11 for the
-  command/balance-driven call sites** (see below) — deliberately left alone for the 2
-  SIGINT/SIGTERM shutdown handlers, by choice: restarts (including every `deploy_trader.sh`
-  deploy, which sends SIGTERM) should keep auto-continuing whatever was persisted before, not
-  come back halted. Full writeup: `trader/doc/plan_halt_persist_2026-07-11.md`.
+- ~~DOGE WIN/LOSS mismatch (2026-07-09).~~ **Done, same day**: full root cause, accepted
+  design, and Q&A in `trader/doc/incident_DOGE_wrong_result_2026-07-09.md` §4/§6.
+  `on_cycle_open`/`on_cycle_close` no longer clobber `Confirming`/`EnrichOnly` on a cycle
+  boundary; the resolution watcher now retries Gamma every 1s and halts new entries
+  (existing `entry_suppressed`/`/resume` mechanism) rather than guessing if it doesn't
+  resolve within the asset's own `reversal_start_time`. 7 new `worker.rs` unit tests
+  (`cargo test --lib worker::` 45/45); `cargo clippy --all-targets --all-features -D
+  warnings` and `cargo fmt --all --check` both clean. Deployed to Oracle via
+  `./scripts/deploy_trader.sh` — `trader-live.service` restarted clean, no open position
+  at restart time (checked `live_state_*.json` for any Holding-family state first).
 
-- **`price_feed` local poly data missing a whole 5-min cycle mid-day — found 2026-07-12, not
-  investigated (out of scope for that task).** While adding the Entry Δ% column to
-  `trade_reconcile.py`'s BT reconciliation tables, `backtest_prices/ETH_poly_2026-07-10.parquet`
-  (built from `price_feed/raw/` via `build_backtest_prices.py`, covering the full day
-  1783612800–1783699199) has zero rows for slug `eth-updown-5m-1783692300`
-  (2026-07-10 22:05–22:10 HKT) even though every neighboring cycle that day is present. No
-  obvious cause (no collector-restart log line found around that window) — could be a
-  genuine feed gap or a `build_backtest_prices.py` dedup/filter edge case. Not a correctness
-  bug in the recon report: `load_cycle_open_prices` already degrades a missing slug to "—" for
-  Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
-  doesn't get lost.
+- **Pre-existing `config.rs`/`config_log.rs` test drift — found 2026-07-09, not fixed
+  (out of scope for that task).** `cargo test --lib` fails 4 tests unrelated to any recent
+  change: `config::tests::{default_fallback,load_and_resolve_btc,
+  unwind_time_falls_back_to_default_and_resolves_asset_override}` and
+  `config_log::tests::write_and_read_roundtrip`. The first three load the *latest*
+  `strategy_*.toml` from disk (`load_latest`) and assert hardcoded values pinned to a
+  specific historical calibration (comments cite 2026-07-05/07/08 dates) — the actual
+  config file has since been recalibrated, so the hardcoded expected numbers no longer
+  match. Confirmed pre-existing via `git stash` (same 4 failures on a clean checkout).
 
-- **`price_feed` collector losing ~85% of ticks every hour, ongoing since 2026-07-11 00:00 —
-  found 2026-07-12, URGENT, not investigated (out of scope for that task).** Found while
-  verifying the Entry Δ%/Cycle Δ% underlying-price fix
-  (`trader/doc/incident_delta_pct_2026-07-12.md`): minute-coverage of both `{asset}_binance_*` and
-  `{asset}_poly_*` local data (checksum-confirmed identical to Oracle's own copy — not a sync
-  issue) drops from ~93% on 2026-07-10 to **~14-15%** on 2026-07-11 and 2026-07-12, for every
-  asset checked (ETH/DOGE/BTC) — a collector-wide problem, not per-asset. Pattern: most hourly raw
-  files (`price_feed/raw/{asset}_{binance,poly}_{date}_{HH}.parquet`) now contain data for only
-  the last ~10-60s of their hour (e.g. `ETH_binance_2026-07-12_10.parquet`, checked
-  2026-07-12 ~12:00 HKT, has 96 rows covering just 10:59:36–10:59:59) — consistent with the
-  collector stalling for most of every hour and only catching up right at/after the hourly
-  rotation. **Still actively happening as of this write-up.** This directly starves the live
-  trader's own price feed (not just backtest replay data), and independently explains at least
-  some of the "BT DID NOT FIRE" rows in `trader/doc/incident_bt_vs_live_discrepancy_2026-07-12.md`
-  (a tick-sparse cycle gives the backtest replay far fewer chances to observe an entry condition)
-  on top of that doc's balance-halt finding. Needs Oracle-side collector process
-  logs/journalctl to root-cause (crash-loop? stuck reconnect? resource exhaustion?) — not done
-  here since that's `price_feed`-collector-internals territory, not `trader`/reconciliation-script
-  territory, and touches the live collector process.
+- ~~`price_feed` clippy cleanup — flagged 2026-07-08.~~ **Done, same day** (`88673cd`): all 12
+  pre-existing errors (7x `collapsible_if` -> let-chains, 3x `ptr_arg` `&PathBuf` -> `&Path`, 1x
+  `too_many_arguments` allowed with justification) fixed, no behavior change — `cargo build`,
+  `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and
+  `cargo fmt --all --check` all clean.
+
+- ~~`rust-toolchain.toml` pin — flagged 2026-07-08.~~ **Done, same day**: added
+  `rust-toolchain.toml` (`channel = "1.96.1"`, `components = ["rustfmt", "clippy"]`) at the repo
+  root. Tested in isolation before it went anywhere near `main` (see "Trading engine — known
+  incidents" below for the full writeup) — the one real risk (the aarch64 `cross`/Docker
+  toolchain needing to fetch something new) did happen once, cost ~13s, and was a one-time,
+  cacheable cost, not a recurring one: a second `cross build` for both `trader` and `price_feed`
+  after that came back in under 2s / ~7s respectively. `./scripts/deploy_trader.sh --dry-run`
+  confirmed clean end-to-end with the pin in place.
+
+- **Backfill hour-14 gap on Oracle (2026-07-02, price_feed) — still open.** While iterating the
+  hourly-seal fix live, an intermediate (partially-fixed) binary was stopped mid-hour and
+  overwrote the original `{asset}_{type}_2026-07-02_14.parquet` files, losing the 14:00–14:09 HKT
+  window (~9 min, all assets, `raw/` + `raw_15_mins/` + `raw_4hr/`). The 14:00–14:09 rows were
+  backed up to `/home/ubuntu/apps/poly_rust/price_feed/_14_backup/` on Oracle **before** the
+  overwrite happened. The 15:00 HKT seal has since completed (confirmed — Oracle's `_14.parquet`
+  is now a stable, no-writer-holding-it-open file covering 14:10–15:00), so the merge can be done
+  any time: for every file in `_14_backup/<dir>/`, `pd.concat` it with the current
+  `<dir>/<file>`, sort by `ts`, drop exact-duplicate rows, write back — then delete `_14_backup/`.
+  Not urgent — low-stakes recorder data, not trading capital — but should be cleaned up so the
+  historical record for that hour is complete. **Not yet done as of 2026-07-02 15:xx HKT** — the
+  local dev-machine merge done the same day (combining old-daily + hourly + live `.tmp` into one
+  file per asset/type for testing) pulled from Oracle's `_14.parquet` as-is and therefore does
+  **not** include this backfilled window either; re-run the merge after backfilling on Oracle if
+  the 14:00–14:09 window matters for whatever you're testing.
+
+- **Binance data gap 2026-07-02 00:00–13:50 HKT — backfilled 2026-07-05 from btc_5mins.** Binance
+  recording was down for this window (see the git-branch-convention incident above: a branch
+  predating the Binance feature was deployed over the box, and it took until ~13:50 to get Binance
+  recording running again under the new hourly-seal code). The old daily-rotation
+  `{asset}_binance_2026-07-02.parquet` files are 0 bytes for this reason — no page bytes were ever
+  written natively for this recorder. **BTC only** has since been backfilled for local `raw/`
+  (`BTC_binance_2026-07-02_00.parquet` through `_12.parquet` created, `_13.parquet` merged) using
+  the sibling `btc_5mins` project's independently-recorded `prices/BTC_binance.parquet` (its own
+  python WS collector was live and gap-free for this window). Backfilled rows have real `ts`/
+  `binance`/`slug` values but **null `server_ts`/`latency_ms`** (btc_5mins never captured Binance's
+  `E` field or network latency) — filter `server_ts.notna()` to distinguish native vs backfilled
+  rows. Also lower density than native (~1 Hz vs ~4 Hz sampling). Pre-backfill originals saved to
+  `raw/_pre_python_backfill_2026-07-05/`. Other assets (ETH/SOL/BNB/XRP/DOGE/HYPE) remain
+  unfilled for this window — btc_5mins only records BTC. A separate ~6.4h gap on 2026-07-03
+  08:15–14:38 HKT (unrelated collector restart) was backfilled the same way and same day.
 
 </details>
 
@@ -858,36 +858,459 @@ code). Summary:
 
 ## Trading engine — known incidents
 
-### Stop-loss close never filled (2026-07-02, fixed)
+### `cargo fmt --all --check` cleaned up, both crates (2026-07-08, fixed)
 
-A live BNB test (`trader/src/bin/live.rs`, size $1, max-trades 1) bought 1.0752 shares of "Up"
-for $0.9999, the stop-loss triggered, and **every single close retry failed** for the rest of the
-run (hundreds of retries, `status=Failed sold=0.0000`). The position was never exited and rode to
-market resolution; "Up" lost, so the position settled to $0. **Total loss: $0.9999** (confirmed via
-Polymarket's public `data-api.polymarket.com/positions` endpoint — `currentValue: 0` on
-`bnb-updown-5m-1782971400`).
+The `~350` diffs flagged above (deferred from the 2026-07-07 clippy pass) turned out to be `374`
+diffs across `26` files in `trader`, plus `55` more across `price_feed` — same root cause in both:
+no `rust-toolchain.toml`/`rustfmt.toml` in the repo, so each crate was formatted by whatever
+rustfmt happened to be installed at the time, and the currently-installed `rustfmt 1.9.0-stable`
+(`rustc 1.96.1`, 2026-06-26) disagrees with that on import-statement ordering and struct-literal/
+enum-variant field wrapping (multi-field literals that used to fit on one line now wrap one field
+per line). Confirmed via `git stash`/clean-checkout diffing that none of this was caused by any
+in-flight feature work in either crate.
 
-**Root cause:** `execution.rs::close_position()` built the market SELL order as
-`.amount(Amount::usdc(size_dec))`, where `size_dec` was the **held share count** (1.0753), not a
-USDC amount. The SDK has two distinct constructors, `Amount::usdc()` and `Amount::shares()`.
-Wrapping a share count in `Amount::usdc` tells the exchange "I want ~$1.0753 in proceeds", which at
-a <$1 price requires selling *more* shares than are actually held — so the order could never
-match. Every retry hit `"no orders found to match with FAK order"` / `"not enough balance"`, which
-the retry loop treated as transient and retried forever instead of surfacing as a real error. The
-retry logic explicitly listing `"not enough balance"` as retryable is a strong sign this exact
-failure had been seen before and papered over with retries rather than fixed.
+Fixed with a single `cargo fmt --all` per crate — purely mechanical, zero behavior change, verified
+by re-running the full check afterward in both:
+- `trader`: `cargo build`, `cargo test` (152 lib + 16 bin, unchanged pass count), and
+  `cargo clippy --all-targets --all-features -- -D warnings` all clean, before and after.
+- `price_feed`: `cargo build` and `cargo test` (5 tests) both clean before and after. **Note:**
+  `cargo clippy --all-targets --all-features -- -D warnings` failed on `price_feed` with 12
+  pre-existing errors at the time (mostly `collapsible_if`) — confirmed via the same `git stash`
+  check to predate this fmt pass entirely (`price_feed` never got the equivalent of `trader`'s
+  2026-07-07 clippy cleanup). Left untouched in this pass — out of scope for a formatting-only
+  change. **Fixed same day, separately — see the next entry below.**
 
-**Fix:** use `Amount::shares(size_dec)` instead, matching `place_limit_sell`'s existing correct
-pattern (`round2(shares)` → 2-decimal `Decimal`, since `Amount::shares` enforces `LOT_SIZE_SCALE=2`
-— unlike `Amount::usdc` which allows more decimal places, so the old 4-decimal formatting would
-have failed validation immediately if this had been caught locally instead of live). Verified with
-`cargo test --lib execution` (all 7 tests pass) after the change.
+At the time, deliberately **not** added: a `rust-toolchain.toml` pin to stop this drift from
+recurring. Held back specifically because `scripts/deploy_trader.sh`'s aarch64 cross-compile step
+(`cross build --release --bin=live --target=aarch64-unknown-linux-gnu`) runs in a separate
+Docker-based toolchain that `cross` manages itself; a repo-root toolchain pin could force that
+container to fetch a specific version on its next build rather than using whatever it already has
+cached, which wasn't something to risk against the live trading deploy path without testing it in
+isolation first. **Added and verified later the same day — see "Toolchain pin added" below.**
 
-**Lesson:** any future live/shadow test should watch for repeated `[close] retry` log lines as a
-red flag — that pattern means the close is structurally broken, not just hitting temporary
-liquidity, and the position will ride uncontrolled to market resolution. (Log prefix renamed from
-`[SL close]` — this retry path is shared by stop-loss *and* take-profit closes, and the old label
-was misleading; see the DOGE take-profit incident below.)
+### `price_feed` clippy cleanup (2026-07-08, fixed)
+
+The 12 errors flagged above: 7x `collapsible_if` (`collect.rs`, `markets.rs`) collapsed into Rust
+let-chains (`if let X && cond { ... }`), behavior-identical; 3x `ptr_arg` (`&PathBuf` -> `&Path`)
+on `collect.rs`'s `open_for_hour`/`AssetWriters::new`/`BinanceWriters::new` — call sites unaffected
+via deref coercion, internal `.clone()` calls on the narrowed param switched to `.to_path_buf()`;
+1x `too_many_arguments` on `collect.rs::write_sample` (8/7) allowed with a justifying comment
+(private, 3 call sites, each arg independently meaningful), matching the precedent already set for
+`trader/src/worker.rs::Worker::common`. Verified: `cargo build`, `cargo test` (5/5), `cargo clippy
+--all-targets --all-features -- -D warnings`, and `cargo fmt --all --check` all clean.
+
+### Toolchain pin added: `rust-toolchain.toml` (2026-07-08, added)
+
+Pins `channel = "1.96.1"` (today's already-installed version) plus `rustfmt`/`clippy` components,
+at the repo root — applies to both `trader` and `price_feed` via rustup's directory-walk-up
+resolution. This is what stops the drift that caused the fmt cleanup above from recurring: without
+it, the next dev machine (or CI runner, or this machine after a `rustup update`) picks whatever
+"stable" happens to resolve to at the time, silently diverging from whatever last formatted the
+repo.
+
+Tested in isolation before merging, specifically targeting the risk flagged above (the aarch64
+`cross`/Docker toolchain needing to fetch a pinned version it doesn't already have cached):
+- Local host tooling: `cargo build`/`test`/`clippy`/`fmt --check` all clean under the pinned
+  toolchain (rustup auto-installed a distinct `1.96.1-x86_64-unknown-linux-gnu` toolchain
+  alongside the existing `stable` one — same underlying version, so no behavior change, just now
+  explicit instead of implicit).
+- `cross build --release --bin live --target aarch64-unknown-linux-gnu` (`trader`): the risk
+  materialized once — the container needed to fetch the `rust-std` component for the aarch64
+  target under the pinned channel, costing ~13s. **A second run immediately after came back in
+  under 2 seconds** — confirming this is a one-time, cacheable cost, not a per-deploy recurring
+  one.
+- `cross build --release --target aarch64-unknown-linux-gnu` (`price_feed`, which has its own
+  `Cross.toml` for `libssl-dev:arm64`/`pkg-config` pre-build steps): also clean, ~7s, no new
+  toolchain fetch needed (already warmed by the `trader` build above).
+- `./scripts/deploy_trader.sh --dry-run`: full pipeline clean end-to-end with the pin in place.
+
+No real deploy was run as part of this change (dry-run + isolated `cross build` only) — the
+pin itself doesn't change what gets built, only which toolchain version builds it.
+
+### `--update-config` deploy mode: commit+push+sync in one step (2026-07-08, added)
+
+Added `scripts/deploy_oracle.py --update-config` (and `./scripts/deploy_trader.sh --update-config`)
+— commits + pushes `trader/config/` if it has uncommitted changes (pathspec-scoped to that
+directory only, same pattern as the "Recon auto-commit" fix above), aborting before ever
+connecting to Oracle if the commit/push fails, then does exactly what `--config-only` already did:
+rsync + symlink + restart, no build, no binary rsync. Previously, landing a hand-edited
+`strategy_*.toml` on Oracle required two separate manual steps — `git commit && git push`, then
+`--config-only` — with nothing enforcing they happened together or in order; this collapses that
+into one command and one failure mode (git fails → nothing touches Oracle). See "Editing a config
+and deploying it in one step" above for usage; tests in `scripts/test_deploy_oracle.py`
+(`test_update_config_commits_before_syncing`,
+`test_update_config_never_touches_oracle_when_git_push_fails`).
+
+### `unwind_time` — max-holding-time force-exit (2026-07-08, added)
+
+New per-strategy, per-asset config parameter `unwind_time_rev`/`unwind_time_hp` (seconds; `0.0` =
+disabled), ported from `btc_5mins/studies/unwind_safely`'s backtest engine — see
+`trader/doc/plan_unwind_time_2026-07-08.md` for the full design writeup. While a position is open,
+checked **last** in the exit chain (after PnL-based stop-loss and take-profit both fail to fire on
+a given tick): if `now - entry_ts >= unwind_time`, force-close at whatever the current market price
+is, win or lose — a pure max-exposure-time cap, independent of whether any PnL threshold is even
+reachable. This directly backstops the class of failure documented in
+`trader/doc/audit_sl_no_trigger_2026-07-07.md` (SOL/DOGE positions that bled out because
+`sl_pnl_rev` was unreachable at their entry price) — a stuck position now has a second, orthogonal
+exit condition that doesn't depend on price ever crossing anything.
+
+Implementation: new `WorkerState::TimingOut`/`Outcome::Timeout`/`CloseReason::Timeout`, mirroring
+`StopExiting`/`Outcome::StopLoss` exactly (same unbounded-FAK mechanics, same "re-fires every
+PolyTick until cleared" retry behavior), kept as a distinct variant rather than folded into
+`StopExiting` so the outcome and Telegram copy ("⏱️ TIME LIMIT triggered") can differ. Excluded from
+the halt loss-streak by construction (`Outcome::is_loss_for_halt` only matches `Loss`/`StopLoss`) —
+matches the backtest's "cum_losses NOT incremented for TIMEOUT" semantics, since a time-cap exit
+isn't a signal-quality failure the way a real stop-loss is. Visible in Telegram `/status` alongside
+`unwind_pnl`/`sl_pnl` (this is the exact visibility gap that let the `sl_pnl` stale-config incident
+above go unnoticed for a full deploy cycle).
+
+**Shipped at `30.0`s for both strategies** (ETH, the only live `trade_assets` entry) — the
+walk-forward study's final-calibration value. Flagged explicitly in the plan doc: this sits at the
+top of the study's tested 10–30s range, the same grid-boundary-artifact pattern already documented
+for `sl_pnl` in `btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md` — the sweep shows
+"longer beat shorter at every step within [10, 30]," not that 30s is a validated optimum. Shipped
+anyway (rather than disabled, or waiting on a wider re-sweep) because the risk here is
+asymmetric-safe compared to `sl_pnl`: a too-short `unwind_time` only makes exits *more* conservative
+(closes earlier/more often), the opposite direction from the SOL/DOGE failure mode where a
+boundary value masked a threshold that couldn't fire at all.
+
+### Halt state and `/status` counters didn't survive a restart (2026-07-08, fixed)
+
+A balance-drawdown halt engaged 2026-07-07 stayed silently cleared by a routine
+`trader-live.service` restart 12+ hours later — not by `/resume`, not by the loss-streak's daily
+reset — with zero Telegram notification either way (full diagnosis:
+`trader/doc/incident_no_reset_notification_2026-07-08.md`). Root cause: `entry_suppressed`
+(`/halt`/`/resume`/the drawdown guard) and `HaltTracker`'s loss/session counters only ever lived
+in-memory on `Worker`; a restart rebuilds every `Worker` from scratch via `new_reversal`/
+`new_high_prob`, which always starts un-halted, and no code path notifies on that transition.
+The same gap meant `/status`'s win/loss/stoploss/unwind/timeout counts and total PnL — tracked on
+`bin/live.rs`'s `AssetSlot`, never on `Worker` — also reset to zero on every restart, even with no
+trade in between.
+
+**Fix — restart now round-trips both:**
+- `PersistedState` (`worker.rs`) gained `entry_suppressed`, `halt_losses`, `halt_last_session`
+  (`#[serde(default)]`, so a pre-existing `live_state_*.json` still loads — as "un-halted, zero
+  counters," identical to today's from-scratch behavior). `HaltTracker` gained `losses()`/
+  `last_session()`/`restore()` (`backtest.rs`); `Worker::restore_halt()` rebuilds both flags from a
+  loaded file. `halt_max`/`halt_reset_hour` are deliberately never persisted — they always come
+  fresh from config, so a config change between restarts takes effect immediately rather than
+  being shadowed by the old file.
+- `bin/live.rs` wraps `PersistedState` plus a new `PersistedStats{wins,losses,stoplosses,unwinds,
+  timeouts,total_pnl,last_trade}` in one `PersistedSlot` written to the same `live_state_*.json` —
+  no new files. `persist()` now takes `&AssetSlot` (was `&Worker`) so both halves are written
+  together; `load_persisted_slot()` is best-effort (missing file, corrupt JSON, or a legacy
+  pre-this-change shape all fall back to a fresh un-halted/zero-stats start, never a hard failure)
+  and runs once per `(asset, strategy)` slot at startup, before the first cycle opens.
+- `on_control`/`on_balance` (`/halt`, `/resume`, the drawdown guard) now also emit
+  `Action::Persist`. Previously they returned no actions at all, so a halt/resume only reached disk
+  whenever the *next* trade-lifecycle event happened to persist — up to ~5 minutes away at the next
+  cycle open. A restart in that window would have silently lost a just-issued `/halt` even with the
+  fix above; this closes it so every halt-state change is flushed immediately.
+
+**Net effect:** `/status` after a restart is now identical to before it, provided no trade and no
+config change happened in between — the two things a restart legitimately should and shouldn't
+remember, respectively (a config change correctly changes the displayed `sl`/`halt_after`/etc.
+values; live balance and current market prices are re-fetched live either way, restart or not, and
+were never meant to be "restored").
+
+**Deliberately out of scope:** an in-flight *position* still does not resume across a restart —
+`Worker::reconcile`/`resume_from` exist and are unit-tested (`to_persisted_round_trips_holding_state`
+etc.) but have no call site in `bin/live.rs`; `live_state_*.json` has effectively been write-only
+for that part of the state since the file was introduced. Flagged in the incident doc as a known
+follow-up, not fixed here — halt/stats parity doesn't depend on it, and wiring up live position
+resume is a larger, separate change (needs a CLOB reconciliation call against real order/balance
+state before trusting a resumed `Holding`, per `reconcile`'s existing doc comment).
+
+New tests: `control_and_balance_events_persist_immediately`,
+`halt_state_round_trips_across_a_restart`, `manual_halt_round_trips_across_a_restart` (`worker.rs`);
+`round_trips_halt_state_and_stats`, `legacy_file_without_new_fields_loads_with_defaults`,
+`missing_file_loads_as_none`, `corrupt_file_loads_as_none_not_a_panic` (`bin/live.rs`). Full suite:
+166 passed (152 lib + 14 bin), 0 failed. Verified live on Oracle post-deploy: `live_state_eth_*.json`
+now carries `entry_suppressed`/`halt_losses`/`halt_last_session`/`stats` after the restart that
+shipped this fix.
+
+### Recon auto-commit swept up unrelated staged changes under a misleading message (2026-07-07, fixed)
+
+`scripts/trade_reconcile.py` (the daily reconciliation report, cron-scheduled every 2 hours via
+`scripts/bash/run_daily_recon.bash`) auto-commits and pushes its own regenerated markdown report
+via `git_commit_push()`. That function `git add`-ed just the one report path, but then ran
+`git commit -m message` with **no pathspec** — which commits the *whole* index, not only the file
+just added. A manual `git add` of unrelated in-progress work (staging four separate files for an
+unrelated fix, right as this cron job's own scheduled run landed) got silently swept into the same
+commit, which then pushed to `origin/main` under the auto-generated message
+`recon: 2026-07-06 — 1/1 matched (100%)` — content was correct (nothing lost or corrupted), but
+the message badly undersold what the commit actually contained, and the race could just as easily
+have interrupted a commit mid-`git add`, landing a half-staged change.
+
+**Fix:** `git_commit_push()` now runs `git commit -m message -- <rel_paths>` — the trailing
+pathspec restricts the commit to exactly the paths this function was given, regardless of
+anything else staged in the index at that moment. Verified in an isolated throwaway repo: an
+unrelated staged file is left untouched (still staged, not committed) rather than swept in, and
+the "no changes to this specific path" case still fails exactly as before (non-zero exit, caught
+by the existing `except subprocess.CalledProcessError`) — no new failure mode for the unattended
+cron path.
+
+**Lesson:** any automation that does its own `git add` + `git commit` should always scope the
+commit itself to the same paths it just added — `git commit` with no pathspec commits the entire
+index, which is almost never what a narrowly-scoped auto-commit script actually wants, and the gap
+only shows up the moment something else happens to be staged at the same time.
+
+### ETH stop-loss needed 31 attempts to close in the last 20s of a cycle (2026-07-07, not a bug)
+
+Recon flagged `exit_attempts: 31` on an ETH `high_prob` stop-loss that filled at 0.47 against a
+0.82 trigger. Root cause: the position was entered ~20s before candle close, and ETH crossed the
+strike in that final stretch, cratering the DOWN token from 0.665 toward zero — a window where
+resting liquidity vanishes as market-makers pull quotes ahead of resolution, so each FAK sell (one
+per real tick, each with its own 5x immediate inner retry on "no orders found to match") kept
+getting killed until a buyer finally appeared. Confirmed as the stop-loss retry design (unbounded,
+must-close, one outer attempt per tick) working as intended under genuinely thin liquidity, not a
+regression — full timeline and math in `trader/doc/incident_31_retry_sl_2026-07-07.md`.
+
+### `reversal` stop-loss (`sl_pnl_rev = 0.80`) unreachable or too-loose by design (2026-07-07, audited, not fixed)
+
+Two `reversal` trades (SOL entry 0.75, DOGE entry 0.94) lost almost their full stake — one with the
+stop-loss never firing at all, the other firing only ~1 second before cycle close. Root cause is
+config, not code: `sl_hit`'s threshold is `entry_price − sl_pnl_rev`, and at the shared default
+`sl_pnl_rev = 0.80` that's *negative* (unreachable) for any entry below 0.80, and barely above zero
+for entries just above it — so by the time it's reachable at all, the position has already lost
+most of its value in these fast-resolving 5-minute markets. A repo-wide check found 3 historical
+`reversal` trades total with a structurally-unreachable threshold (2 survived by luck before this
+one didn't). Full tick-by-tick CLOB + order-book evidence and a sensitivity table showing what a
+tighter threshold would have done: `trader/doc/audit_sl_no_trigger_2026-07-07.md`. No config change
+made — this is a calibration decision, not applied without direction. **Follow-up traced the root
+cause upstream**: every *unconstrained* backtest sweep in `../btc_5mins/studies/bt2` actually picks
+`sl_pnl = 0.00` (no stop-loss) as PnL-optimal — `0.80` only exists because the walk-forward study
+that produced it explicitly excluded `sl_pnl = 0` and then walked to that search's grid maximum
+(`../btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md`).
+
+### Loss-streak halt now sends Telegram notifications on engage and reset (2026-07-07, added)
+
+The consecutive-loss halt (`halt_rev`/`halt_prob` — distinct from manual `/halt` and the balance
+drawdown halt, both of which already notified) previously changed state completely silently; the
+only way to notice was polling `/status`'s 🟡/🟢 indicator. Two new `Action` variants close the gap:
+
+- **`Action::HaltEngaged`** — fired from the exact trade (`on_cycle_close` or
+  `finalize_or_hold_residual`'s stop-loss/unwind-fill paths) whose loss crosses `halt_rev`/
+  `halt_prob`'s threshold. `HaltTracker::record_trade` (`backtest.rs`) now returns `bool` — `true`
+  only on the transition from not-halted to halted, so an already-open position resolving as a loss
+  *after* the halt has already engaged doesn't re-fire it.
+- **`Action::HaltReset`** — fired from `on_cycle_open` when the daily HKT session rollover
+  (`halt_reset_hour_rev`/`halt_reset_hour_hp`) actually clears an *active* halt.
+  `HaltTracker::reset_if_new_session` now returns `bool` for the same reason — a session rollover
+  with nothing to clear (the common case, most days) stays silent rather than sending a notification
+  every single day at 02:00/08:00 HKT regardless of whether anything happened.
+
+Both plumb through `Worker::step`'s existing `Vec<Action>` return the same way every other
+Telegram-worthy state change does, and `bin/live.rs`'s `process_actions` gets two new dedicated
+match arms (alongside the existing `StopLossVerdict`/`LogTradeCorrection` ones) building the
+messages — no new architecture, same pattern as the existing stop-loss-triggered notification.
+`backtest.rs::run_backtest`'s own calls to both methods discard the new return value — zero
+behavior change to backtest/sweeps. New tests: `halt_tracker_record_trade_signals_only_on_the_crossing_loss`,
+`halt_tracker_record_trade_ignores_non_loss_and_other_strategy`,
+`halt_tracker_reset_signals_only_when_clearing_an_active_halt` (`backtest.rs`), plus
+`halt_reset_on_session_rollover_with_no_active_halt_is_silent` and extended assertions on
+`halt_by_loss_streak_suppresses_entry_and_resets_next_session` (`worker.rs`).
+
+### `cargo clippy --all-targets --all-features -- -D warnings` cleaned up (2026-07-07, fixed)
+
+`trader`'s clippy had drifted to 24 pre-existing errors on `main` (confirmed unrelated to any
+feature work — same count on a clean checkout before this pass), evidently from a toolchain/clippy
+version bump surfacing lints this code predates. All fixed, no behavior change to any of them —
+verified via `cargo build`/`cargo test` (141 lib + 10 bin tests, all passing) after every fix:
+
+- **9× `empty_line_after_doc_comments`** (`config.rs`, `gates.rs`, `signal/mod.rs`,
+  `signal/delta_pct.rs`, `signal/latest_binance.rs`, `signal/latest_poly.rs`, `signal/saw_low.rs`,
+  `strategies.rs`, `types.rs`) — a file-level `///` doc comment followed by a blank line reads as
+  documenting the *next item* (a `use`/`mod`), not the file. All were genuinely file-level docs;
+  changed `///` → `//!` on each rather than deleting the blank line (which would've kept the
+  comment wrongly attached to the following `use` statement).
+- **6× `collapsible_if`** (`marketdata.rs`, `telegram/mod.rs`, `worker.rs`×2, `api_probe.rs`,
+  `live.rs`) — nested `if let X { if cond { ... } }` collapsed into `if let X && cond { ... }`
+  (Rust let-chains). Behavior-identical.
+- **5× `new_without_default`** (`signal/delta_pct.rs`, `signal/latest_binance.rs`,
+  `signal/latest_poly.rs`×2, `signal/mod.rs`) — added `impl Default { fn default() -> Self {
+  Self::new() } }` for each `pub fn new()` with no args.
+- **`single_match`** (`redemption.rs`) — `match { Ok(true) => {...}, Ok(false)|Err(_) => {} }` →
+  `if let Ok(true) = ...`.
+- **`needless_question_mark`** (`marketdata.rs::http_client`) — `Ok(foo?)` → `foo`.
+- **`trim_split_whitespace`** (`telegram/commands.rs::parse_command`) — `.trim().split_whitespace()`
+  had a redundant `.trim()` (`split_whitespace()` already ignores leading/trailing whitespace).
+- **`neg_multiply`** (`machine.rs` test) — `-1.0 * 0.20` → `-0.20`.
+- **2× `suspicious_open_options`** (`bin/shadow.rs`, `bin/live.rs::append_csv_header_if_new`) —
+  `OpenOptions::new().create(true).write(true)` with no explicit truncate/append intent; both call
+  sites only ever run when the file doesn't already exist (guarded by an `if !exists`/`if exists {
+  return }` check just above), so `.truncate(true)` documents the already-true behavior rather than
+  changing it.
+- **2× `question_mark`** (`bin/live.rs::execute`) — `let Some(token_id) = slot.current_token_id
+  else { return None };` → `let token_id = slot.current_token_id?;` (the enclosing fn already
+  returns `Option<Event>`).
+- **`too_many_arguments`** (`worker.rs::Worker::common`, 9 args) — added
+  `#[allow(clippy::too_many_arguments)]` rather than restructuring: private, 2 call sites
+  (`new_reversal`/`new_high_prob`), each arg independently meaningful — a wrapper struct would add
+  a layer without a real clarity gain here.
+- **`if_same_then_else`** (`worker.rs::reconcile`'s `Entering` arm) — both branches of `if
+  token_balance > 0.0 { Watching } else { Watching }` returned the identical value; collapsed to
+  unconditional `WorkerState::Watching` with the explanatory comment kept (the surrounding doc
+  comment already establishes both cases are meant to resolve the same way — this wasn't a missed
+  branch, just dead conditioning).
+
+Not addressed in this pass: `cargo fmt --all --check` also has ~350 pre-existing diffs across the
+crate (same toolchain-drift shape, confirmed unrelated to any feature work) — out of scope here
+since `cargo fmt --all` would rewrite most lines of every touched file, obscuring any real change
+in the same commit. Left for a dedicated formatting-only pass if wanted. **Done, see below.**
+
+### `--trader-only` deploy silently left Oracle running a stale strategy config (2026-07-07, fixed, critical)
+
+Telegram `/status` showed `sl_pnl=0.8000` for ETH reversal right after a deploy meant to set it to
+`0.25` — `trade_assets` narrowing to ETH *did* take effect, `sl_pnl_rev` didn't. Root cause:
+`deploy_oracle.py`'s `--trader-only`/default path (`scripts/deploy_trader.sh` always uses
+`--trader-only`) rsyncs the binary and bakes `--asset` flags into the systemd unit from *this
+machine's* local config, but never rsyncs `trader/config/` itself to Oracle — only `sync_config()`
+(previously wired to the separate `--config-only` mode) does that, and the running binary re-reads
+its `strategy_*.toml` from Oracle's own copy on every restart. `trade_assets` reached the process
+via the CLI-flag channel (always current); `sl_pnl_rev` only exists inside the TOML (silently
+stale). **Fix:** every trader-deploying mode now calls `sync_config()` unconditionally before
+restarting the service, and aborts without restarting if it fails. New test file
+`scripts/test_deploy_oracle.py` (stdlib `unittest`/`mock`, no new dependency — first Python tests in
+this repo) pins the fixed step ordering across all four deploy modes. Full writeup:
+`trader/doc/incident_stale_oracle_config_2026-07-07.md`.
+
+### Take-profit exit had no price floor — an 8¢ slippage turned a 3¢ profit into a loss (2026-07-06, fixed)
+
+A SOL reversal position bought "Up" at 0.90 with a 3¢ take-profit target (`tp_price = 0.93`),
+but the logged exit was `TRADE UNWIND ... entry=0.9000 → exit=0.8200 ... pnl=-$0.1073` — a
+take-profit that lost money, even though the underlying (Binance SOL) moved the *correct*
+direction across the cycle. Full writeup, including the exact `live.log` sequence and pnl
+arithmetic: `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md`.
+
+**Root cause:** entry BUYs have always had a real max-price guard (`gates.rs`'s `MaxBuyPrice`/
+`PriceHighRev` gates, plus a *limit* FAK with `.price()` capped at `max_buy_price` in
+`execution.rs::place`), but the take-profit ("unwind") exit's `close_position()` was a **bare
+market FAK with no price bound at all** — once the take-profit trigger fired, the sell would
+fill at whatever price the book gave it, arbitrarily far below the trigger. In this trade, a
+brief thin-book spike crossed `tp_price`, the close fired correctly, but the FAK needed 3
+internal retries (~3.4s: one for the entry BUY's on-chain settlement lag, two for "no orders
+found to match") before it filled — by which point the spike had reverted and the sell landed
+at 0.82, 11¢ below the 0.93 target.
+
+**Fix:** `execution.rs::close_position_at_price(token_id, shares, min_price)` — a single-attempt
+FAK **with** `.price(min_price)`, used only for take-profit closes, bounded at the position's own
+`tp_price` (no new config — the minimum acceptable sell price *is* the take-profit target).
+Stop-loss closes are unchanged (`close_position()`, still unbounded — a stop-loss must close
+regardless of price). If the bounded attempt can't fill immediately, `worker.rs::on_unwind_failed`
+now re-arms `PriceMonitor { tp_price }` and waits for the next real `PolyTick` to retry, instead
+of the old one-shot `TakeProfitAbandoned` latch — safe now that each attempt is price-bounded
+(can't fill worse than the target) and naturally rate-limited by real ticks rather than an
+internal retry loop (which is what caused a *different* incident's 284-attempts-in-9s hammering,
+`incident_doge_2026-07-03.md`).
+
+**Lesson:** a price guard on one leg of a trade (entry) doesn't imply the mirror-image guard
+exists on the other leg (exit) — check both independently. A dead config key
+(`order_slippage` in `strategy_*.toml`, parsed nowhere in `trader/src`) turned out to be exactly
+this gap, seemingly planned and then never wired up.
+
+**What exactly changed on the "3 internal retries," precisely:** it's not *just* adding a price
+— the retry mechanism itself changed. The old `close_position()` (still used for stop-loss)
+retries internally, in one call, up to 5 times: on `"balance: 0"` (the entry BUY's fill is
+confirmed by the API immediately, but the token isn't actually spendable until the Polygon
+transaction settles on-chain, typically ~1-2s) it sleeps 1s and retries; on `"no orders found to
+match with FAK order"` (a FAK only matches liquidity resting on the book *right now* — a thin
+book like SOL's routinely has brief moments with none) it retries immediately. That internal
+loop, with no price floor, is exactly what produced this incident's 3.4-second, 3-failed-attempt
+sequence ending 11¢ away from target. `close_position_at_price()` has **no internal retry loop
+at all** — one attempt; if it fails, for either reason, it returns `Failed` immediately, and
+`worker.rs::on_unwind_failed` re-arms `PriceMonitor{tp_price}` so the *next real `PolyTick`*
+triggers the next attempt, rather than an internal sleep. One consequence worth flagging
+explicitly: the old settlement-lag retry (`"balance: 0"` → sleep 1s → retry) is gone for
+take-profit closes specifically. If a take-profit fires within ~1-2s of entry (before the BUY
+settles on-chain — exactly this incident's shape), the first bounded attempt will still hit
+`"balance: 0"` and return immediately; recovery now depends on the next `PolyTick` arriving and
+the price still qualifying, not a guaranteed 1-second internal wait. In practice this is usually
+equal or faster (real ticks tend to arrive more than once a second in an active market), but it
+is a genuine behavioral difference from before, not merely "same retries, now with a floor."
+Stop-loss (`close_position()`) got neither change — still unbounded, still the internal 5x retry
+loop, per direction (a stop-loss must close regardless of price or retry cadence).
+
+### Entry evaluation only checked on Binance ticks, missing fast poly-side crossings (2026-07-04, fixed)
+
+`Worker::on_binance`/`Machine::on_binance` (`trader/src/worker.rs`, `trader/src/machine.rs`)
+were the only place `ReversalStrategy`/`HighProbStrategy::evaluate` ever got called — even
+though the entry condition for both strategies is a conjunction of a **poly** price
+band/threshold (the primary, time-critical trigger) and a `delta_pct` sign check (a
+directional filter). `Worker::on_poly`/`Machine::on_poly` updated poly state but never
+triggered entry evaluation itself, so a poly price that crossed its trigger band **between**
+Binance ticks sat unnoticed until the next Binance tick happened to arrive — up to the
+Binance feed's own tick interval (see "Latency & observability infrastructure" above: ~250ms
+today, sampled/coalesced from the real per-trade WS stream).
+
+Confirmed this isn't just a synthetic-test concern: replaying real BTC data from
+2026-06-20 (`backtest::btc_20260620_golden`, previously validated against the Python
+reference engine) turned up a case where poly's `up` price spiked 0.145 → 0.605 in under
+half a second while Binance ticks in that window landed roughly once per second — the old
+design couldn't see the crossing in time to act on it at all.
+
+**Fix:** both `on_binance` and `on_poly` now call a shared `try_enter(now)`, so entry can
+fire off either feed using the latest cached value of the other (`check_gates`'s existing
+`|delta_pct| >= threshold` gate is unchanged — this only affects how promptly the condition
+is checked, not how permissive it is). `worker.rs` (live) and `machine.rs` (backtest) were
+kept in sync so backtest results stay representative of live behavior.
+
+Fixing this exposed a real latent bug: `DeltaPctSignal::reset()` (`trader/src/signal/
+delta_pct.rs`) cleared `open` but not `price` on a new cycle — harmless under the old
+design (`on_binance` always refreshed `price` in the same call that evaluated it), but a
+real risk once `on_poly` can trigger evaluation without refreshing `price` itself, since a
+stale Binance price left over from the *previous* cycle could otherwise pass as this
+cycle's already-known delta. Fixed by clearing `price` on every `reset()` too.
+
+Full writeup, the poly-vs-Binance latency reasoning behind the decision, and the exact
+golden-test trade this uncovered: `trader/doc/latency_2026-07-04.md` §8/§9.
+
+**Lesson:** when a strategy's entry condition depends on two independently-arriving feeds,
+gating evaluation behind only one of them makes entry timing hostage to that one feed's
+cadence — even if the *other* feed is the one that's actually time-critical. Worth checking
+for this pattern anywhere else two signals are combined behind a single trigger event.
+
+### Entry BUYs rejected outright — Amount::shares violated a market-buy precision rule (2026-07-04, fixed, critical)
+
+A same-day change (`7d0f96c`, "buy in rounded shares instead of rounded dollars" — see the
+`incident_tele_pnl_2026-07-04.md` write-up it came from) switched entry BUYs from
+`Amount::usdc(size_usdc)` to `Amount::shares(...)`, to stop a `<0.01`-share dust remainder
+from being left behind on the exit leg. It shipped, was redeployed to Oracle at 22:51, and
+the very first entry attempt on the new binary (DOGE, 23:09:37) failed all 4 retries with
+`"invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals,
+taker amount a max of 4 decimals"` — and kept failing identically regardless of price. Full
+writeup: `trader/doc/incident_order_rejection_2026-07-04.md`.
+
+**Root cause:** the vendored SDK computes a market BUY's maker (USDC) leg differently
+depending on which `Amount` variant is submitted. `Amount::usdc(size_usdc)` passes the
+caller's own already-2-decimal dollar figure straight through as the maker amount (always
+valid) and derives shares (up to 4 decimals, which the API allows). `Amount::shares(...)`
+instead derives the maker amount as `shares × price` — and a 2-decimal share count times a
+2-decimal price generically needs *more* than 2 decimal places to represent exactly, which
+Polymarket rejects outright for a market BUY. This isn't a rounding-threshold bug fixable by
+adjusting the target share count (the way an earlier same-day incident,
+`incident_order_fail_2026-07-04.md`'s $1.00 marketable-notional floor, was) — it's structural
+to using `Amount::shares` on a market BUY's maker leg at all, so it hit essentially every
+entry, on every asset, blocking all new positions from the 22:51 redeploy until fixed.
+
+**Fix:** reverted the entry BUY to `Amount::usdc(size_usdc)`, and removed the
+`entry_shares_for_buy`/`ceil2`/$1-floor-bump code that existed only to serve the broken path.
+The exit-leg dust this reintroduces is already handled safely — `worker.rs`'s
+`MIN_SELLABLE_SHARES` write-off (from the same incident chain, implemented *before* this
+regression) already detects a residual below the sellable floor and finalizes the trade off
+realized proceeds instead of chasing an unfillable sell, so nothing needed to change there.
+Verified with `cargo test` (132 passed) and a clean redeploy to Oracle
+(`trader-live.service` restarted 23:48:29 HKT, healthy).
+
+**Lesson:** the two `Amount` constructors aren't interchangeable ways to size the same order
+— which one is "raw" (caller-supplied, therefore safely-scaled) and which is "derived"
+(computed by multiplying by price, therefore only as precise as that multiplication allows)
+flips depending on which leg you pick, and Polymarket enforces different decimal-precision
+caps on each leg of a market BUY specifically. A fix that only checked the *exit* side's
+already-known constraints (`Amount::shares` caps at 2 decimals) missed a *different*,
+previously-undocumented constraint on the *entry* side's maker amount — test the two legs of
+an order against the API's actual rules independently, not just the one already bitten by a
+prior incident.
 
 ### BUY retry ladder stalled short of `max_buy_price` (2026-07-03, fixed)
 
@@ -1100,459 +1523,36 @@ otherwise), all future tooling touching that process must go through the supervi
 own restart command — never signal the process directly, even for a "graceful" SIGTERM.
 The supervisor can't tell a deliberate redeploy apart from a crash.
 
-### Entry evaluation only checked on Binance ticks, missing fast poly-side crossings (2026-07-04, fixed)
+### Stop-loss close never filled (2026-07-02, fixed)
 
-`Worker::on_binance`/`Machine::on_binance` (`trader/src/worker.rs`, `trader/src/machine.rs`)
-were the only place `ReversalStrategy`/`HighProbStrategy::evaluate` ever got called — even
-though the entry condition for both strategies is a conjunction of a **poly** price
-band/threshold (the primary, time-critical trigger) and a `delta_pct` sign check (a
-directional filter). `Worker::on_poly`/`Machine::on_poly` updated poly state but never
-triggered entry evaluation itself, so a poly price that crossed its trigger band **between**
-Binance ticks sat unnoticed until the next Binance tick happened to arrive — up to the
-Binance feed's own tick interval (see "Latency & observability infrastructure" above: ~250ms
-today, sampled/coalesced from the real per-trade WS stream).
+A live BNB test (`trader/src/bin/live.rs`, size $1, max-trades 1) bought 1.0752 shares of "Up"
+for $0.9999, the stop-loss triggered, and **every single close retry failed** for the rest of the
+run (hundreds of retries, `status=Failed sold=0.0000`). The position was never exited and rode to
+market resolution; "Up" lost, so the position settled to $0. **Total loss: $0.9999** (confirmed via
+Polymarket's public `data-api.polymarket.com/positions` endpoint — `currentValue: 0` on
+`bnb-updown-5m-1782971400`).
 
-Confirmed this isn't just a synthetic-test concern: replaying real BTC data from
-2026-06-20 (`backtest::btc_20260620_golden`, previously validated against the Python
-reference engine) turned up a case where poly's `up` price spiked 0.145 → 0.605 in under
-half a second while Binance ticks in that window landed roughly once per second — the old
-design couldn't see the crossing in time to act on it at all.
+**Root cause:** `execution.rs::close_position()` built the market SELL order as
+`.amount(Amount::usdc(size_dec))`, where `size_dec` was the **held share count** (1.0753), not a
+USDC amount. The SDK has two distinct constructors, `Amount::usdc()` and `Amount::shares()`.
+Wrapping a share count in `Amount::usdc` tells the exchange "I want ~$1.0753 in proceeds", which at
+a <$1 price requires selling *more* shares than are actually held — so the order could never
+match. Every retry hit `"no orders found to match with FAK order"` / `"not enough balance"`, which
+the retry loop treated as transient and retried forever instead of surfacing as a real error. The
+retry logic explicitly listing `"not enough balance"` as retryable is a strong sign this exact
+failure had been seen before and papered over with retries rather than fixed.
 
-**Fix:** both `on_binance` and `on_poly` now call a shared `try_enter(now)`, so entry can
-fire off either feed using the latest cached value of the other (`check_gates`'s existing
-`|delta_pct| >= threshold` gate is unchanged — this only affects how promptly the condition
-is checked, not how permissive it is). `worker.rs` (live) and `machine.rs` (backtest) were
-kept in sync so backtest results stay representative of live behavior.
+**Fix:** use `Amount::shares(size_dec)` instead, matching `place_limit_sell`'s existing correct
+pattern (`round2(shares)` → 2-decimal `Decimal`, since `Amount::shares` enforces `LOT_SIZE_SCALE=2`
+— unlike `Amount::usdc` which allows more decimal places, so the old 4-decimal formatting would
+have failed validation immediately if this had been caught locally instead of live). Verified with
+`cargo test --lib execution` (all 7 tests pass) after the change.
 
-Fixing this exposed a real latent bug: `DeltaPctSignal::reset()` (`trader/src/signal/
-delta_pct.rs`) cleared `open` but not `price` on a new cycle — harmless under the old
-design (`on_binance` always refreshed `price` in the same call that evaluated it), but a
-real risk once `on_poly` can trigger evaluation without refreshing `price` itself, since a
-stale Binance price left over from the *previous* cycle could otherwise pass as this
-cycle's already-known delta. Fixed by clearing `price` on every `reset()` too.
-
-Full writeup, the poly-vs-Binance latency reasoning behind the decision, and the exact
-golden-test trade this uncovered: `trader/doc/latency_2026-07-04.md` §8/§9.
-
-**Lesson:** when a strategy's entry condition depends on two independently-arriving feeds,
-gating evaluation behind only one of them makes entry timing hostage to that one feed's
-cadence — even if the *other* feed is the one that's actually time-critical. Worth checking
-for this pattern anywhere else two signals are combined behind a single trigger event.
-
-### Entry BUYs rejected outright — Amount::shares violated a market-buy precision rule (2026-07-04, fixed, critical)
-
-A same-day change (`7d0f96c`, "buy in rounded shares instead of rounded dollars" — see the
-`incident_tele_pnl_2026-07-04.md` write-up it came from) switched entry BUYs from
-`Amount::usdc(size_usdc)` to `Amount::shares(...)`, to stop a `<0.01`-share dust remainder
-from being left behind on the exit leg. It shipped, was redeployed to Oracle at 22:51, and
-the very first entry attempt on the new binary (DOGE, 23:09:37) failed all 4 retries with
-`"invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals,
-taker amount a max of 4 decimals"` — and kept failing identically regardless of price. Full
-writeup: `trader/doc/incident_order_rejection_2026-07-04.md`.
-
-**Root cause:** the vendored SDK computes a market BUY's maker (USDC) leg differently
-depending on which `Amount` variant is submitted. `Amount::usdc(size_usdc)` passes the
-caller's own already-2-decimal dollar figure straight through as the maker amount (always
-valid) and derives shares (up to 4 decimals, which the API allows). `Amount::shares(...)`
-instead derives the maker amount as `shares × price` — and a 2-decimal share count times a
-2-decimal price generically needs *more* than 2 decimal places to represent exactly, which
-Polymarket rejects outright for a market BUY. This isn't a rounding-threshold bug fixable by
-adjusting the target share count (the way an earlier same-day incident,
-`incident_order_fail_2026-07-04.md`'s $1.00 marketable-notional floor, was) — it's structural
-to using `Amount::shares` on a market BUY's maker leg at all, so it hit essentially every
-entry, on every asset, blocking all new positions from the 22:51 redeploy until fixed.
-
-**Fix:** reverted the entry BUY to `Amount::usdc(size_usdc)`, and removed the
-`entry_shares_for_buy`/`ceil2`/$1-floor-bump code that existed only to serve the broken path.
-The exit-leg dust this reintroduces is already handled safely — `worker.rs`'s
-`MIN_SELLABLE_SHARES` write-off (from the same incident chain, implemented *before* this
-regression) already detects a residual below the sellable floor and finalizes the trade off
-realized proceeds instead of chasing an unfillable sell, so nothing needed to change there.
-Verified with `cargo test` (132 passed) and a clean redeploy to Oracle
-(`trader-live.service` restarted 23:48:29 HKT, healthy).
-
-**Lesson:** the two `Amount` constructors aren't interchangeable ways to size the same order
-— which one is "raw" (caller-supplied, therefore safely-scaled) and which is "derived"
-(computed by multiplying by price, therefore only as precise as that multiplication allows)
-flips depending on which leg you pick, and Polymarket enforces different decimal-precision
-caps on each leg of a market BUY specifically. A fix that only checked the *exit* side's
-already-known constraints (`Amount::shares` caps at 2 decimals) missed a *different*,
-previously-undocumented constraint on the *entry* side's maker amount — test the two legs of
-an order against the API's actual rules independently, not just the one already bitten by a
-prior incident.
-
-### Take-profit exit had no price floor — an 8¢ slippage turned a 3¢ profit into a loss (2026-07-06, fixed)
-
-A SOL reversal position bought "Up" at 0.90 with a 3¢ take-profit target (`tp_price = 0.93`),
-but the logged exit was `TRADE UNWIND ... entry=0.9000 → exit=0.8200 ... pnl=-$0.1073` — a
-take-profit that lost money, even though the underlying (Binance SOL) moved the *correct*
-direction across the cycle. Full writeup, including the exact `live.log` sequence and pnl
-arithmetic: `trader/doc/incident_sol_unwind_but_loss_2026-07-06.md`.
-
-**Root cause:** entry BUYs have always had a real max-price guard (`gates.rs`'s `MaxBuyPrice`/
-`PriceHighRev` gates, plus a *limit* FAK with `.price()` capped at `max_buy_price` in
-`execution.rs::place`), but the take-profit ("unwind") exit's `close_position()` was a **bare
-market FAK with no price bound at all** — once the take-profit trigger fired, the sell would
-fill at whatever price the book gave it, arbitrarily far below the trigger. In this trade, a
-brief thin-book spike crossed `tp_price`, the close fired correctly, but the FAK needed 3
-internal retries (~3.4s: one for the entry BUY's on-chain settlement lag, two for "no orders
-found to match") before it filled — by which point the spike had reverted and the sell landed
-at 0.82, 11¢ below the 0.93 target.
-
-**Fix:** `execution.rs::close_position_at_price(token_id, shares, min_price)` — a single-attempt
-FAK **with** `.price(min_price)`, used only for take-profit closes, bounded at the position's own
-`tp_price` (no new config — the minimum acceptable sell price *is* the take-profit target).
-Stop-loss closes are unchanged (`close_position()`, still unbounded — a stop-loss must close
-regardless of price). If the bounded attempt can't fill immediately, `worker.rs::on_unwind_failed`
-now re-arms `PriceMonitor { tp_price }` and waits for the next real `PolyTick` to retry, instead
-of the old one-shot `TakeProfitAbandoned` latch — safe now that each attempt is price-bounded
-(can't fill worse than the target) and naturally rate-limited by real ticks rather than an
-internal retry loop (which is what caused a *different* incident's 284-attempts-in-9s hammering,
-`incident_doge_2026-07-03.md`).
-
-**Lesson:** a price guard on one leg of a trade (entry) doesn't imply the mirror-image guard
-exists on the other leg (exit) — check both independently. A dead config key
-(`order_slippage` in `strategy_*.toml`, parsed nowhere in `trader/src`) turned out to be exactly
-this gap, seemingly planned and then never wired up.
-
-**What exactly changed on the "3 internal retries," precisely:** it's not *just* adding a price
-— the retry mechanism itself changed. The old `close_position()` (still used for stop-loss)
-retries internally, in one call, up to 5 times: on `"balance: 0"` (the entry BUY's fill is
-confirmed by the API immediately, but the token isn't actually spendable until the Polygon
-transaction settles on-chain, typically ~1-2s) it sleeps 1s and retries; on `"no orders found to
-match with FAK order"` (a FAK only matches liquidity resting on the book *right now* — a thin
-book like SOL's routinely has brief moments with none) it retries immediately. That internal
-loop, with no price floor, is exactly what produced this incident's 3.4-second, 3-failed-attempt
-sequence ending 11¢ away from target. `close_position_at_price()` has **no internal retry loop
-at all** — one attempt; if it fails, for either reason, it returns `Failed` immediately, and
-`worker.rs::on_unwind_failed` re-arms `PriceMonitor{tp_price}` so the *next real `PolyTick`*
-triggers the next attempt, rather than an internal sleep. One consequence worth flagging
-explicitly: the old settlement-lag retry (`"balance: 0"` → sleep 1s → retry) is gone for
-take-profit closes specifically. If a take-profit fires within ~1-2s of entry (before the BUY
-settles on-chain — exactly this incident's shape), the first bounded attempt will still hit
-`"balance: 0"` and return immediately; recovery now depends on the next `PolyTick` arriving and
-the price still qualifying, not a guaranteed 1-second internal wait. In practice this is usually
-equal or faster (real ticks tend to arrive more than once a second in an active market), but it
-is a genuine behavioral difference from before, not merely "same retries, now with a floor."
-Stop-loss (`close_position()`) got neither change — still unbounded, still the internal 5x retry
-loop, per direction (a stop-loss must close regardless of price or retry cadence).
-
-### Recon auto-commit swept up unrelated staged changes under a misleading message (2026-07-07, fixed)
-
-`scripts/trade_reconcile.py` (the daily reconciliation report, cron-scheduled every 2 hours via
-`scripts/bash/run_daily_recon.bash`) auto-commits and pushes its own regenerated markdown report
-via `git_commit_push()`. That function `git add`-ed just the one report path, but then ran
-`git commit -m message` with **no pathspec** — which commits the *whole* index, not only the file
-just added. A manual `git add` of unrelated in-progress work (staging four separate files for an
-unrelated fix, right as this cron job's own scheduled run landed) got silently swept into the same
-commit, which then pushed to `origin/main` under the auto-generated message
-`recon: 2026-07-06 — 1/1 matched (100%)` — content was correct (nothing lost or corrupted), but
-the message badly undersold what the commit actually contained, and the race could just as easily
-have interrupted a commit mid-`git add`, landing a half-staged change.
-
-**Fix:** `git_commit_push()` now runs `git commit -m message -- <rel_paths>` — the trailing
-pathspec restricts the commit to exactly the paths this function was given, regardless of
-anything else staged in the index at that moment. Verified in an isolated throwaway repo: an
-unrelated staged file is left untouched (still staged, not committed) rather than swept in, and
-the "no changes to this specific path" case still fails exactly as before (non-zero exit, caught
-by the existing `except subprocess.CalledProcessError`) — no new failure mode for the unattended
-cron path.
-
-**Lesson:** any automation that does its own `git add` + `git commit` should always scope the
-commit itself to the same paths it just added — `git commit` with no pathspec commits the entire
-index, which is almost never what a narrowly-scoped auto-commit script actually wants, and the gap
-only shows up the moment something else happens to be staged at the same time.
-
-### ETH stop-loss needed 31 attempts to close in the last 20s of a cycle (2026-07-07, not a bug)
-
-Recon flagged `exit_attempts: 31` on an ETH `high_prob` stop-loss that filled at 0.47 against a
-0.82 trigger. Root cause: the position was entered ~20s before candle close, and ETH crossed the
-strike in that final stretch, cratering the DOWN token from 0.665 toward zero — a window where
-resting liquidity vanishes as market-makers pull quotes ahead of resolution, so each FAK sell (one
-per real tick, each with its own 5x immediate inner retry on "no orders found to match") kept
-getting killed until a buyer finally appeared. Confirmed as the stop-loss retry design (unbounded,
-must-close, one outer attempt per tick) working as intended under genuinely thin liquidity, not a
-regression — full timeline and math in `trader/doc/incident_31_retry_sl_2026-07-07.md`.
-
-### `reversal` stop-loss (`sl_pnl_rev = 0.80`) unreachable or too-loose by design (2026-07-07, audited, not fixed)
-
-Two `reversal` trades (SOL entry 0.75, DOGE entry 0.94) lost almost their full stake — one with the
-stop-loss never firing at all, the other firing only ~1 second before cycle close. Root cause is
-config, not code: `sl_hit`'s threshold is `entry_price − sl_pnl_rev`, and at the shared default
-`sl_pnl_rev = 0.80` that's *negative* (unreachable) for any entry below 0.80, and barely above zero
-for entries just above it — so by the time it's reachable at all, the position has already lost
-most of its value in these fast-resolving 5-minute markets. A repo-wide check found 3 historical
-`reversal` trades total with a structurally-unreachable threshold (2 survived by luck before this
-one didn't). Full tick-by-tick CLOB + order-book evidence and a sensitivity table showing what a
-tighter threshold would have done: `trader/doc/audit_sl_no_trigger_2026-07-07.md`. No config change
-made — this is a calibration decision, not applied without direction. **Follow-up traced the root
-cause upstream**: every *unconstrained* backtest sweep in `../btc_5mins/studies/bt2` actually picks
-`sl_pnl = 0.00` (no stop-loss) as PnL-optimal — `0.80` only exists because the walk-forward study
-that produced it explicitly excluded `sl_pnl = 0` and then walked to that search's grid maximum
-(`../btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md`).
-
-### Loss-streak halt now sends Telegram notifications on engage and reset (2026-07-07, added)
-
-The consecutive-loss halt (`halt_rev`/`halt_prob` — distinct from manual `/halt` and the balance
-drawdown halt, both of which already notified) previously changed state completely silently; the
-only way to notice was polling `/status`'s 🟡/🟢 indicator. Two new `Action` variants close the gap:
-
-- **`Action::HaltEngaged`** — fired from the exact trade (`on_cycle_close` or
-  `finalize_or_hold_residual`'s stop-loss/unwind-fill paths) whose loss crosses `halt_rev`/
-  `halt_prob`'s threshold. `HaltTracker::record_trade` (`backtest.rs`) now returns `bool` — `true`
-  only on the transition from not-halted to halted, so an already-open position resolving as a loss
-  *after* the halt has already engaged doesn't re-fire it.
-- **`Action::HaltReset`** — fired from `on_cycle_open` when the daily HKT session rollover
-  (`halt_reset_hour_rev`/`halt_reset_hour_hp`) actually clears an *active* halt.
-  `HaltTracker::reset_if_new_session` now returns `bool` for the same reason — a session rollover
-  with nothing to clear (the common case, most days) stays silent rather than sending a notification
-  every single day at 02:00/08:00 HKT regardless of whether anything happened.
-
-Both plumb through `Worker::step`'s existing `Vec<Action>` return the same way every other
-Telegram-worthy state change does, and `bin/live.rs`'s `process_actions` gets two new dedicated
-match arms (alongside the existing `StopLossVerdict`/`LogTradeCorrection` ones) building the
-messages — no new architecture, same pattern as the existing stop-loss-triggered notification.
-`backtest.rs::run_backtest`'s own calls to both methods discard the new return value — zero
-behavior change to backtest/sweeps. New tests: `halt_tracker_record_trade_signals_only_on_the_crossing_loss`,
-`halt_tracker_record_trade_ignores_non_loss_and_other_strategy`,
-`halt_tracker_reset_signals_only_when_clearing_an_active_halt` (`backtest.rs`), plus
-`halt_reset_on_session_rollover_with_no_active_halt_is_silent` and extended assertions on
-`halt_by_loss_streak_suppresses_entry_and_resets_next_session` (`worker.rs`).
-
-### `cargo clippy --all-targets --all-features -- -D warnings` cleaned up (2026-07-07, fixed)
-
-`trader`'s clippy had drifted to 24 pre-existing errors on `main` (confirmed unrelated to any
-feature work — same count on a clean checkout before this pass), evidently from a toolchain/clippy
-version bump surfacing lints this code predates. All fixed, no behavior change to any of them —
-verified via `cargo build`/`cargo test` (141 lib + 10 bin tests, all passing) after every fix:
-
-- **9× `empty_line_after_doc_comments`** (`config.rs`, `gates.rs`, `signal/mod.rs`,
-  `signal/delta_pct.rs`, `signal/latest_binance.rs`, `signal/latest_poly.rs`, `signal/saw_low.rs`,
-  `strategies.rs`, `types.rs`) — a file-level `///` doc comment followed by a blank line reads as
-  documenting the *next item* (a `use`/`mod`), not the file. All were genuinely file-level docs;
-  changed `///` → `//!` on each rather than deleting the blank line (which would've kept the
-  comment wrongly attached to the following `use` statement).
-- **6× `collapsible_if`** (`marketdata.rs`, `telegram/mod.rs`, `worker.rs`×2, `api_probe.rs`,
-  `live.rs`) — nested `if let X { if cond { ... } }` collapsed into `if let X && cond { ... }`
-  (Rust let-chains). Behavior-identical.
-- **5× `new_without_default`** (`signal/delta_pct.rs`, `signal/latest_binance.rs`,
-  `signal/latest_poly.rs`×2, `signal/mod.rs`) — added `impl Default { fn default() -> Self {
-  Self::new() } }` for each `pub fn new()` with no args.
-- **`single_match`** (`redemption.rs`) — `match { Ok(true) => {...}, Ok(false)|Err(_) => {} }` →
-  `if let Ok(true) = ...`.
-- **`needless_question_mark`** (`marketdata.rs::http_client`) — `Ok(foo?)` → `foo`.
-- **`trim_split_whitespace`** (`telegram/commands.rs::parse_command`) — `.trim().split_whitespace()`
-  had a redundant `.trim()` (`split_whitespace()` already ignores leading/trailing whitespace).
-- **`neg_multiply`** (`machine.rs` test) — `-1.0 * 0.20` → `-0.20`.
-- **2× `suspicious_open_options`** (`bin/shadow.rs`, `bin/live.rs::append_csv_header_if_new`) —
-  `OpenOptions::new().create(true).write(true)` with no explicit truncate/append intent; both call
-  sites only ever run when the file doesn't already exist (guarded by an `if !exists`/`if exists {
-  return }` check just above), so `.truncate(true)` documents the already-true behavior rather than
-  changing it.
-- **2× `question_mark`** (`bin/live.rs::execute`) — `let Some(token_id) = slot.current_token_id
-  else { return None };` → `let token_id = slot.current_token_id?;` (the enclosing fn already
-  returns `Option<Event>`).
-- **`too_many_arguments`** (`worker.rs::Worker::common`, 9 args) — added
-  `#[allow(clippy::too_many_arguments)]` rather than restructuring: private, 2 call sites
-  (`new_reversal`/`new_high_prob`), each arg independently meaningful — a wrapper struct would add
-  a layer without a real clarity gain here.
-- **`if_same_then_else`** (`worker.rs::reconcile`'s `Entering` arm) — both branches of `if
-  token_balance > 0.0 { Watching } else { Watching }` returned the identical value; collapsed to
-  unconditional `WorkerState::Watching` with the explanatory comment kept (the surrounding doc
-  comment already establishes both cases are meant to resolve the same way — this wasn't a missed
-  branch, just dead conditioning).
-
-Not addressed in this pass: `cargo fmt --all --check` also has ~350 pre-existing diffs across the
-crate (same toolchain-drift shape, confirmed unrelated to any feature work) — out of scope here
-since `cargo fmt --all` would rewrite most lines of every touched file, obscuring any real change
-in the same commit. Left for a dedicated formatting-only pass if wanted. **Done, see below.**
-
-### `cargo fmt --all --check` cleaned up, both crates (2026-07-08, fixed)
-
-The `~350` diffs flagged above (deferred from the 2026-07-07 clippy pass) turned out to be `374`
-diffs across `26` files in `trader`, plus `55` more across `price_feed` — same root cause in both:
-no `rust-toolchain.toml`/`rustfmt.toml` in the repo, so each crate was formatted by whatever
-rustfmt happened to be installed at the time, and the currently-installed `rustfmt 1.9.0-stable`
-(`rustc 1.96.1`, 2026-06-26) disagrees with that on import-statement ordering and struct-literal/
-enum-variant field wrapping (multi-field literals that used to fit on one line now wrap one field
-per line). Confirmed via `git stash`/clean-checkout diffing that none of this was caused by any
-in-flight feature work in either crate.
-
-Fixed with a single `cargo fmt --all` per crate — purely mechanical, zero behavior change, verified
-by re-running the full check afterward in both:
-- `trader`: `cargo build`, `cargo test` (152 lib + 16 bin, unchanged pass count), and
-  `cargo clippy --all-targets --all-features -- -D warnings` all clean, before and after.
-- `price_feed`: `cargo build` and `cargo test` (5 tests) both clean before and after. **Note:**
-  `cargo clippy --all-targets --all-features -- -D warnings` failed on `price_feed` with 12
-  pre-existing errors at the time (mostly `collapsible_if`) — confirmed via the same `git stash`
-  check to predate this fmt pass entirely (`price_feed` never got the equivalent of `trader`'s
-  2026-07-07 clippy cleanup). Left untouched in this pass — out of scope for a formatting-only
-  change. **Fixed same day, separately — see the next entry below.**
-
-At the time, deliberately **not** added: a `rust-toolchain.toml` pin to stop this drift from
-recurring. Held back specifically because `scripts/deploy_trader.sh`'s aarch64 cross-compile step
-(`cross build --release --bin=live --target=aarch64-unknown-linux-gnu`) runs in a separate
-Docker-based toolchain that `cross` manages itself; a repo-root toolchain pin could force that
-container to fetch a specific version on its next build rather than using whatever it already has
-cached, which wasn't something to risk against the live trading deploy path without testing it in
-isolation first. **Added and verified later the same day — see "Toolchain pin added" below.**
-
-### `price_feed` clippy cleanup (2026-07-08, fixed)
-
-The 12 errors flagged above: 7x `collapsible_if` (`collect.rs`, `markets.rs`) collapsed into Rust
-let-chains (`if let X && cond { ... }`), behavior-identical; 3x `ptr_arg` (`&PathBuf` -> `&Path`)
-on `collect.rs`'s `open_for_hour`/`AssetWriters::new`/`BinanceWriters::new` — call sites unaffected
-via deref coercion, internal `.clone()` calls on the narrowed param switched to `.to_path_buf()`;
-1x `too_many_arguments` on `collect.rs::write_sample` (8/7) allowed with a justifying comment
-(private, 3 call sites, each arg independently meaningful), matching the precedent already set for
-`trader/src/worker.rs::Worker::common`. Verified: `cargo build`, `cargo test` (5/5), `cargo clippy
---all-targets --all-features -- -D warnings`, and `cargo fmt --all --check` all clean.
-
-### Toolchain pin added: `rust-toolchain.toml` (2026-07-08, added)
-
-Pins `channel = "1.96.1"` (today's already-installed version) plus `rustfmt`/`clippy` components,
-at the repo root — applies to both `trader` and `price_feed` via rustup's directory-walk-up
-resolution. This is what stops the drift that caused the fmt cleanup above from recurring: without
-it, the next dev machine (or CI runner, or this machine after a `rustup update`) picks whatever
-"stable" happens to resolve to at the time, silently diverging from whatever last formatted the
-repo.
-
-Tested in isolation before merging, specifically targeting the risk flagged above (the aarch64
-`cross`/Docker toolchain needing to fetch a pinned version it doesn't already have cached):
-- Local host tooling: `cargo build`/`test`/`clippy`/`fmt --check` all clean under the pinned
-  toolchain (rustup auto-installed a distinct `1.96.1-x86_64-unknown-linux-gnu` toolchain
-  alongside the existing `stable` one — same underlying version, so no behavior change, just now
-  explicit instead of implicit).
-- `cross build --release --bin live --target aarch64-unknown-linux-gnu` (`trader`): the risk
-  materialized once — the container needed to fetch the `rust-std` component for the aarch64
-  target under the pinned channel, costing ~13s. **A second run immediately after came back in
-  under 2 seconds** — confirming this is a one-time, cacheable cost, not a per-deploy recurring
-  one.
-- `cross build --release --target aarch64-unknown-linux-gnu` (`price_feed`, which has its own
-  `Cross.toml` for `libssl-dev:arm64`/`pkg-config` pre-build steps): also clean, ~7s, no new
-  toolchain fetch needed (already warmed by the `trader` build above).
-- `./scripts/deploy_trader.sh --dry-run`: full pipeline clean end-to-end with the pin in place.
-
-No real deploy was run as part of this change (dry-run + isolated `cross build` only) — the
-pin itself doesn't change what gets built, only which toolchain version builds it.
-
-### `--trader-only` deploy silently left Oracle running a stale strategy config (2026-07-07, fixed, critical)
-
-Telegram `/status` showed `sl_pnl=0.8000` for ETH reversal right after a deploy meant to set it to
-`0.25` — `trade_assets` narrowing to ETH *did* take effect, `sl_pnl_rev` didn't. Root cause:
-`deploy_oracle.py`'s `--trader-only`/default path (`scripts/deploy_trader.sh` always uses
-`--trader-only`) rsyncs the binary and bakes `--asset` flags into the systemd unit from *this
-machine's* local config, but never rsyncs `trader/config/` itself to Oracle — only `sync_config()`
-(previously wired to the separate `--config-only` mode) does that, and the running binary re-reads
-its `strategy_*.toml` from Oracle's own copy on every restart. `trade_assets` reached the process
-via the CLI-flag channel (always current); `sl_pnl_rev` only exists inside the TOML (silently
-stale). **Fix:** every trader-deploying mode now calls `sync_config()` unconditionally before
-restarting the service, and aborts without restarting if it fails. New test file
-`scripts/test_deploy_oracle.py` (stdlib `unittest`/`mock`, no new dependency — first Python tests in
-this repo) pins the fixed step ordering across all four deploy modes. Full writeup:
-`trader/doc/incident_stale_oracle_config_2026-07-07.md`.
-
-### `--update-config` deploy mode: commit+push+sync in one step (2026-07-08, added)
-
-Added `scripts/deploy_oracle.py --update-config` (and `./scripts/deploy_trader.sh --update-config`)
-— commits + pushes `trader/config/` if it has uncommitted changes (pathspec-scoped to that
-directory only, same pattern as the "Recon auto-commit" fix above), aborting before ever
-connecting to Oracle if the commit/push fails, then does exactly what `--config-only` already did:
-rsync + symlink + restart, no build, no binary rsync. Previously, landing a hand-edited
-`strategy_*.toml` on Oracle required two separate manual steps — `git commit && git push`, then
-`--config-only` — with nothing enforcing they happened together or in order; this collapses that
-into one command and one failure mode (git fails → nothing touches Oracle). See "Editing a config
-and deploying it in one step" above for usage; tests in `scripts/test_deploy_oracle.py`
-(`test_update_config_commits_before_syncing`,
-`test_update_config_never_touches_oracle_when_git_push_fails`).
-
-### `unwind_time` — max-holding-time force-exit (2026-07-08, added)
-
-New per-strategy, per-asset config parameter `unwind_time_rev`/`unwind_time_hp` (seconds; `0.0` =
-disabled), ported from `btc_5mins/studies/unwind_safely`'s backtest engine — see
-`trader/doc/plan_unwind_time_2026-07-08.md` for the full design writeup. While a position is open,
-checked **last** in the exit chain (after PnL-based stop-loss and take-profit both fail to fire on
-a given tick): if `now - entry_ts >= unwind_time`, force-close at whatever the current market price
-is, win or lose — a pure max-exposure-time cap, independent of whether any PnL threshold is even
-reachable. This directly backstops the class of failure documented in
-`trader/doc/audit_sl_no_trigger_2026-07-07.md` (SOL/DOGE positions that bled out because
-`sl_pnl_rev` was unreachable at their entry price) — a stuck position now has a second, orthogonal
-exit condition that doesn't depend on price ever crossing anything.
-
-Implementation: new `WorkerState::TimingOut`/`Outcome::Timeout`/`CloseReason::Timeout`, mirroring
-`StopExiting`/`Outcome::StopLoss` exactly (same unbounded-FAK mechanics, same "re-fires every
-PolyTick until cleared" retry behavior), kept as a distinct variant rather than folded into
-`StopExiting` so the outcome and Telegram copy ("⏱️ TIME LIMIT triggered") can differ. Excluded from
-the halt loss-streak by construction (`Outcome::is_loss_for_halt` only matches `Loss`/`StopLoss`) —
-matches the backtest's "cum_losses NOT incremented for TIMEOUT" semantics, since a time-cap exit
-isn't a signal-quality failure the way a real stop-loss is. Visible in Telegram `/status` alongside
-`unwind_pnl`/`sl_pnl` (this is the exact visibility gap that let the `sl_pnl` stale-config incident
-above go unnoticed for a full deploy cycle).
-
-**Shipped at `30.0`s for both strategies** (ETH, the only live `trade_assets` entry) — the
-walk-forward study's final-calibration value. Flagged explicitly in the plan doc: this sits at the
-top of the study's tested 10–30s range, the same grid-boundary-artifact pattern already documented
-for `sl_pnl` in `btc_5mins/studies/bt2/followup_sl_pnl_boundary_2026-07-07.md` — the sweep shows
-"longer beat shorter at every step within [10, 30]," not that 30s is a validated optimum. Shipped
-anyway (rather than disabled, or waiting on a wider re-sweep) because the risk here is
-asymmetric-safe compared to `sl_pnl`: a too-short `unwind_time` only makes exits *more* conservative
-(closes earlier/more often), the opposite direction from the SOL/DOGE failure mode where a
-boundary value masked a threshold that couldn't fire at all.
-
-### Halt state and `/status` counters didn't survive a restart (2026-07-08, fixed)
-
-A balance-drawdown halt engaged 2026-07-07 stayed silently cleared by a routine
-`trader-live.service` restart 12+ hours later — not by `/resume`, not by the loss-streak's daily
-reset — with zero Telegram notification either way (full diagnosis:
-`trader/doc/incident_no_reset_notification_2026-07-08.md`). Root cause: `entry_suppressed`
-(`/halt`/`/resume`/the drawdown guard) and `HaltTracker`'s loss/session counters only ever lived
-in-memory on `Worker`; a restart rebuilds every `Worker` from scratch via `new_reversal`/
-`new_high_prob`, which always starts un-halted, and no code path notifies on that transition.
-The same gap meant `/status`'s win/loss/stoploss/unwind/timeout counts and total PnL — tracked on
-`bin/live.rs`'s `AssetSlot`, never on `Worker` — also reset to zero on every restart, even with no
-trade in between.
-
-**Fix — restart now round-trips both:**
-- `PersistedState` (`worker.rs`) gained `entry_suppressed`, `halt_losses`, `halt_last_session`
-  (`#[serde(default)]`, so a pre-existing `live_state_*.json` still loads — as "un-halted, zero
-  counters," identical to today's from-scratch behavior). `HaltTracker` gained `losses()`/
-  `last_session()`/`restore()` (`backtest.rs`); `Worker::restore_halt()` rebuilds both flags from a
-  loaded file. `halt_max`/`halt_reset_hour` are deliberately never persisted — they always come
-  fresh from config, so a config change between restarts takes effect immediately rather than
-  being shadowed by the old file.
-- `bin/live.rs` wraps `PersistedState` plus a new `PersistedStats{wins,losses,stoplosses,unwinds,
-  timeouts,total_pnl,last_trade}` in one `PersistedSlot` written to the same `live_state_*.json` —
-  no new files. `persist()` now takes `&AssetSlot` (was `&Worker`) so both halves are written
-  together; `load_persisted_slot()` is best-effort (missing file, corrupt JSON, or a legacy
-  pre-this-change shape all fall back to a fresh un-halted/zero-stats start, never a hard failure)
-  and runs once per `(asset, strategy)` slot at startup, before the first cycle opens.
-- `on_control`/`on_balance` (`/halt`, `/resume`, the drawdown guard) now also emit
-  `Action::Persist`. Previously they returned no actions at all, so a halt/resume only reached disk
-  whenever the *next* trade-lifecycle event happened to persist — up to ~5 minutes away at the next
-  cycle open. A restart in that window would have silently lost a just-issued `/halt` even with the
-  fix above; this closes it so every halt-state change is flushed immediately.
-
-**Net effect:** `/status` after a restart is now identical to before it, provided no trade and no
-config change happened in between — the two things a restart legitimately should and shouldn't
-remember, respectively (a config change correctly changes the displayed `sl`/`halt_after`/etc.
-values; live balance and current market prices are re-fetched live either way, restart or not, and
-were never meant to be "restored").
-
-**Deliberately out of scope:** an in-flight *position* still does not resume across a restart —
-`Worker::reconcile`/`resume_from` exist and are unit-tested (`to_persisted_round_trips_holding_state`
-etc.) but have no call site in `bin/live.rs`; `live_state_*.json` has effectively been write-only
-for that part of the state since the file was introduced. Flagged in the incident doc as a known
-follow-up, not fixed here — halt/stats parity doesn't depend on it, and wiring up live position
-resume is a larger, separate change (needs a CLOB reconciliation call against real order/balance
-state before trusting a resumed `Holding`, per `reconcile`'s existing doc comment).
-
-New tests: `control_and_balance_events_persist_immediately`,
-`halt_state_round_trips_across_a_restart`, `manual_halt_round_trips_across_a_restart` (`worker.rs`);
-`round_trips_halt_state_and_stats`, `legacy_file_without_new_fields_loads_with_defaults`,
-`missing_file_loads_as_none`, `corrupt_file_loads_as_none_not_a_panic` (`bin/live.rs`). Full suite:
-166 passed (152 lib + 14 bin), 0 failed. Verified live on Oracle post-deploy: `live_state_eth_*.json`
-now carries `entry_suppressed`/`halt_losses`/`halt_last_session`/`stats` after the restart that
-shipped this fix.
+**Lesson:** any future live/shadow test should watch for repeated `[close] retry` log lines as a
+red flag — that pattern means the close is structurally broken, not just hitting temporary
+liquidity, and the position will ride uncontrolled to market resolution. (Log prefix renamed from
+`[SL close]` — this retry path is shared by stop-loss *and* take-profit closes, and the old label
+was misleading; see the DOGE take-profit incident below.)
 
 </details>
 
