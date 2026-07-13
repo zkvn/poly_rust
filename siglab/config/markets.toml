@@ -151,38 +151,88 @@ coin_name = "dogecoin"
 asset = "BNB"
 coin_name = "bnb"
 
-# ── Variants: one reversal variant per asset (6), one high_prob variant for BTC/ETH/DOGE (3) ──
-# = 9 variants total, ~33 Machine instances across the 18 slot-based markets + 6 hourly-ET
-# markets above (each variant now also applies to its asset's new 4h/hourly-et markets —
-# applies_to() is asset-scoped, not
-# market-scoped, so no variant changes were needed here).
+# ── Variants: a systematic reversal grid (3 low thresholds x 6 high/recovery thresholds
+# = 18 combos) applied to every configured asset/duration, plus the 3 existing per-asset
+# high_prob variants (unchanged). Updated 2026-07-13 per explicit request to monitor many
+# reversal parameter combos at once instead of one hand-picked set per asset.
+#
+# Naming: reversal_{low}_{high} — low = reversal_low_threshold (the dip that must be seen),
+# high = reversal (the recovery level that fires entry). e.g. reversal_0.2_0.55 = dipped
+# below 0.20 at some point, now recovered above 0.55.
+#
+# No time-window restriction on when the dip must occur or when entry can fire — previously
+# SawLowSignal only latched a dip while time_left was inside [no_enter_when_time_left,
+# reversal_start_time] (~[10,120]s of a 300s cycle). Per request, that window is now
+# effectively the whole cycle: `no_enter_when_time_left = 0` (dip-latch window's closing
+# edge, and separately the entry-lateness gate in ReversalStrategy::evaluate — both keyed
+# off the same field) and `reversal_start_time = 999999` (window's opening edge; a value
+# far larger than any configured market's period_secs, so `time_left <= start_time_left`
+# is always true — the dip can be seen from the very start of the cycle). See
+# trader/src/signal/saw_low.rs for the exact window semantics this relies on.
+#
+# sl_pnl_rev=0.3 and unwind_pnl_rev=0.15 fixed across all 18 per request (previously varied
+# 0.15-0.40 per asset). delta_pct_rev is a single shared value (0.0008) since these variants
+# are no longer asset-specific — previously ranged 0.0006-0.0010 by asset.
+#
+# CAVEAT: this is an exploratory grid, not a calibrated one (no bt2/bt3 sweep backing these
+# 18 combos specifically) — the point of running all 18 live is to see which of them (if
+# any) look good on real data, not an assertion that they already are. Same caveat class as
+# this file's original 15m/hourly-et-timing-mismatch note below.
+#
+# 18 reversal variants x 24 markets (6 assets x {5m,15m,4h,hourly-et}) = 432 reversal
+# Machine instances, plus 3 high_prob variants x 4 durations each = 12 more = ~444 total.
+# Machine count itself is not the cost driver (each is trivial per-tick arithmetic) — see
+# siglab/doc/incident_ws_2026-07-13.md; the real cost driver (WS subscription count) is
+# unaffected by variant count, since a market subscribes once regardless of how many
+# variants watch it.
 
 [[variant]]
-id = "reversal_btc"
+id = "reversal_0.2_0.55"
 strategy = "reversal"
-assets = ["BTC"]
-no_enter_when_time_left = 10
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
 max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0010
+delta_pct_rev = 0.0008
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
 reversal = 0.55
-reversal_low_threshold = 0.20
-reversal_start_time = 120
+reversal_low_threshold = 0.2
+reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
-sl_pnl_rev = 0.40
-unwind_time_rev = 26.0
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
 
 [[variant]]
-id = "reversal_eth"
+id = "reversal_0.2_0.6"
 strategy = "reversal"
-assets = ["ETH"]
-no_enter_when_time_left = 10
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.6
+reversal_low_threshold = 0.2
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.2_0.65"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
 max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
@@ -192,81 +242,18 @@ delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
 reversal = 0.65
-reversal_low_threshold = 0.20
-reversal_start_time = 120
+reversal_low_threshold = 0.2
+reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
-sl_pnl_rev = 0.40
-unwind_time_rev = 28.0
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
 
 [[variant]]
-id = "reversal_sol"
+id = "reversal_0.2_0.7"
 strategy = "reversal"
-assets = ["SOL"]
-no_enter_when_time_left = 10
-max_buy_price = 0.95
-spread_premium_limit = 1.05
-spread_discount_limit = 0.95
-max_price_age_secs = 2.0
-delta_pct_rev = 0.0010
-delta_pct_hp = 0.0004
-price_high_rev = 0.90
-trade_size_usdc = 1.0
-reversal = 0.55
-reversal_low_threshold = 0.20
-reversal_start_time = 120
-sl_reversal = 0
-unwind_pnl_rev = 0.15
-sl_pnl_rev = 0.40
-unwind_time_rev = 26.0
-
-[[variant]]
-id = "reversal_bnb"
-strategy = "reversal"
-assets = ["BNB"]
-no_enter_when_time_left = 10
-max_buy_price = 0.95
-spread_premium_limit = 1.05
-spread_discount_limit = 0.95
-max_price_age_secs = 2.0
-delta_pct_rev = 0.0010
-delta_pct_hp = 0.0004
-price_high_rev = 0.90
-trade_size_usdc = 1.0
-reversal = 0.55
-reversal_low_threshold = 0.20
-reversal_start_time = 120
-sl_reversal = 0
-unwind_pnl_rev = 0.15
-sl_pnl_rev = 0.40
-unwind_time_rev = 26.0
-
-[[variant]]
-id = "reversal_xrp"
-strategy = "reversal"
-assets = ["XRP"]
-no_enter_when_time_left = 10
-max_buy_price = 0.95
-spread_premium_limit = 1.05
-spread_discount_limit = 0.95
-max_price_age_secs = 2.0
-delta_pct_rev = 0.0010
-delta_pct_hp = 0.0004
-price_high_rev = 0.90
-trade_size_usdc = 1.0
-reversal = 0.55
-reversal_low_threshold = 0.20
-reversal_start_time = 120
-sl_reversal = 0
-unwind_pnl_rev = 0.15
-sl_pnl_rev = 0.40
-unwind_time_rev = 26.0
-
-[[variant]]
-id = "reversal_doge"
-strategy = "reversal"
-assets = ["DOGE"]
-no_enter_when_time_left = 10
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
 max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
@@ -275,12 +262,306 @@ delta_pct_rev = 0.0008
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
-reversal = 0.60
-reversal_low_threshold = 0.30
-reversal_start_time = 120
+reversal = 0.7
+reversal_low_threshold = 0.2
+reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
-sl_pnl_rev = 0.40
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.2_0.75"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.75
+reversal_low_threshold = 0.2
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.2_0.8"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.8
+reversal_low_threshold = 0.2
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.3_0.55"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.55
+reversal_low_threshold = 0.3
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.3_0.6"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.6
+reversal_low_threshold = 0.3
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.3_0.65"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.65
+reversal_low_threshold = 0.3
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.3_0.7"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.7
+reversal_low_threshold = 0.3
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.3_0.75"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.75
+reversal_low_threshold = 0.3
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.3_0.8"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.8
+reversal_low_threshold = 0.3
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.4_0.55"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.55
+reversal_low_threshold = 0.4
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.4_0.6"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.6
+reversal_low_threshold = 0.4
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.4_0.65"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.65
+reversal_low_threshold = 0.4
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.4_0.7"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.7
+reversal_low_threshold = 0.4
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.4_0.75"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.75
+reversal_low_threshold = 0.4
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "reversal_0.4_0.8"
+strategy = "reversal"
+assets = []  # applies to all 6 configured assets, across every duration they trade
+no_enter_when_time_left = 0
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.8
+reversal_low_threshold = 0.4
+reversal_start_time = 999999  # effectively unlimited — see header comment
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.3
 unwind_time_rev = 30.0
 
 [[variant]]
