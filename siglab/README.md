@@ -92,6 +92,11 @@ report file actually exists and has unstaged changes; see `scripts/push_report.s
 - **CPU/subscription-batching bug — found and fixed 2026-07-13** — see the same doc. Weather
   subscriptions are now batched per-city (not per-bucket), matching Polymarket's documented
   WS best practice and `price_feed`'s existing pattern.
+- **Hourly push silently failing on SSH auth — found and fixed 2026-07-13** — systemd
+  `--user` services don't inherit the interactive shell's SSH agent socket. Fixed by
+  `install_timer.sh` injecting the current `SSH_AUTH_SOCK` at install time. That socket is
+  tied to the current login session, not stable across reboot/re-login — **re-run
+  `install_timer.sh` if hourly pushes silently stop again.** See the same doc, §5.
 
 ## Layout
 

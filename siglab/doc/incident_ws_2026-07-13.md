@@ -228,6 +228,57 @@ real generated report — the full commit+push cycle completed successfully
 
 ---
 
+## 5. Second bonus finding (same day, later): the hourly push was silently failing on auth
+
+User noticed no report commits had landed in a while and asked to check. `journalctl --user
+-u siglab-report-push.service` showed the timer firing correctly every hour, but real
+firings (once §4's empty-directory bug was fixed and a real report existed) were failing
+with exit 128:
+
+```
+sign_and_send_pubkey: signing failed for ED25519 "/home/kev/.ssh/id_ed25519" from agent: agent refused operation
+git@github.com: Permission denied (publickey).
+```
+
+**Root cause:** systemd `--user` services do not inherit the interactive shell's
+`SSH_AUTH_SOCK`. They get the systemd user manager's own default —
+`/run/user/<uid>/gcr/ssh` (GNOME Keyring's SSH agent proxy) on this box — which either
+doesn't have the git-push key loaded or refuses to use it non-interactively. Reproduced
+directly: running `git ls-remote` in a shell with `SSH_AUTH_SOCK` unset (simulating the
+systemd environment) hit the identical `Permission denied (publickey)` error.
+
+**Why this wasn't obviously broken in git history before now:** the script's `git commit`
+step succeeds regardless (that's local, no network/auth needed) — only `git push` failed.
+The orphaned local commit didn't stay orphaned because Claude's own manual `git push` calls
+later in the session (for unrelated feature work) swept it up as a side effect, since `push`
+sends the whole branch history, not just the newest commit. That safety net disappears
+whenever Claude isn't actively working in the repo, which is exactly when the autonomous
+push is supposed to matter.
+
+**Fix (user's explicit choice, after being offered a more robust but more involved
+alternative — a dedicated no-passphrase deploy key):** point the systemd service at the
+same `SSH_AUTH_SOCK` the interactive shell already uses, injected by
+`install_timer.sh` at install time (the repo's committed `.service` file keeps a
+`__SSH_AUTH_SOCK__` placeholder, never a real path, since the actual socket is
+session-specific — baking a real path into a git-tracked file would be both wrong for
+anyone else and stale the moment this login session ends).
+
+**Known limitation, accepted deliberately:** this socket is tied to the current login
+session (confirmed: the backing `ssh-agent`/`gcr-ssh-agent` processes started at this GDM
+session's login, not at boot). It will not survive a reboot or logout — lingering
+(`loginctl enable-linger`, already enabled) keeps the systemd *user manager* alive across
+logout, but not this specific interactive agent. If hourly pushes silently stop again after
+a reboot/re-login, re-run `siglab/scripts/install_timer.sh` from a shell where `ssh -T
+git@github.com` already works, to pick up the new socket.
+
+**Verified end-to-end:** re-ran `install_timer.sh`, then manually triggered the service
+(`systemctl --user start siglab-report-push.service`) rather than waiting for the next
+scheduled firing — it authenticated and pushed for real
+(`siglab: hourly signal report update (2026-07-13T13:16Z)`, commit `7439045`), entirely
+through the systemd path, no manual `git push` involved.
+
+---
+
 ## Summary of what shipped this session
 
 | Finding | Status | Where |
@@ -237,3 +288,4 @@ real generated report — the full commit+push cycle completed successfully
 | `price_feed` subscription/connection patterns | Audited — clean, no bug | this doc §3 |
 | `trader/live.rs` duplicate subscriptions | Found, real, **dormant in production**, not fixed | this doc §3, `README.md` TODO |
 | `push_report.sh` fatal error on empty report dir | **Fixed, verified end-to-end** | `siglab/scripts/push_report.sh` |
+| Hourly push failing on SSH auth (systemd `SSH_AUTH_SOCK` mismatch) | **Fixed, verified end-to-end** — known to need re-running `install_timer.sh` after reboot/re-login | this doc §5, `siglab/scripts/install_timer.sh` |

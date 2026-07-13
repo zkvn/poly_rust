@@ -7,7 +7,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
 
-cp "$REPO_ROOT/siglab/systemd/siglab-report-push.service" "$UNIT_DIR/"
+# systemd --user services don't inherit this shell's SSH_AUTH_SOCK (they get their own
+# default agent, which doesn't have the git-push-authorized key — see the .service file's
+# comment and siglab/doc/incident_ws_2026-07-13.md). Bake the *current* shell's socket into
+# the installed unit. Re-run this script after a reboot/re-login if push starts failing
+# again — the socket path isn't stable across login sessions.
+if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+  echo "WARNING: \$SSH_AUTH_SOCK is not set in this shell — the installed timer's git push" >&2
+  echo "will likely fail to authenticate. Run this from a shell where 'ssh -T git@github.com'" >&2
+  echo "already works, then re-run this script." >&2
+fi
+sed "s|__SSH_AUTH_SOCK__|${SSH_AUTH_SOCK:-}|" \
+  "$REPO_ROOT/siglab/systemd/siglab-report-push.service" > "$UNIT_DIR/siglab-report-push.service"
 cp "$REPO_ROOT/siglab/systemd/siglab-report-push.timer" "$UNIT_DIR/"
 
 systemctl --user daemon-reload

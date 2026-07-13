@@ -5,3 +5,13 @@ Description=Push siglab's hourly signal report to git (see siglab/scripts/push_r
 Type=oneshot
 WorkingDirectory=%h/apps/poly_rust
 ExecStart=%h/apps/poly_rust/siglab/scripts/push_report.sh
+# systemd --user services do NOT inherit an interactive shell's SSH_AUTH_SOCK — they get
+# their own default (gcr-ssh-agent, /run/user/<uid>/gcr/ssh on this box), which does not
+# have the key authorized for git push and returns "agent refused operation". Found
+# 2026-07-13 when the timer's first real firings all failed with exit 128 / permission
+# denied. __SSH_AUTH_SOCK__ below is a placeholder — install_timer.sh substitutes it with
+# whatever $SSH_AUTH_SOCK resolves to in the shell you run it from, at install time. This
+# socket is tied to your current login session (not a stable path) — if push starts failing
+# again after a reboot or re-login, re-run install_timer.sh from a fresh shell to pick up
+# the new socket. See siglab/doc/incident_ws_2026-07-13.md for the full diagnosis.
+Environment=SSH_AUTH_SOCK=__SSH_AUTH_SOCK__
