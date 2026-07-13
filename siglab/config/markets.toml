@@ -1,0 +1,347 @@
+# siglab standalone config — Phase 0 (crypto only).
+#
+# This file is NOT read by, symlinked from, or synced with ../trader/config or
+# ../price_feed in any way. Editing it has zero effect on the live bot or the recorder;
+# editing trader/config/strategy_*.toml has zero effect on siglab. See siglab/src/config.rs
+# and plan_weather_bot.md for why this schema is deliberately its own thing.
+#
+# Variant params below are a one-time snapshot loosely modeled on
+# trader/config/strategy_20260709.toml's live reversal values and
+# strategy_20260708.toml's full-history high_prob values — copied by hand, not synced. This
+# is intentional (see plan_weather_bot.md §4): a generated-from-bt2/bt3 variant file is a
+# later phase, not needed to prove the harness itself works.
+#
+# CAVEAT: these params were calibrated for 5-minute cycles. Applying them unchanged to the
+# 15m markets below is scientifically unvalidated (reversal_start_time/unwind_time are
+# absolute-second thresholds, not rescaled for a 900s cycle) — fine for Phase 0's actual
+# goal (prove discovery/staleness/scale/output plumbing on real live data), not evidence
+# the 15m variants are good strategies. Same caveat class as plan_weather_bot.md §5's
+# weather-phase-1 degenerate-strategy note.
+
+# ── Markets: 6 assets x {5m, 15m, 4h} = 18 rotating markets ──
+#
+# A slot-based "1h" duration does not exist — checked live via
+# gamma-api.polymarket.com/events?slug=btc-updown-{1h,60m,1hr,hourly}-{slot} on 2026-07-13,
+# all empty. Only 5m/15m/4h use this slot-based slug pattern (confirmed:
+# btc-updown-4h-{slot}, slot = (now // 14400) * 14400). There IS a real hourly market
+# (polymarket.com/crypto/hourly) — it just uses a completely different slug format
+# (ET-calendar-hour + full coin name, not a slot number) — see the `[[hourly_market]]`
+# section below, added after being pointed at the live page directly.
+
+[[market]]
+asset = "BTC"
+suffix = "5m"
+period_secs = 300
+
+[[market]]
+asset = "BTC"
+suffix = "15m"
+period_secs = 900
+
+[[market]]
+asset = "BTC"
+suffix = "4h"
+period_secs = 14400
+
+[[market]]
+asset = "ETH"
+suffix = "5m"
+period_secs = 300
+
+[[market]]
+asset = "ETH"
+suffix = "15m"
+period_secs = 900
+
+[[market]]
+asset = "ETH"
+suffix = "4h"
+period_secs = 14400
+
+[[market]]
+asset = "SOL"
+suffix = "5m"
+period_secs = 300
+
+[[market]]
+asset = "SOL"
+suffix = "15m"
+period_secs = 900
+
+[[market]]
+asset = "SOL"
+suffix = "4h"
+period_secs = 14400
+
+[[market]]
+asset = "BNB"
+suffix = "5m"
+period_secs = 300
+
+[[market]]
+asset = "BNB"
+suffix = "15m"
+period_secs = 900
+
+[[market]]
+asset = "BNB"
+suffix = "4h"
+period_secs = 14400
+
+[[market]]
+asset = "XRP"
+suffix = "5m"
+period_secs = 300
+
+[[market]]
+asset = "XRP"
+suffix = "15m"
+period_secs = 900
+
+[[market]]
+asset = "XRP"
+suffix = "4h"
+period_secs = 14400
+
+[[market]]
+asset = "DOGE"
+suffix = "5m"
+period_secs = 300
+
+[[market]]
+asset = "DOGE"
+suffix = "15m"
+period_secs = 900
+
+[[market]]
+asset = "DOGE"
+suffix = "4h"
+period_secs = 14400
+
+# ── Hourly markets (polymarket.com/crypto/hourly) — a genuinely different slug format
+# (ET-calendar-hour, full coin name) from the slot-based markets above, not the "1h" suffix
+# that was checked-and-found-not-to-exist in the note at the top of this file. Found live
+# 2026-07-13 (slug e.g. bitcoin-up-or-down-july-13-2026-2am-et) — same simple Up/Down shape
+# as 5m/15m/4h once fetched, so these get real reversal/high_prob variants applied, not
+# monitoring-only treatment like weather (see siglab/src/weather.rs's doc comment for why
+# weather is different: no Binance-equivalent reference feed for it, but these hourly
+# markets have exactly the same Binance BTC/ETH/etc. reference as every other duration).
+
+[[hourly_market]]
+asset = "BTC"
+coin_name = "bitcoin"
+
+[[hourly_market]]
+asset = "ETH"
+coin_name = "ethereum"
+
+[[hourly_market]]
+asset = "SOL"
+coin_name = "solana"
+
+[[hourly_market]]
+asset = "XRP"
+coin_name = "xrp"
+
+[[hourly_market]]
+asset = "DOGE"
+coin_name = "dogecoin"
+
+[[hourly_market]]
+asset = "BNB"
+coin_name = "bnb"
+
+# ── Variants: one reversal variant per asset (6), one high_prob variant for BTC/ETH/DOGE (3) ──
+# = 9 variants total, ~33 Machine instances across the 18 slot-based markets + 6 hourly-ET
+# markets above (each variant now also applies to its asset's new 4h/hourly-et markets —
+# applies_to() is asset-scoped, not
+# market-scoped, so no variant changes were needed here).
+
+[[variant]]
+id = "reversal_btc"
+strategy = "reversal"
+assets = ["BTC"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0010
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.55
+reversal_low_threshold = 0.20
+reversal_start_time = 120
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.40
+unwind_time_rev = 26.0
+
+[[variant]]
+id = "reversal_eth"
+strategy = "reversal"
+assets = ["ETH"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.65
+reversal_low_threshold = 0.20
+reversal_start_time = 120
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.40
+unwind_time_rev = 28.0
+
+[[variant]]
+id = "reversal_sol"
+strategy = "reversal"
+assets = ["SOL"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0010
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.55
+reversal_low_threshold = 0.20
+reversal_start_time = 120
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.40
+unwind_time_rev = 26.0
+
+[[variant]]
+id = "reversal_bnb"
+strategy = "reversal"
+assets = ["BNB"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0010
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.55
+reversal_low_threshold = 0.20
+reversal_start_time = 120
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.40
+unwind_time_rev = 26.0
+
+[[variant]]
+id = "reversal_xrp"
+strategy = "reversal"
+assets = ["XRP"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0010
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.55
+reversal_low_threshold = 0.20
+reversal_start_time = 120
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.40
+unwind_time_rev = 26.0
+
+[[variant]]
+id = "reversal_doge"
+strategy = "reversal"
+assets = ["DOGE"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+reversal = 0.60
+reversal_low_threshold = 0.30
+reversal_start_time = 120
+sl_reversal = 0
+unwind_pnl_rev = 0.15
+sl_pnl_rev = 0.40
+unwind_time_rev = 30.0
+
+[[variant]]
+id = "high_prob_btc"
+strategy = "high_prob"
+assets = ["BTC"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0010
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+price_low = 0.80
+price_high = 0.93
+enter_when_time_left = 20
+sl_high_prob = 0.49
+unwind_pnl_hp = 0.07
+sl_pnl_hp = 0.35
+unwind_time_hp = 30.0
+
+[[variant]]
+id = "high_prob_eth"
+strategy = "high_prob"
+assets = ["ETH"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+price_low = 0.80
+price_high = 0.95
+enter_when_time_left = 20
+sl_high_prob = 0.49
+unwind_pnl_hp = 0.11
+sl_pnl_hp = 0.50
+unwind_time_hp = 30.0
+
+[[variant]]
+id = "high_prob_doge"
+strategy = "high_prob"
+assets = ["DOGE"]
+no_enter_when_time_left = 10
+max_buy_price = 0.95
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+delta_pct_rev = 0.0008
+delta_pct_hp = 0.0004
+price_high_rev = 0.90
+trade_size_usdc = 1.0
+price_low = 0.80
+price_high = 0.95
+enter_when_time_left = 20
+sl_high_prob = 0.49
+unwind_pnl_hp = 0.09
+sl_pnl_hp = 0.40
+unwind_time_hp = 30.0

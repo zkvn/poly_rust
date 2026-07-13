@@ -1,0 +1,7 @@
+[Unit]
+Description=Push siglab's hourly signal report to git (see siglab/scripts/push_report.sh)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/apps/poly_rust
+ExecStart=%h/apps/poly_rust/siglab/scripts/push_report.sh

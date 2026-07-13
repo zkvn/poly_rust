@@ -1,0 +1,37 @@
+# Standalone compose file for siglab — deliberately NOT added to ../docker-compose.yml.
+# Run from the poly_rust repo root: `docker compose -f siglab/docker-compose.yml up --build -d`
+#
+# No depends_on nats/price-feed/trader, no shared volumes, no shared config — siglab has
+# nothing to do with the other two services and this file proves it by never mentioning
+# them.
+services:
+  siglab:
+    build:
+      context: ..
+      dockerfile: siglab/Dockerfile
+    network_mode: host # CLOB/Gamma/Binance access via the host's existing VPN routes —
+    # same reason as ../trader's network_mode: host; siglab never touches VPN config itself.
+    volumes:
+      - ./config:/app/config:ro
+      - siglab_logs:/app/logs
+      # Reports are bind-mounted straight into the git working tree (not a named volume
+      # like siglab_logs above) — the host-side push_report.sh script (run by a systemd
+      # --user timer, see siglab/scripts/) needs them to land at a real repo path it can
+      # `git add`. Trade logs stay in a named volume: operational data, not meant for git.
+      - ./doc/report:/app/reports
+    command: [
+        "--config",
+        "/app/config/markets.toml",
+        "--weather-config",
+        "/app/config/weather_cities.toml",
+        "--log",
+        "/app/logs/siglab_trades.jsonl",
+        "--report-dir",
+        "/app/reports",
+      ]
+    restart: unless-stopped
+    # Resource accounting for the local Oracle-sizing test (plan_weather_bot.md §7/§11) —
+    # no hard limits imposed here, `docker stats` reads actual usage regardless.
+
+volumes:
+  siglab_logs:

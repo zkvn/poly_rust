@@ -1,0 +1,29 @@
+[package]
+name = "siglab"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "siglab"
+path = "src/main.rs"
+
+[dependencies]
+# Path dependency, source only — reuses trader::{machine, gates, signal, strategies,
+# config::AssetParams, marketdata, types} unmodified. siglab never writes into ../trader
+# and has its own config/output, so nothing here can affect the live bot.
+trader = { path = "../trader" }
+polymarket_client_sdk_v2 = { version = "0.6.0-canary.1", features = ["ws", "clob", "rtds"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
+
+[dev-dependencies]
+tempfile = "3"

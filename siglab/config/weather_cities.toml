@@ -1,0 +1,22 @@
+# siglab weather city list — standalone, independent of the crypto markets.toml, ../trader,
+# and ../price_feed. Each city gets a fresh daily Polymarket event
+# ("highest-temperature-in-{city}-on-{month}-{day}-{year}"), which siglab constructs at
+# runtime from today's date — this file only needs the city slug, not the date.
+#
+# List pulled live from gamma-api.polymarket.com/public-search (q="highest temperature",
+# events_status=active) on 2026-07-13 — 51 distinct cities with an active or
+# next-day-scheduled event that day. Not the same 40ish-city estimate in
+# studies/weather/weather_poly_2026-07-12.md (that was a page-scrape summary, not a live
+# API enumeration) — this list is the authoritative one, gathered by paging the search API
+# directly. A city with no event live on a given day is skipped gracefully (logged, not a
+# hard error) rather than crashing discovery for every other city.
+
+cities = [
+  "amsterdam", "ankara", "atlanta", "austin", "beijing", "buenos-aires", "busan",
+  "cape-town", "chengdu", "chicago", "chongqing", "dallas", "denver", "guangzhou",
+  "helsinki", "hong-kong", "houston", "istanbul", "jeddah", "jinan", "karachi",
+  "kuala-lumpur", "london", "los-angeles", "lucknow", "madrid", "manila", "mexico-city",
+  "miami", "milan", "moscow", "munich", "nyc", "panama-city", "paris", "qingdao",
+  "san-francisco", "sao-paulo", "seattle", "seoul", "shanghai", "shenzhen", "singapore",
+  "taipei", "tel-aviv", "tokyo", "toronto", "warsaw", "wellington", "wuhan", "zhengzhou",
+]

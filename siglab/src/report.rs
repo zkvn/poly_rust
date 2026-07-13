@@ -1,0 +1,314 @@
+//! Hourly signal-summary report, written as Markdown with collapsible per-hour sections.
+//! File name is `signal_report_{YYYY-MM-DD}.md` (HKT date) — a new file starts each day,
+//! and every hourly run within a day updates the *same* file by inserting a new `<details>`
+//! block right after the header (newest hour first).
+
+use std::collections::HashMap;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result};
+use chrono::{FixedOffset, Utc};
+
+use crate::cgroup;
+use crate::snapshot::SharedSnapshots;
+
+/// One staleness event, timestamped so the report can filter to "this past hour".
+#[derive(Debug, Clone)]
+pub struct StaleLogEntry {
+    pub at_ms: i64,
+    pub market: String,
+    pub silent_ms: i64,
+    pub bucket_ms: i64,
+}
+
+pub type SharedStaleLog = Arc<Mutex<Vec<StaleLogEntry>>>;
+
+pub fn new_stale_log() -> SharedStaleLog {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
+pub fn log_stale_event(
+    log: &SharedStaleLog,
+    at_ms: i64,
+    market: String,
+    silent_ms: i64,
+    bucket_ms: i64,
+) {
+    if let Ok(mut v) = log.lock() {
+        v.push(StaleLogEntry {
+            at_ms,
+            market,
+            silent_ms,
+            bucket_ms,
+        });
+        // Cap unbounded growth if report-writing ever falls behind — keep the most recent
+        // 5000 events, plenty for an hourly report cadence.
+        if v.len() > 5000 {
+            let excess = v.len() - 5000;
+            v.drain(0..excess);
+        }
+    }
+}
+
+fn hkt() -> FixedOffset {
+    FixedOffset::east_opt(8 * 3600).unwrap()
+}
+
+fn now_hkt() -> chrono::DateTime<FixedOffset> {
+    Utc::now().with_timezone(&hkt())
+}
+
+pub fn report_path(report_dir: &Path) -> PathBuf {
+    let date = now_hkt().format("%Y-%m-%d");
+    report_dir.join(format!("signal_report_{date}.md"))
+}
+
+/// Reads the last hour's trade records from `trade_log_path` (JSONL), filtering by
+/// `logged_at` (unix seconds) >= `since_unix`. Best-effort — a missing/unreadable file (no
+/// trades yet) is treated as zero trades, not an error.
+fn recent_trades(trade_log_path: &Path, since_unix: f64) -> Vec<crate::record::SiglabTradeRecord> {
+    let Ok(content) = std::fs::read_to_string(trade_log_path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|l| serde_json::from_str::<crate::record::SiglabTradeRecord>(l).ok())
+        .filter(|r| r.logged_at >= since_unix)
+        .collect()
+}
+
+fn render_hour_section(
+    snapshots: &SharedSnapshots,
+    trade_log_path: &Path,
+    stale_log: &SharedStaleLog,
+    cgroup_prev: Option<cgroup::Sample>,
+    cgroup_now: Option<cgroup::Sample>,
+    window_secs: f64,
+) -> String {
+    let now = now_hkt();
+    let now_unix = Utc::now().timestamp() as f64;
+    let since_unix = now_unix - window_secs;
+    let now_ms = (now_unix * 1000.0) as i64;
+
+    let trades = recent_trades(trade_log_path, since_unix);
+    let snaps: Vec<_> = snapshots
+        .lock()
+        .map(|m| m.values().cloned().collect())
+        .unwrap_or_default();
+
+    let stale_events: Vec<StaleLogEntry> = {
+        let mut log = stale_log.lock().unwrap_or_else(|p| p.into_inner());
+        let since_ms = (since_unix * 1000.0) as i64;
+        let recent: Vec<_> = log
+            .iter()
+            .filter(|e| e.at_ms >= since_ms)
+            .cloned()
+            .collect();
+        // Trim anything older than the window so the log doesn't grow forever.
+        log.retain(|e| e.at_ms >= since_ms);
+        recent
+    };
+
+    let mut out = String::new();
+    let summary = format!(
+        "{} HKT — {} crypto market(s), {} weather bucket(s), {} trade(s), {} stale event(s)",
+        now.format("%Y-%m-%d %H:00"),
+        snaps.iter().filter(|s| s.kind == "crypto").count(),
+        snaps.iter().filter(|s| s.kind == "weather").count(),
+        trades.len(),
+        stale_events.len(),
+    );
+    out.push_str(&format!(
+        "<details open>\n<summary><strong>{summary}</strong></summary>\n\n"
+    ));
+
+    // ── Crypto trades this hour ──
+    out.push_str("#### Crypto trades (past hour)\n\n");
+    if trades.is_empty() {
+        out.push_str("_No trades fired this hour._\n\n");
+    } else {
+        out.push_str("| variant | asset | side | outcome | pnl |\n|---|---|---|---|---|\n");
+        for t in &trades {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {:.4} |\n",
+                t.variant_id, t.asset, t.side, t.outcome, t.pnl
+            ));
+        }
+        let total_pnl: f64 = trades.iter().map(|t| t.pnl).sum();
+        out.push_str(&format!("\n**Total pnl this hour: {total_pnl:.4}**\n\n"));
+    }
+
+    // ── Crypto market state ──
+    let mut crypto: Vec<_> = snaps.iter().filter(|s| s.kind == "crypto").collect();
+    crypto.sort_by(|a, b| a.label.cmp(&b.label));
+    out.push_str("<details>\n<summary>Crypto market state snapshot</summary>\n\n");
+    out.push_str("| market | up | down | age (s) |\n|---|---|---|---|\n");
+    for s in &crypto {
+        let age = ((now_ms - s.last_tick_ms).max(0) as f64) / 1000.0;
+        out.push_str(&format!(
+            "| {} | {:.4} | {:.4} | {:.1} |\n",
+            s.label, s.up_price, s.dn_price, age
+        ));
+    }
+    out.push_str("\n</details>\n\n");
+
+    // ── Weather market state — one row per city, showing its current highest-probability
+    //    bucket (the most informative single number per city without dumping every bucket
+    //    of every city into the report every hour). ──
+    let mut by_city: HashMap<String, Vec<&crate::snapshot::MarketSnapshot>> = HashMap::new();
+    for s in snaps.iter().filter(|s| s.kind == "weather") {
+        // label is "{city}: {bucket}" — split back out for grouping.
+        if let Some((city, _)) = s.label.split_once(": ") {
+            by_city.entry(city.to_string()).or_default().push(s);
+        }
+    }
+    let mut cities: Vec<_> = by_city.keys().cloned().collect();
+    cities.sort();
+    out.push_str(&format!(
+        "<details>\n<summary>Weather market state snapshot ({} of {} configured cities reporting)</summary>\n\n",
+        cities.len(),
+        cities.len(), // city coverage vs config is logged separately at startup; this count is "cities with live data"
+    ));
+    out.push_str("| city | top bucket | probability | age (s) |\n|---|---|---|---|\n");
+    for city in &cities {
+        let bucket_snaps = &by_city[city];
+        if let Some(top) = bucket_snaps.iter().max_by(|a, b| {
+            a.up_price
+                .partial_cmp(&b.up_price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            let age = ((now_ms - top.last_tick_ms).max(0) as f64) / 1000.0;
+            let bucket_label = top
+                .label
+                .split_once(": ")
+                .map(|(_, b)| b)
+                .unwrap_or(&top.label);
+            out.push_str(&format!(
+                "| {city} | {bucket_label} | {:.3} | {age:.1} |\n",
+                top.up_price
+            ));
+        }
+    }
+    out.push_str("\n</details>\n\n");
+
+    // ── Staleness health ──
+    out.push_str("<details>\n<summary>Staleness events (past hour, observe-only — no auto action taken)</summary>\n\n");
+    if stale_events.is_empty() {
+        out.push_str("_No staleness escalations this hour._\n\n");
+    } else {
+        out.push_str("| market | silent (ms) | bucket crossed (ms) |\n|---|---|---|\n");
+        for e in stale_events.iter().take(200) {
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                e.market, e.silent_ms, e.bucket_ms
+            ));
+        }
+        if stale_events.len() > 200 {
+            out.push_str(&format!("\n_... and {} more._\n", stale_events.len() - 200));
+        }
+    }
+    out.push_str("\n</details>\n\n");
+
+    // ── CPU / memory (past hour) ──
+    out.push_str("<details>\n<summary>CPU / memory (past hour)</summary>\n\n");
+    match (cgroup_prev, cgroup_now) {
+        (Some(prev), Some(now_s)) => {
+            let cpu_pct = cgroup::cpu_percent(&prev, &now_s);
+            let mem_mib = now_s.mem_bytes as f64 / (1024.0 * 1024.0);
+            out.push_str(&format!(
+                "- CPU (avg over past hour, one-core=100%): **{cpu_pct:.2}%**\n- Memory (current): **{mem_mib:.1} MiB**\n\n"
+            ));
+        }
+        _ => {
+            out.push_str("_cgroup stats unavailable (not running under cgroup v2, e.g. outside Docker)._\n\n");
+        }
+    }
+    out.push_str("</details>\n\n</details>\n\n");
+
+    out
+}
+
+/// Writes (inserting, newest-first) this hour's section into today's report file.
+pub fn write_hourly_report(
+    report_dir: &Path,
+    snapshots: &SharedSnapshots,
+    trade_log_path: &Path,
+    stale_log: &SharedStaleLog,
+    cgroup_prev: Option<cgroup::Sample>,
+    cgroup_now: Option<cgroup::Sample>,
+    window_secs: f64,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(report_dir).context("create report dir")?;
+    let path = report_path(report_dir);
+    let date = now_hkt().format("%Y-%m-%d");
+
+    let header = format!(
+        "# siglab signal report — {date}\n\n\
+         Auto-generated by siglab every hour (HKT), newest hour first. See\n\
+         `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
+         `plan_weather_bot.md` for what this harness does and does not claim (weather markets\n\
+         are monitoring-only in this version — no simulated trades, see `siglab/src/weather.rs`).\n\n"
+    );
+
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let body = if let Some(stripped) = existing.strip_prefix(&header) {
+        stripped.to_string()
+    } else if existing.is_empty() {
+        String::new()
+    } else {
+        // Existing file from a previous day/format — start fresh rather than guess where
+        // the header ends.
+        String::new()
+    };
+
+    let new_section = render_hour_section(
+        snapshots,
+        trade_log_path,
+        stale_log,
+        cgroup_prev,
+        cgroup_now,
+        window_secs,
+    );
+
+    let mut f = std::fs::File::create(&path).with_context(|| format!("write {path:?}"))?;
+    f.write_all(header.as_bytes())?;
+    f.write_all(new_section.as_bytes())?;
+    f.write_all(body.as_bytes())?;
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_trades_filters_by_time_and_ignores_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trades.jsonl");
+        assert!(recent_trades(&path, 0.0).is_empty());
+
+        std::fs::write(
+            &path,
+            "{\"logged_at\":100.0,\"market_kind\":\"crypto\",\"variant_id\":\"v\",\"asset\":\"BTC\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":0.0,\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"WIN\",\"pnl\":0.1}\n\
+             {\"logged_at\":200.0,\"market_kind\":\"crypto\",\"variant_id\":\"v\",\"asset\":\"BTC\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":0.0,\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"WIN\",\"pnl\":0.2}\n",
+        )
+        .unwrap();
+
+        let all = recent_trades(&path, 0.0);
+        assert_eq!(all.len(), 2);
+        let recent = recent_trades(&path, 150.0);
+        assert_eq!(recent.len(), 1);
+        assert!((recent[0].pnl - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stale_log_caps_growth() {
+        let log = new_stale_log();
+        for i in 0..5100 {
+            log_stale_event(&log, i, "m".to_string(), 1000, 1000);
+        }
+        assert_eq!(log.lock().unwrap().len(), 5000);
+    }
+}

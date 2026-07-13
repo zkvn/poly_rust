@@ -1,0 +1,5 @@
+/target
+siglab_trades.jsonl
+
+# NEVER ignore doc/ here (or with a broader pattern above that could swallow it) —
+# doc/local_resource_test_*.md and doc/report/signal_report_*.md must always stay in git.

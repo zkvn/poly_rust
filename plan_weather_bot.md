@@ -310,9 +310,20 @@ Everything under `discovery/`, `fleet.rs`, `staleness.rs`, `tradelog.rs` is new.
 
 ## 11. Open questions to resolve before writing code
 
-- **`polymarket_client_sdk_v2` subscription limits per WS connection** — unverified. If there's a
-  hard cap well under ~150-200 tokens, §7's "one shared client" assumption needs sharding across a
-  small fixed number of connections instead.
+- **`polymarket_client_sdk_v2` subscription cost per WS connection — RESOLVED (2026-07-13), and
+  it's worse than "unverified" implied.** Not a hard subscription-count cap — the real finding,
+  from a live 16-minute Docker run at ~1,050 concurrent subscriptions (24 crypto markets + 51
+  weather cities' buckets), is that `ConnectionManager` uses **one `broadcast::channel` per WS
+  connection**, and every `subscribe_*()` call gets its own receiver on that *same* shared
+  channel, filtering client-side by asset_id (confirmed by reading
+  `polymarket_client_sdk_v2`'s `ws/connection.rs`/`clob/ws/subscription.rs` source directly, not
+  inferred). Cost is **O(subscriptions × message rate)**, not O(subscriptions) — sustained
+  200-370% CPU (2-3.7 cores) observed, vs. the ~44%-of-one-core linear extrapolation §7 implied
+  from a smaller (12-market) run. Full writeup:
+  `siglab/doc/local_resource_test_2026-07-13.md`'s "Run 2" section. §7's "one shared client"
+  assumption needs revisiting — sharding across multiple `ClobWsClient` instances (so each
+  shard's broadcast fan-out only reaches its own subscribers) is the concrete mitigation to
+  evaluate next, not a vague "confirm empirically" placeholder anymore.
 - **bt2/bt3 sweep output → machine-readable export.** Confirmed those scripts produce
   markdown/HTML/txt reports (`results_dir / f"{stem}.md"` etc., `bt2.py`); need to confirm whether
   the underlying ranked DataFrame is (or can cheaply be) also dumped to CSV/JSON for the §4
