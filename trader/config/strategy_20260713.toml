@@ -1,0 +1,164 @@
+# meta
+ts = "2026-07-13T00:00:00+08:00"
+source = "reversal-only, BTC/ETH/BNB, from studies/unwind_safely/summary_2026-07-08.md (2026-07-13 refresh) walk-forward 'Recommended live parameters' -> Reversal -> By PnL table. Loss halt tightened default 2 -> 1 (halt_rev, halt_prob)."
+
+# Trade assets narrowed to BTC, ETH, BNB — reversal only (see [strategies] below).
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "ETH", "BNB"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Trade size
+[trade_size_usdc]
+default = 1.0
+
+# Reversal only — all traded assets.
+[strategies]
+default = ["reversal"]
+
+# --- Halt ---
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — walk-forward recommended, By PnL (studies/unwind_safely/summary_2026-07-08.md, 2026-07-13 refresh) ---
+# By PnL:
+# BTC  delta=0.0005 rev=0.55 rev_lt=0.20 u=0.15 slp=0.40 uTime=30  wr=85.4%  pnl=+35.16 ppt=0.139 trades=253
+# ETH  delta=0.0003 rev=0.55 rev_lt=0.40 u=0.23 slp=0.50 uTime=22  wr=68.3%  pnl=+91.81 ppt=0.078 trades=1174
+# BNB  delta=0.0003 rev=0.55 rev_lt=0.40 u=0.23 slp=0.50 uTime=10  wr=68.5%  pnl=+100.86 ppt=0.073 trades=1376
+
+[delta_pct_rev]
+default = 0.0003
+BTC = 0.0005
+
+[reversal]
+default = 0.55
+
+[reversal_low_threshold]
+default = 0.40
+BTC = 0.20
+
+[sl_reversal]
+default = 0
+
+[unwind_pnl_rev]
+default = 0.23
+BTC = 0.15
+
+[sl_pnl_rev]
+default = 0.50
+BTC = 0.40
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. 0 = disabled.
+[unwind_time_rev]
+default = 30.0
+ETH = 22.0
+BNB = 10.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# Gamma resolution watcher cadence (2026-07-09) — Gamma "usually won't give you
+# anything until 20-60s after cycle end" (see incident_DOGE_wrong_result doc),
+# so don't start polling immediately; wait gamma_poll_delay_secs, then retry
+# every gamma_poll_interval_secs until gamma_poll_deadline_secs gives up.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
+
+# --- High-prob strategy — carried over unchanged; not currently traded (see [strategies] above) ---
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+
+# Max holding time (seconds), high_prob.
+[unwind_time_hp]
+default = 30.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long]
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249
