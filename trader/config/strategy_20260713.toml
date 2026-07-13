@@ -1,6 +1,6 @@
 # meta
 ts = "2026-07-13T00:00:00+08:00"
-source = "reversal-only, BTC/ETH/BNB, from studies/unwind_safely/summary_2026-07-08.md (2026-07-13 refresh) walk-forward 'Recommended live parameters' -> Reversal -> By PnL table. Loss halt tightened default 2 -> 1 (halt_rev, halt_prob)."
+source = "reversal-only, BTC/ETH/BNB, from studies/unwind_safely/summary_2026-07-08.md (2026-07-13 refresh) walk-forward 'Recommended live parameters' -> Reversal -> By PnL table. Loss halt tightened default 2 -> 1 (halt_rev, halt_prob). Same-day update: sl_pnl_rev 0.40/0.50 -> 0.32, sl_reversal 0 (disabled) -> 0.10, from studies/unwind_safely/summary_2026-07-13_sl_tighten.md's 'Recommended parameters' table -- that study's own bottom line found this sits at the loosest edge of the tested range and argued against adopting it (in-sample PnL cost 25-44% vs the prior 0.40/0.50), deployed anyway at the user's explicit request."
 
 # Trade assets narrowed to BTC, ETH, BNB — reversal only (see [strategies] below).
 assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
@@ -57,11 +57,19 @@ default = 2
 [halt_reset_hour_hp]
 default = 8
 
-# --- Reversal strategy — walk-forward recommended, By PnL (studies/unwind_safely/summary_2026-07-08.md, 2026-07-13 refresh) ---
-# By PnL:
+# --- Reversal strategy — entry-side params from walk-forward By-PnL
+# (studies/unwind_safely/summary_2026-07-08.md, 2026-07-13 refresh); sl_pnl_rev/
+# sl_reversal from the same-day sl-tighten follow-up (studies/unwind_safely/
+# summary_2026-07-13_sl_tighten.md "Recommended parameters" — see meta.source
+# above for that study's own caveat about this combo). halt_rev=1 (was 2).
+# By PnL (original, sl_pnl_rev 0.40/0.50, sl_reversal disabled, halt_rev=2):
 # BTC  delta=0.0005 rev=0.55 rev_lt=0.20 u=0.15 slp=0.40 uTime=30  wr=85.4%  pnl=+35.16 ppt=0.139 trades=253
 # ETH  delta=0.0003 rev=0.55 rev_lt=0.40 u=0.23 slp=0.50 uTime=22  wr=68.3%  pnl=+91.81 ppt=0.078 trades=1174
 # BNB  delta=0.0003 rev=0.55 rev_lt=0.40 u=0.23 slp=0.50 uTime=10  wr=68.5%  pnl=+100.86 ppt=0.073 trades=1376
+# sl-tighten sweep (sl_pnl_rev=0.32, sl_reversal=0.10, halt_rev=1, now deployed):
+# BTC  trades=202  wr=86.6%  pnl=+27.95 ppt=0.138
+# ETH  trades=482  wr=73.4%  pnl=+55.48 ppt=0.115
+# BNB  trades=908  wr=72.1%  pnl=+77.98 ppt=0.086
 
 [delta_pct_rev]
 default = 0.0003
@@ -75,15 +83,14 @@ default = 0.40
 BTC = 0.20
 
 [sl_reversal]
-default = 0
+default = 0.10
 
 [unwind_pnl_rev]
 default = 0.23
 BTC = 0.15
 
 [sl_pnl_rev]
-default = 0.50
-BTC = 0.40
+default = 0.32
 
 # Max holding time (seconds) — force-close at market if still open this long
 # after entry, regardless of price. 0 = disabled.
