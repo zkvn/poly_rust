@@ -11,7 +11,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-git add siglab/doc/report/signal_report_*.md
+# `git add` with a pathspec that matches zero files is a FATAL error (exit 128), not a
+# silent no-op — distinct from "matched files but nothing changed" below. Caught in
+# production: the very first two hourly timer firings both failed this way because no
+# report had been written yet (siglab writes its first report one full interval after
+# container start, so a freshly (re)started container has a report-free window).
+shopt -s nullglob
+report_files=(siglab/doc/report/signal_report_*.md)
+if [ ${#report_files[@]} -eq 0 ]; then
+  echo "[push_report] no report files exist yet — nothing to push"
+  exit 0
+fi
+
+git add "${report_files[@]}"
 
 if git diff --cached --quiet; then
   echo "[push_report] no report changes since last run — nothing to push"
