@@ -30,6 +30,8 @@ services:
         "/app/logs/siglab_trades.jsonl",
         "--report-dir",
         "/app/reports",
+        "--report-interval-secs",
+        "900",
       ]
     restart: unless-stopped
     # Resource accounting for the local Oracle-sizing test (plan_weather_bot.md §7/§11) —
