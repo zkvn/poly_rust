@@ -21,8 +21,12 @@ core), but never reads or writes anything under `../trader/config`, `../trader/l
   staleness per outcome bucket, but do **not** run them through `Machine`.
   `Machine::cycle_close()` resolves via Binance-price-momentum, which would fabricate
   win/loss labels against these markets' real (station-reading / match-outcome) resolution.
-  See `src/event_monitor.rs`'s doc comment.
+  See `src/event_monitor.rs`'s doc comment. (A plan to actually simulate trades for these too
+  is under review — see `doc/plan_weather_worldcup_trading_2026-07-13.md`.)
 - No real orders, ever. No parquet/raw tick recording — `price_feed` already owns that.
+
+<details>
+<summary><strong>Quickstart (local, no Docker)</strong></summary>
 
 ## Quickstart (local, no Docker)
 
@@ -40,6 +44,11 @@ cargo run --release -- \
 `cargo test` / `cargo fmt --all --check` / `cargo clippy --all-targets --all-features -- -D
 warnings` — all clean, run before any change.
 
+</details>
+
+<details>
+<summary><strong>Docker (the real deployment)</strong></summary>
+
 ## Docker (the real deployment)
 
 ```bash
@@ -53,6 +62,11 @@ mount of `siglab/doc/report/` into the container so the hourly report lands dire
 git working tree. `network_mode: host` for CLOB/Gamma/Binance access via the box's existing
 VPN routes (same reasoning as `../trader`'s compose entry) — siglab never touches VPN config.
 
+</details>
+
+<details>
+<summary><strong>Config files (own schema, not trader's)</strong></summary>
+
 ## Config files (own schema, not trader's)
 
 - `config/markets.toml` — crypto markets (`[[market]]` for 5m/15m/4h, `[[hourly_market]]` for
@@ -64,11 +78,16 @@ VPN routes (same reasoning as `../trader`'s compose entry) — siglab never touc
 
 Editing any of these has zero effect on `../trader`'s live config, and vice versa.
 
+</details>
+
+<details>
+<summary><strong>Autonomous hourly report + push</strong></summary>
+
 ## Autonomous hourly report + push
 
 The container writes `doc/report/signal_report_{YYYY-MM-DD}.md` (HKT date, new file per
 day) every hour, with newest-hour-first collapsible `<details>` sections: crypto trades,
-crypto+weather market state, staleness health, CPU/memory for the past hour.
+crypto+weather+worldcup market state, staleness health, CPU/memory for the past hour.
 
 A **separate host-side** systemd `--user` timer — not the container itself, which never
 gets git/SSH credentials — commits and pushes that file hourly:
@@ -84,19 +103,159 @@ firing even when you're logged out. Report writing (in-container, hourly on the 
 report pushing (host-side, hourly at :05) are independent — the push script only acts if a
 report file actually exists and has unstaged changes; see `scripts/push_report.sh`.
 
-## Known issues (see `doc/` for full writeups)
+**If pushes silently stop working, see "SSH agent subtleties" below before anything else** —
+that's the failure mode this has already hit once.
 
-- **Memory growth under full load, not yet root-caused** — see
-  `doc/incident_ws_2026-07-13.md`. Not urgent at the observed rate, but this is now a
-  long-running unattended process, so worth watching.
-- **CPU/subscription-batching bug — found and fixed 2026-07-13** — see the same doc. Weather
-  subscriptions are now batched per-city (not per-bucket), matching Polymarket's documented
-  WS best practice and `price_feed`'s existing pattern.
-- **Hourly push silently failing on SSH auth — found and fixed 2026-07-13** — systemd
-  `--user` services don't inherit the interactive shell's SSH agent socket. Fixed by
-  `install_timer.sh` injecting the current `SSH_AUTH_SOCK` at install time. That socket is
-  tied to the current login session, not stable across reboot/re-login — **re-run
-  `install_timer.sh` if hourly pushes silently stop again.** See the same doc, §5.
+</details>
+
+<details>
+<summary><strong>SSH agent subtleties (systemd --user services do NOT get your shell's agent)</strong></summary>
+
+## SSH agent subtleties
+
+This bit `push_report.sh` for real on 2026-07-13 (see Incidents below) and is exactly the
+kind of thing that's obvious once you know it and baffling until then, so it gets its own
+section rather than staying buried in an incident writeup.
+
+**The gotcha:** a `systemctl --user` service does not inherit the `SSH_AUTH_SOCK` (or most
+other environment variables) from whatever interactive shell you happened to run
+`systemctl --user start`/`enable` from. It gets the systemd **user manager's own default
+environment** instead — on this box, that's `/run/user/<uid>/gcr/ssh` (GNOME Keyring's SSH
+agent proxy), which is a *different agent* from the one your interactive terminal uses, and
+it either doesn't have the relevant key loaded or refuses to use it non-interactively
+(`agent refused operation`). `git push` then fails with `Permission denied (publickey)` —
+exit 128 — even though `git push` works fine when you run it by hand two seconds later in
+your normal terminal.
+
+**Why this is sneaky:** the failure is silent unless someone checks `journalctl --user -u
+<service>`. A script's `git commit` step still succeeds (no network/auth involved), so a
+`git log` inside the repo looks fine — the divergence only shows up as "local has commits
+origin doesn't," which nothing surfaces proactively.
+
+**Diagnosing it:**
+
+```bash
+# From the same kind of context the failing service runs in:
+env -i HOME="$HOME" PATH="$PATH" bash -c 'git ls-remote origin'
+# If this fails with "Permission denied (publickey)" but the same command works fine in
+# your normal interactive shell, this is the bug.
+
+echo $SSH_AUTH_SOCK                       # your shell's agent
+systemctl --user show-environment | grep SSH_AUTH_SOCK   # systemd's default — usually different
+```
+
+**The fix used here:** `install_timer.sh` reads `$SSH_AUTH_SOCK` from the shell it's run
+from and bakes that exact path into the installed unit (`Environment=SSH_AUTH_SOCK=...`),
+substituting a `__SSH_AUTH_SOCK__` placeholder in the git-tracked `.service` template. The
+template is never committed with a real path — it would be both wrong for anyone else and
+stale the moment the login session that produced it ends.
+
+**The tradeoff, accepted deliberately (not the only option):** the socket this points at is
+tied to the *current login session* — confirmed by checking the backing `ssh-agent`/
+`gcr-ssh-agent` processes' start times, which matched this session's login time, not boot
+time. It will stop working after a reboot or logout, at which point **re-run
+`install_timer.sh` from a shell where `ssh -T git@github.com` already succeeds** to pick up
+the new socket. The more robust alternative — a dedicated deploy key with no passphrase,
+independent of any interactive session — was offered and explicitly not chosen (tradeoff:
+an unencrypted private key on disk, vs. this session-fragility). Revisit if the re-run
+dance becomes annoying enough.
+
+**If this repo's automation ever runs on Oracle or another remote box:** the same class of
+issue applies there independently — see the TODO below.
+
+</details>
+
+<details>
+<summary><strong>Incidents (descending by when found/occurred, all 2026-07-13)</strong></summary>
+
+## Incidents
+
+Full writeups in `doc/incident_ws_2026-07-13.md` unless noted. All same calendar day —
+this module was built and put into production in one session.
+
+### 21:16 HKT — Hourly report push silently failing on SSH auth — **fixed**
+systemd `--user` services don't inherit the interactive shell's SSH agent (see "SSH agent
+subtleties" above). Found when asked to check why no report commits had landed recently;
+`journalctl` showed every real firing failing with exit 128. Fixed by having
+`install_timer.sh` inject the working `SSH_AUTH_SOCK` into the installed unit. Verified by
+manually triggering the systemd service and watching it push for real (commit `7439045`).
+
+### 15:29 HKT — `push_report.sh` fatal-errored on empty report directory — **fixed**
+`git add` with a glob pathspec matching zero files is a **fatal** git error, not a silent
+no-op — hit on the timer's first two real firings, since a freshly (re)started container
+has no report yet (siglab waits a full interval after startup before writing its first
+one, and this session restarted the container several times while iterating). Fixed by
+checking for zero matches with `shopt -s nullglob` before calling `git add`.
+
+### 14:56 HKT — Weather WS subscriptions caused sustained 200-370% CPU — **fixed, ~5x reduction**
+Root cause traced into `polymarket_client_sdk_v2`'s source: `ConnectionManager` holds one
+`broadcast::channel` per WS connection, and every `subscribe_*()` call gets its own receiver
+on that *same* channel, filtering client-side — with ~1,050 subscriptions (one call per
+weather bucket token), cost was O(subscriptions × message rate). Confirmed against
+Polymarket's own WS docs that the API is designed for one connection subscribed to many
+`assets_ids` at once (which `price_feed` already does correctly). Fixed by batching one
+subscribe call per city (~102 subscriptions instead of ~1,050): CPU avg 221%→44%, max
+369%→83%, verified over two live 15-minute Docker runs.
+
+### 14:56 HKT (same investigation) — Memory grows under full load — **found, open, not resolved**
+The same post-fix run that confirmed the CPU fix showed memory climbing ~50→434 MiB over 15
+minutes. A follow-up 1-city-vs-51-city local A/B test confirmed growth correlates with
+weather scope, but the pattern is *stepped and plateauing* (long flat stretches between
+jumps), not smooth/continuous — more consistent with allocator working-set growth settling
+toward a steady size than a true unbounded leak, though not confirmed past ~15 minutes.
+Not urgent at the observed rate; worth periodic `docker stats` checks given this now runs
+unattended for days at a time.
+
+### 14:56 HKT (same investigation) — `trader/src/bin/live.rs` has the same subscription-duplication pattern — **found, dormant, not fixed**
+`live.rs` opens one Binance + one CLOB subscription per **(asset, strategy) worker**, not
+per asset — an asset running two strategies (e.g. ETH: `reversal` + `high_prob`) would
+duplicate both. Gated behind `args.nats_url.is_none()`, and `../docker-compose.yml`'s
+`trader` service always passes `--nats-url`, so production takes the NATS pub/sub path
+instead and never executes the duplicating code — real bug, not currently live. Out of
+scope to fix here without explicit go-ahead to modify `trader/`.
+
+### ~14:00 HKT, pre-first-commit (local testing) — Correlated-silence false alarm across market classes — **fixed**
+An early version of the staleness tracker computed one "fraction of feeds gone quiet"
+ratio across *all* tracked markets. Mixing ~50 fast-ticking crypto feeds with ~300+
+naturally-quiet weather feeds meant weather's normal quiet stretches alone pushed the
+combined ratio over threshold, firing a false "connection dead" warning. Fixed by scoping
+the correlated-silence check per market class (`staleness.rs`), so each class is judged
+against its own baseline cadence.
+
+### ~13:00 HKT, pre-first-commit (local testing) — Duplicate per-duration Binance connections — **fixed**
+The first local (non-Docker) run showed each asset opening a separate Binance WebSocket
+connection per duration it trades (e.g. BTC-5m and BTC-15m each independently subscribing
+to the same Binance trade stream). Fixed via `market::spawn_binance_broadcast` — one real
+connection per asset, fanned out via `tokio::sync::broadcast` to every duration task
+trading it — before the first Docker deployment, so the resource-test numbers in
+`doc/local_resource_test_2026-07-13.md` reflect the fixed version throughout.
+
+</details>
+
+<details>
+<summary><strong>TODO</strong></summary>
+
+## TODO
+
+- **When/if siglab is ever deployed to Oracle (or any box besides this dev machine), the
+  autonomous git-push setup needs redoing for that machine — the current fix is
+  host-specific.** The `SSH_AUTH_SOCK`-injection approach (see "SSH agent subtleties" above)
+  bakes in a path tied to *this* machine's login session; it means nothing on a different
+  host. Whoever deploys there needs to either repeat the same diagnosis (check
+  `$SSH_AUTH_SOCK` in an interactive shell that can push, vs. what `systemctl --user
+  show-environment` gives you there) or use that as the trigger to switch to the more robust
+  deploy-key approach instead, especially if Oracle has no persistent interactive login
+  session to piggyback on in the first place (likely, for a headless server).
+- **Weather/World Cup markets are monitoring-only; a plan to actually simulate trades for
+  them (reusing the 18-variant reversal grid + high_prob) is written and pending review** —
+  see `doc/plan_weather_worldcup_trading_2026-07-13.md`. Not started.
+- Memory growth under full load — see Incidents above — not root-caused, being watched
+  rather than fixed for now.
+
+</details>
+
+<details>
+<summary><strong>Layout</strong></summary>
 
 ## Layout
 
@@ -118,7 +277,10 @@ siglab/
     snapshot.rs / report.rs / cgroup.rs   # shared state, hourly MD report, resource sampling
     record.rs                 # paper trade-record output type
   doc/
-    local_resource_test_2026-07-13.md   # Docker resource baseline + fix history
-    incident_ws_2026-07-13.md            # WS subscription bug + memory investigation
-    report/                              # hourly signal_report_*.md (git-tracked)
+    local_resource_test_2026-07-13.md         # Docker resource baseline + fix history
+    incident_ws_2026-07-13.md                  # full incident writeups (summarized above)
+    plan_weather_worldcup_trading_2026-07-13.md  # pending-review plan (not started)
+    report/                                    # hourly signal_report_*.md (git-tracked)
 ```
+
+</details>
