@@ -113,10 +113,11 @@ fn render_hour_section(
 
     let mut out = String::new();
     let summary = format!(
-        "{} HKT — {} crypto market(s), {} weather bucket(s), {} trade(s), {} stale event(s)",
+        "{} HKT — {} crypto market(s), {} weather bucket(s), {} World Cup bucket(s), {} trade(s), {} stale event(s)",
         now.format("%Y-%m-%d %H:00"),
         snaps.iter().filter(|s| s.kind == "crypto").count(),
         snaps.iter().filter(|s| s.kind == "weather").count(),
+        snaps.iter().filter(|s| s.kind == "worldcup").count(),
         trades.len(),
         stale_events.len(),
     );
@@ -157,41 +158,24 @@ fn render_hour_section(
     // ── Weather market state — one row per city, showing its current highest-probability
     //    bucket (the most informative single number per city without dumping every bucket
     //    of every city into the report every hour). ──
-    let mut by_city: HashMap<String, Vec<&crate::snapshot::MarketSnapshot>> = HashMap::new();
-    for s in snaps.iter().filter(|s| s.kind == "weather") {
-        // label is "{city}: {bucket}" — split back out for grouping.
-        if let Some((city, _)) = s.label.split_once(": ") {
-            by_city.entry(city.to_string()).or_default().push(s);
-        }
-    }
-    let mut cities: Vec<_> = by_city.keys().cloned().collect();
-    cities.sort();
-    out.push_str(&format!(
-        "<details>\n<summary>Weather market state snapshot ({} of {} configured cities reporting)</summary>\n\n",
-        cities.len(),
-        cities.len(), // city coverage vs config is logged separately at startup; this count is "cities with live data"
+    out.push_str(&render_grouped_snapshot_section(
+        &snaps,
+        "weather",
+        "Weather market state snapshot",
+        "city",
+        now_ms,
     ));
-    out.push_str("| city | top bucket | probability | age (s) |\n|---|---|---|---|\n");
-    for city in &cities {
-        let bucket_snaps = &by_city[city];
-        if let Some(top) = bucket_snaps.iter().max_by(|a, b| {
-            a.up_price
-                .partial_cmp(&b.up_price)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            let age = ((now_ms - top.last_tick_ms).max(0) as f64) / 1000.0;
-            let bucket_label = top
-                .label
-                .split_once(": ")
-                .map(|(_, b)| b)
-                .unwrap_or(&top.label);
-            out.push_str(&format!(
-                "| {city} | {bucket_label} | {:.3} | {age:.1} |\n",
-                top.up_price
-            ));
-        }
-    }
-    out.push_str("\n</details>\n\n");
+
+    // ── World Cup market state — same grouping pattern, one row per event showing its
+    //    current highest-probability outcome (e.g. "World Cup Winner" -> whichever team is
+    //    currently favored). ──
+    out.push_str(&render_grouped_snapshot_section(
+        &snaps,
+        "worldcup",
+        "World Cup market state snapshot",
+        "event",
+        now_ms,
+    ));
 
     // ── Staleness health ──
     out.push_str("<details>\n<summary>Staleness events (past hour, observe-only — no auto action taken)</summary>\n\n");
@@ -230,6 +214,57 @@ fn render_hour_section(
     out
 }
 
+/// Renders a collapsible section grouping `snaps` of the given `kind` by the prefix before
+/// `": "` in their label (e.g. `"hong-kong: 33°C"` groups under `"hong-kong"`), showing one
+/// row per group with its current highest-probability outcome — the most informative single
+/// number per group without dumping every bucket of every group into the report every hour.
+/// Shared by the weather and World Cup sections, which are otherwise identical in shape.
+fn render_grouped_snapshot_section(
+    snaps: &[crate::snapshot::MarketSnapshot],
+    kind: &str,
+    title: &str,
+    group_col_name: &str,
+    now_ms: i64,
+) -> String {
+    let mut by_group: HashMap<String, Vec<&crate::snapshot::MarketSnapshot>> = HashMap::new();
+    for s in snaps.iter().filter(|s| s.kind == kind) {
+        if let Some((group, _)) = s.label.split_once(": ") {
+            by_group.entry(group.to_string()).or_default().push(s);
+        }
+    }
+    let mut groups: Vec<_> = by_group.keys().cloned().collect();
+    groups.sort();
+
+    let mut out = format!(
+        "<details>\n<summary>{title} ({} reporting)</summary>\n\n",
+        groups.len(),
+    );
+    out.push_str(&format!(
+        "| {group_col_name} | top outcome | probability | age (s) |\n|---|---|---|---|\n"
+    ));
+    for group in &groups {
+        let group_snaps = &by_group[group];
+        if let Some(top) = group_snaps.iter().max_by(|a, b| {
+            a.up_price
+                .partial_cmp(&b.up_price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            let age = ((now_ms - top.last_tick_ms).max(0) as f64) / 1000.0;
+            let outcome_label = top
+                .label
+                .split_once(": ")
+                .map(|(_, b)| b)
+                .unwrap_or(&top.label);
+            out.push_str(&format!(
+                "| {group} | {outcome_label} | {:.3} | {age:.1} |\n",
+                top.up_price
+            ));
+        }
+    }
+    out.push_str("\n</details>\n\n");
+    out
+}
+
 /// Writes (inserting, newest-first) this hour's section into today's report file.
 pub fn write_hourly_report(
     report_dir: &Path,
@@ -248,8 +283,9 @@ pub fn write_hourly_report(
         "# siglab signal report — {date}\n\n\
          Auto-generated by siglab every hour (HKT), newest hour first. See\n\
          `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
-         `plan_weather_bot.md` for what this harness does and does not claim (weather markets\n\
-         are monitoring-only in this version — no simulated trades, see `siglab/src/weather.rs`).\n\n"
+         `plan_weather_bot.md` for what this harness does and does not claim. Weather and\n\
+         World Cup markets are monitoring-only in this version — no simulated trades, see\n\
+         `siglab/src/event_monitor.rs`'s doc comment for why.\n\n"
     );
 
     let existing = std::fs::read_to_string(&path).unwrap_or_default();

@@ -24,6 +24,8 @@ services:
         "/app/config/markets.toml",
         "--weather-config",
         "/app/config/weather_cities.toml",
+        "--worldcup-config",
+        "/app/config/worldcup_events.toml",
         "--log",
         "/app/logs/siglab_trades.jsonl",
         "--report-dir",

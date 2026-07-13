@@ -2,10 +2,10 @@
 
 Live-tests many `reversal`/`high_prob` strategy parameter variants against real Polymarket
 ticks across a large, rotating set of markets — crypto (5m/15m/4h/hourly-ET, all durations
-across BTC/ETH/SOL/BNB/XRP/DOGE) and weather (51 cities' daily temperature-bucket events) —
-without placing real orders and without recording raw tick data. Paper trade outcomes are
-logged to JSONL; an hourly Markdown report summarizes signal activity, market state, and
-resource usage.
+across BTC/ETH/SOL/BNB/XRP/DOGE), weather (51 cities' daily temperature-bucket events), and
+FIFA World Cup markets (62 events: outright winner, award winners, player props) — without
+placing real orders and without recording raw tick data. Paper trade outcomes are logged to
+JSONL; an hourly Markdown report summarizes signal activity, market state, and resource usage.
 
 **Fully standalone from `../trader` and `../price_feed`.** Own config, own Dockerfile, own
 `docker-compose.yml`, own systemd units, own `.gitignore`. It depends on `../trader` as a
@@ -17,10 +17,11 @@ core), but never reads or writes anything under `../trader/config`, `../trader/l
 
 - **Crypto markets**: fully tradeable — real `trader::machine::Machine` instances per
   `(market, variant)` pair, real Binance reference feed, real entry/exit/PnL simulation.
-- **Weather markets**: **monitoring only** — tracks live prices and feed staleness per
-  temperature bucket, but does **not** run them through `Machine`. `Machine::cycle_close()`
-  resolves via Binance-price-momentum, which would fabricate win/loss labels against
-  weather's real (station-reading) resolution. See `src/weather.rs`'s doc comment.
+- **Weather and World Cup markets**: **monitoring only** — track live prices and feed
+  staleness per outcome bucket, but do **not** run them through `Machine`.
+  `Machine::cycle_close()` resolves via Binance-price-momentum, which would fabricate
+  win/loss labels against these markets' real (station-reading / match-outcome) resolution.
+  See `src/event_monitor.rs`'s doc comment.
 - No real orders, ever. No parquet/raw tick recording — `price_feed` already owns that.
 
 ## Quickstart (local, no Docker)
@@ -30,6 +31,7 @@ cargo build --release
 cargo run --release -- \
   --config config/markets.toml \
   --weather-config config/weather_cities.toml \
+  --worldcup-config config/worldcup_events.toml \
   --log siglab_trades.jsonl \
   --report-dir reports \
   --report-interval-secs 3600
@@ -57,8 +59,10 @@ VPN routes (same reasoning as `../trader`'s compose entry) — siglab never touc
   the ET-calendar-hour markets) + strategy `[[variant]]`s. Deliberately its own minimal
   schema, not `trader::config::StrategyToml` — see `src/config.rs`'s doc comment for why.
 - `config/weather_cities.toml` — the city list for weather monitoring.
+- `config/worldcup_events.toml` — the FIFA World Cup event slug list (static, not
+  date-rotating like weather).
 
-Editing either has zero effect on `../trader`'s live config, and vice versa.
+Editing any of these has zero effect on `../trader`'s live config, and vice versa.
 
 ## Autonomous hourly report + push
 
@@ -96,14 +100,15 @@ siglab/
   Cargo.toml / Cargo.lock   # path-depends on ../trader (source only)
   Dockerfile                # context must be repo root — see comment inside
   docker-compose.yml        # standalone, not part of ../docker-compose.yml
-  config/                   # markets.toml, weather_cities.toml
+  config/                   # markets.toml, weather_cities.toml, worldcup_events.toml
   scripts/                  # push_report.sh, install_timer.sh
   systemd/                  # siglab-report-push.{service,timer}
   src/
     main.rs                 # CLI + task orchestration
     config.rs                # standalone TOML schema
     market.rs / rotation.rs  # crypto market rotation + Machine wiring
-    weather.rs               # weather discovery + monitoring-only tracking
+    event_monitor.rs          # shared discovery/monitoring core (monitoring-only events)
+    weather.rs / worldcup.rs  # thin wrappers over event_monitor for each event source
     staleness.rs              # observe-only staleness telemetry (per-class correlated check)
     snapshot.rs / report.rs / cgroup.rs   # shared state, hourly MD report, resource sampling
     record.rs                 # paper trade-record output type

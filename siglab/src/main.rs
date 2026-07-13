@@ -17,6 +17,7 @@
 
 mod cgroup;
 mod config;
+mod event_monitor;
 mod market;
 mod record;
 mod report;
@@ -24,6 +25,7 @@ mod rotation;
 mod snapshot;
 mod staleness;
 mod weather;
+mod worldcup;
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -53,6 +55,10 @@ struct Args {
     #[arg(long, default_value = "config/weather_cities.toml")]
     weather_config: PathBuf,
 
+    /// Path to siglab's own standalone FIFA World Cup event-list config.
+    #[arg(long, default_value = "config/worldcup_events.toml")]
+    worldcup_config: PathBuf,
+
     /// JSONL trade-record output path.
     #[arg(long, default_value = "siglab_trades.jsonl")]
     log: PathBuf,
@@ -70,6 +76,11 @@ struct Args {
     /// over and any bucket-set changes).
     #[arg(long, default_value_t = 3600)]
     weather_refresh_secs: u64,
+
+    /// How often (seconds) to re-run World Cup event discovery (handles a market's bucket
+    /// set changing, e.g. a new stage-of-elimination outcome).
+    #[arg(long, default_value_t = 3600)]
+    worldcup_refresh_secs: u64,
 
     /// Fraction (0.0-1.0) of currently-tracked feeds that must be past their first
     /// silence bucket simultaneously before logging a "possible connection-level outage"
@@ -106,14 +117,18 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let cfg = config::load(&args.config)?;
     let weather_cfg = config::load_weather(&args.weather_config)?;
+    let worldcup_cfg = config::load_worldcup(&args.worldcup_config)?;
 
     eprintln!(
-        "[siglab] loaded {} market(s), {} variant(s) from {:?}; {} weather cities from {:?}",
+        "[siglab] loaded {} market(s), {} variant(s) from {:?}; {} weather cities from {:?}; \
+         {} World Cup events from {:?}",
         cfg.markets.len(),
         cfg.variants.len(),
         args.config,
         weather_cfg.cities.len(),
-        args.weather_config
+        args.weather_config,
+        worldcup_cfg.events.len(),
+        args.worldcup_config
     );
 
     let http = http_client()?;
@@ -203,15 +218,28 @@ async fn main() -> Result<()> {
         handles.push(handle);
     }
 
+    let event_sinks = event_monitor::EventSinks {
+        snapshots: snapshots.clone(),
+        stale_tx: stale_tx.clone(),
+    };
+
     // ── spawn one discovery+monitoring supervisor per weather city ──
     for city in &weather_cfg.cities {
         tokio::spawn(weather::run_city_supervisor(
             city.clone(),
-            http.clone(),
-            clob.clone(),
-            snapshots.clone(),
-            stale_tx.clone(),
+            clients.clone(),
+            event_sinks.clone(),
             args.weather_refresh_secs,
+        ));
+    }
+
+    // ── spawn one discovery+monitoring supervisor per World Cup event ──
+    for slug in &worldcup_cfg.events {
+        tokio::spawn(worldcup::run_event_supervisor_for(
+            slug.clone(),
+            clients.clone(),
+            event_sinks.clone(),
+            args.worldcup_refresh_secs,
         ));
     }
 
@@ -339,9 +367,10 @@ async fn main() -> Result<()> {
     };
 
     eprintln!(
-        "[siglab] running {} crypto market task(s), {} weather city task(s); trade log {:?}, reports every {}s in {:?}",
+        "[siglab] running {} crypto market task(s), {} weather city task(s), {} World Cup event task(s); trade log {:?}, reports every {}s in {:?}",
         handles.len(),
         weather_cfg.cities.len(),
+        worldcup_cfg.events.len(),
         args.log,
         args.report_interval_secs,
         args.report_dir

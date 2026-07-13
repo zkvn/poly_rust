@@ -213,6 +213,23 @@ pub fn load_weather(path: &Path) -> Result<WeatherConfig> {
     Ok(cfg)
 }
 
+/// FIFA World Cup event slug list — same standalone-file rationale as `WeatherConfig`.
+/// Unlike weather, these are static slugs (not date-derived) — see
+/// `config/worldcup_events.toml`'s header comment for how the list was gathered.
+#[derive(Debug, Deserialize)]
+pub struct WorldcupConfig {
+    pub events: Vec<String>,
+}
+
+pub fn load_worldcup(path: &Path) -> Result<WorldcupConfig> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))?;
+    let cfg: WorldcupConfig = toml::from_str(&raw).with_context(|| format!("parse {path:?}"))?;
+    if cfg.events.is_empty() {
+        bail!("{path:?}: no events configured");
+    }
+    Ok(cfg)
+}
+
 pub fn load(path: &Path) -> Result<SiglabConfig> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))?;
     let cfg: SiglabConfig = toml::from_str(&raw).with_context(|| format!("parse {path:?}"))?;
