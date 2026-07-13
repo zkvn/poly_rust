@@ -163,7 +163,7 @@ pub async fn run_market(
                     for (variant_id, m) in machines.iter_mut() {
                         if let Some(rec) = m.on_poly(tick) {
                             let out = SiglabTradeRecord::from_trader(
-                                &rec, MarketKind::Crypto, variant_id, &asset, now_secs_f64(),
+                                &rec, MarketKind::Crypto, variant_id, &asset, &market_key, now_secs_f64(),
                             );
                             let _ = trade_tx.send(out);
                         }
@@ -178,7 +178,7 @@ pub async fn run_market(
                         for (variant_id, m) in machines.iter_mut() {
                             if let Some(rec) = m.cycle_close() {
                                 let out = SiglabTradeRecord::from_trader(
-                                    &rec, MarketKind::Crypto, variant_id, &asset, now_secs_f64(),
+                                    &rec, MarketKind::Crypto, variant_id, &asset, &market_key, now_secs_f64(),
                                 );
                                 let _ = trade_tx.send(out);
                             }

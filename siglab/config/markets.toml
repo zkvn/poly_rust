@@ -152,9 +152,11 @@ asset = "BNB"
 coin_name = "bnb"
 
 # ── Variants: a systematic reversal grid (3 low thresholds x 6 high/recovery thresholds
-# = 18 combos) applied to every configured asset/duration, plus the 3 existing per-asset
-# high_prob variants (unchanged). Updated 2026-07-13 per explicit request to monitor many
-# reversal parameter combos at once instead of one hand-picked set per asset.
+# = 18 combos) applied to every configured asset/duration. Updated 2026-07-13 per explicit
+# request to monitor many reversal parameter combos at once instead of one hand-picked set
+# per asset. high_prob variants removed the same day per a follow-up request to simplify to
+# reversal-only, pure-CLOB-price-action strategies (see the note further down where they
+# used to live).
 #
 # Naming: reversal_{low}_{high} — low = reversal_low_threshold (the dip that must be seen),
 # high = reversal (the recovery level that fires entry). e.g. reversal_0.2_0.55 = dipped
@@ -180,11 +182,10 @@ coin_name = "bnb"
 # this file's original 15m/hourly-et-timing-mismatch note below.
 #
 # 18 reversal variants x 24 markets (6 assets x {5m,15m,4h,hourly-et}) = 432 reversal
-# Machine instances, plus 3 high_prob variants x 4 durations each = 12 more = ~444 total.
-# Machine count itself is not the cost driver (each is trivial per-tick arithmetic) — see
-# siglab/doc/incident_ws_2026-07-13.md; the real cost driver (WS subscription count) is
-# unaffected by variant count, since a market subscribes once regardless of how many
-# variants watch it.
+# Machine instances total. Machine count itself is not the cost driver (each is trivial
+# per-tick arithmetic) — see siglab/doc/incident_ws_2026-07-13.md; the real cost driver (WS
+# subscription count) is unaffected by variant count, since a market subscribes once
+# regardless of how many variants watch it.
 
 [[variant]]
 id = "reversal_0.2_0.55"
@@ -564,65 +565,5 @@ unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
 unwind_time_rev = 30.0
 
-[[variant]]
-id = "high_prob_btc"
-strategy = "high_prob"
-assets = ["BTC"]
-no_enter_when_time_left = 10
-max_buy_price = 0.95
-spread_premium_limit = 1.05
-spread_discount_limit = 0.95
-max_price_age_secs = 2.0
-delta_pct_rev = 0.0010
-delta_pct_hp = 0.0004
-price_high_rev = 0.90
-trade_size_usdc = 1.0
-price_low = 0.80
-price_high = 0.93
-enter_when_time_left = 20
-sl_high_prob = 0.49
-unwind_pnl_hp = 0.07
-sl_pnl_hp = 0.35
-unwind_time_hp = 30.0
-
-[[variant]]
-id = "high_prob_eth"
-strategy = "high_prob"
-assets = ["ETH"]
-no_enter_when_time_left = 10
-max_buy_price = 0.95
-spread_premium_limit = 1.05
-spread_discount_limit = 0.95
-max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
-delta_pct_hp = 0.0004
-price_high_rev = 0.90
-trade_size_usdc = 1.0
-price_low = 0.80
-price_high = 0.95
-enter_when_time_left = 20
-sl_high_prob = 0.49
-unwind_pnl_hp = 0.11
-sl_pnl_hp = 0.50
-unwind_time_hp = 30.0
-
-[[variant]]
-id = "high_prob_doge"
-strategy = "high_prob"
-assets = ["DOGE"]
-no_enter_when_time_left = 10
-max_buy_price = 0.95
-spread_premium_limit = 1.05
-spread_discount_limit = 0.95
-max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
-delta_pct_hp = 0.0004
-price_high_rev = 0.90
-trade_size_usdc = 1.0
-price_low = 0.80
-price_high = 0.95
-enter_when_time_left = 20
-sl_high_prob = 0.49
-unwind_pnl_hp = 0.09
-sl_pnl_hp = 0.40
-unwind_time_hp = 30.0
+# high_prob variants removed 2026-07-13 per explicit request to simplify to reversal-only,
+# pure-CLOB-price-action strategies. (Previously: high_prob_btc/eth/doge, one per asset.)

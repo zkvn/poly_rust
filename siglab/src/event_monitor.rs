@@ -1,21 +1,22 @@
 //! Shared discovery + monitoring core for any Gamma "negRisk or single-market event" —
-//! deliberately **monitoring-only**, not wired through `trader::machine::Machine`.
-//! `weather.rs` and `worldcup.rs` are both thin wrappers around this module; the only thing
-//! that differs between them is how a slug is produced (weather: derived from today's date
-//! per city; World Cup: a fixed slug per event, no date involved) — everything about
-//! fetching an event's Yes-token buckets, batch-subscribing, and demuxing ticks is identical,
-//! so it lives here once instead of twice.
+//! deliberately **not wired through `trader::machine::Machine`**. `weather.rs` and
+//! `worldcup.rs` are both thin wrappers around this module; the only thing that differs
+//! between them is how a slug is produced (weather: derived from today's date per city;
+//! World Cup: a fixed slug per event, no date involved) — everything about fetching an
+//! event's Yes-token buckets, batch-subscribing, demuxing ticks, and driving one
+//! `bucket_reversal::BucketReversalEngine` per (bucket, grid variant) is identical, so it
+//! lives here once instead of twice.
 //!
-//! **Why monitoring-only, for both callers:** `Machine::cycle_close()` resolves a held
-//! position by comparing `last_binance` against `cycle_open_binance` — correct for crypto
-//! (that comparison *is* the market's real resolution rule), but wrong here: weather
-//! resolves against a station reading, World Cup markets resolve against real match/award
-//! outcomes — neither has anything to do with price momentum. Feeding a synthetic reference
-//! into `on_binance` and calling `cycle_close()` would silently fabricate win/loss labels
-//! instead of reflecting ground truth. Real resolution for either needs its own Yes/No-aware
-//! Gamma poll (`Machine` only knows "UP"/"DOWN" outcome labels) — deferred, see
-//! `plan_weather_bot.md` §5 Phase 2/3 for the weather case (World Cup has no equivalent plan
-//! doc yet). Until then, this tracks live prices and feed health only.
+//! **Why not `Machine`:** `Machine::cycle_close()` resolves a held position by comparing
+//! `last_binance` against `cycle_open_binance` — correct for crypto (that comparison *is*
+//! the market's real resolution rule), but wrong here: weather resolves against a station
+//! reading, World Cup markets resolve against real match/award outcomes — neither has
+//! anything to do with price momentum, and there's no equivalent reference feed anyway.
+//! Rather than fabricate one, every bucket instead runs `bucket_reversal.rs`'s
+//! self-contained engine, which never holds to real resolution at all — every position
+//! closes via observed price action or a fixed timeout (see that file's doc comment). Real
+//! Yes/No-aware Gamma-outcome resolution was considered and deliberately dropped, not
+//! deferred — see `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
 //!
 //! **Subscription strategy — batched per event, not one call per bucket.** Same lesson as
 //! `siglab/doc/incident_ws_2026-07-13.md`: `polymarket_client_sdk_v2`'s `ConnectionManager`
@@ -36,28 +37,34 @@ use tokio::sync::mpsc;
 
 use trader::marketdata::now_secs_f64;
 
+use crate::bucket_reversal::{BucketReversalEngine, reversal_grid};
 use crate::market::{SharedClients, StalenessTick};
+use crate::record::{MarketKind, SiglabTradeRecord};
 use crate::snapshot::{MarketSnapshot, SharedSnapshots, update as update_snapshot};
 
 /// Static identity for one monitored event — bundled to keep `run_event_feed`/
 /// `run_event_supervisor` under clippy's argument-count limit. `log_key`/`snapshot_prefix`
 /// let the same code serve both callers: weather keys snapshots
 /// `"weather:{city}:{bucket}"` with `kind="weather"`; worldcup keys them
-/// `"worldcup:{slug}:{bucket}"` with `kind="worldcup"`.
+/// `"worldcup:{slug}:{bucket}"` with `kind="worldcup"`. `market_kind` is the analogous
+/// `crate::record::MarketKind` tag for trade records produced by `bucket_reversal.rs`.
 #[derive(Debug, Clone)]
 pub struct EventIdentity {
     pub log_key: String,
     pub snapshot_prefix: String,
     pub kind: &'static str,
+    pub market_kind: MarketKind,
     pub display_name: String,
 }
 
-/// Output destinations shared across every monitored event — mirrors `market::Sinks` minus
-/// the trade-record channel (monitoring-only events never produce trades).
+/// Output destinations shared across every monitored event — mirrors `market::Sinks`.
+/// `trade_tx` carries `bucket_reversal.rs` engine outputs, not `trader::machine::Machine`
+/// ones — these markets never touch `Machine` (see this module's doc comment).
 #[derive(Clone)]
 pub struct EventSinks {
     pub snapshots: SharedSnapshots,
     pub stale_tx: mpsc::UnboundedSender<StalenessTick>,
+    pub trade_tx: mpsc::UnboundedSender<SiglabTradeRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,25 +167,43 @@ fn merged_price_stream(
 }
 
 /// One event's live feed: batch-subscribes every currently-discovered bucket's Yes token in
-/// a single pair of calls, demuxes incoming ticks by `asset_id` via `labels`, and publishes
-/// snapshot/staleness updates. Reconnects (re-subscribing the same `ids`) on stream close.
+/// a single pair of calls, demuxes incoming ticks by `asset_id` via `labels`, publishes
+/// snapshot/staleness updates, and drives one `BucketReversalEngine` per (bucket, grid
+/// variant) — 18 per bucket — forwarding any closed position to `trade_tx`. Reconnects
+/// (re-subscribing the same `ids`, fresh engines) on stream close.
 async fn run_event_feed(
     identity: EventIdentity,
     clob: ClobWsClient,
     ids: Vec<U256>,
     labels: HashMap<U256, String>,
+    slug: String,
     sinks: EventSinks,
 ) {
     let EventIdentity {
         log_key,
         snapshot_prefix,
         kind,
+        market_kind,
         display_name,
     } = identity;
     let EventSinks {
         snapshots,
         stale_tx,
+        trade_tx,
     } = sinks;
+
+    let grid = reversal_grid();
+    let mut engines: HashMap<U256, Vec<BucketReversalEngine>> = ids
+        .iter()
+        .map(|&token| {
+            let set = grid
+                .iter()
+                .map(|(id, params)| BucketReversalEngine::new(id.clone(), *params))
+                .collect();
+            (token, set)
+        })
+        .collect();
+
     loop {
         match merged_price_stream(&clob, ids.clone()) {
             Ok(stream) => {
@@ -191,6 +216,7 @@ async fn run_event_feed(
                         continue; // message for a token we didn't ask about — ignore
                     };
                     let up = (bid + ask) / 2.0;
+                    let ts_secs = ts_ms as f64 / 1000.0;
                     let key = format!("{snapshot_prefix}:{label}");
                     let _ = stale_tx.send((key.clone(), "poly", ts_ms));
                     update_snapshot(
@@ -204,6 +230,28 @@ async fn run_event_feed(
                             last_tick_ms: (now_secs_f64() * 1000.0) as i64,
                         },
                     );
+
+                    if let Some(bucket_engines) = engines.get_mut(&asset_id) {
+                        for engine in bucket_engines.iter_mut() {
+                            if let Some(closed) = engine.on_tick(up, ts_secs) {
+                                let rec = SiglabTradeRecord::from_bucket_engine(
+                                    market_kind,
+                                    &engine.variant_id,
+                                    &display_name,
+                                    &key,
+                                    &slug,
+                                    closed.side_up,
+                                    closed.entry_ts,
+                                    closed.entry_price,
+                                    closed.exit_price,
+                                    closed.outcome,
+                                    closed.pnl,
+                                    now_secs_f64(),
+                                );
+                                let _ = trade_tx.send(rec);
+                            }
+                        }
+                    }
                 }
                 eprintln!("[{log_key}] price stream closed, reconnecting…");
             }
@@ -258,6 +306,7 @@ pub async fn run_event_supervisor(
                     clob.clone(),
                     ids,
                     labels,
+                    slug.clone(),
                     sinks.clone(),
                 )));
             }

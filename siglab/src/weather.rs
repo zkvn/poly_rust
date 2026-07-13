@@ -54,6 +54,7 @@ pub async fn run_city_supervisor(
         log_key: format!("weather:{city}"),
         snapshot_prefix: format!("weather:{city}"),
         kind: "weather",
+        market_kind: crate::record::MarketKind::Weather,
         display_name: city.clone(),
     };
     let slug_fn = move || today_slug(&city);

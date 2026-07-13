@@ -2,11 +2,13 @@
 //!
 //! Subscribes to many rotating Polymarket markets concurrently, drives one
 //! `trader::machine::Machine` per (crypto market, configured variant) pair against live
-//! ticks, and logs paper trade-record outcomes to JSONL. Also monitors (price + staleness
-//! only, no simulated trades — see `weather.rs`'s doc comment) every weather city's daily
-//! temperature-bucket markets. **No real orders, no parquet/raw tick recording.** Config,
-//! logs, and process are entirely standalone from `trader`/`price_feed` — see
-//! `siglab/config.rs`'s doc comment and `plan_weather_bot.md`.
+//! ticks, and logs paper trade-record outcomes to JSONL. Also drives one
+//! `bucket_reversal::BucketReversalEngine` per (weather/World Cup bucket, grid variant) pair
+//! — a separate, self-contained pure-price-action engine, not `Machine` — see
+//! `bucket_reversal.rs`'s doc comment for why. **No real orders, no parquet/raw tick
+//! recording.** Config, logs, and process are entirely standalone from `trader`/
+//! `price_feed` — see `siglab/config.rs`'s doc comment and
+//! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
 //!
 //! Every hour (HKT), writes/updates `{report_dir}/signal_report_{date}.md` — a
 //! collapsible-sections Markdown summary of the last hour's trades, market state,
@@ -15,6 +17,7 @@
 //! commits and pushes that file hourly, independent of this process needing git/SSH
 //! credentials itself.
 
+mod bucket_reversal;
 mod cgroup;
 mod config;
 mod event_monitor;
@@ -221,6 +224,7 @@ async fn main() -> Result<()> {
     let event_sinks = event_monitor::EventSinks {
         snapshots: snapshots.clone(),
         stale_tx: stale_tx.clone(),
+        trade_tx: trade_tx.clone(),
     };
 
     // ── spawn one discovery+monitoring supervisor per weather city ──

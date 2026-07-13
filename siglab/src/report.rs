@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use chrono::{FixedOffset, Utc};
+use chrono::{FixedOffset, TimeZone as _, Utc};
 
 use crate::cgroup;
 use crate::snapshot::SharedSnapshots;
@@ -125,21 +125,9 @@ fn render_hour_section(
         "<details open>\n<summary><strong>{summary}</strong></summary>\n\n"
     ));
 
-    // ── Crypto trades this hour ──
-    out.push_str("#### Crypto trades (past hour)\n\n");
-    if trades.is_empty() {
-        out.push_str("_No trades fired this hour._\n\n");
-    } else {
-        out.push_str("| variant | asset | side | outcome | pnl |\n|---|---|---|---|---|\n");
-        for t in &trades {
-            out.push_str(&format!(
-                "| {} | {} | {} | {} | {:.4} |\n",
-                t.variant_id, t.asset, t.side, t.outcome, t.pnl
-            ));
-        }
-        let total_pnl: f64 = trades.iter().map(|t| t.pnl).sum();
-        out.push_str(&format!("\n**Total pnl this hour: {total_pnl:.4}**\n\n"));
-    }
+    // ── Trades this hour (crypto Machine + weather/World Cup bucket_reversal) ──
+    out.push_str(&render_trade_summary(&trades));
+    out.push_str(&render_trade_table(&trades));
 
     // ── Crypto market state ──
     let mut crypto: Vec<_> = snaps.iter().filter(|s| s.kind == "crypto").collect();
@@ -214,6 +202,92 @@ fn render_hour_section(
     out
 }
 
+/// Aggregated PnL by (market, strategy) for the past hour, shown *above* the per-trade
+/// table — the table answers "what happened," this answers "how did each market/strategy
+/// combo do," which is the number worth seeing first when several markets/variants fired.
+/// Note this aggregates by `strategy` (`"reversal"`/`"high_prob"`), not by the finer-grained
+/// `variant_id` — with 18 reversal variants often firing together on the same dip (they
+/// share the same underlying price move, just different thresholds), a per-variant summary
+/// here would mostly repeat near-identical rows; per-market-per-strategy is the more useful
+/// aggregate. The full per-trade table below still shows every variant individually.
+fn render_trade_summary(trades: &[crate::record::SiglabTradeRecord]) -> String {
+    let mut out =
+        String::from("#### Summary: PnL by market and strategy (all trades, past hour)\n\n");
+    if trades.is_empty() {
+        out.push_str("_No trades fired this hour._\n\n");
+        return out;
+    }
+
+    let mut agg: HashMap<(String, String), (u32, f64)> = HashMap::new();
+    for t in trades {
+        let entry = agg
+            .entry((t.market.clone(), t.strategy.clone()))
+            .or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += t.pnl;
+    }
+    let mut rows: Vec<_> = agg.into_iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    out.push_str("| market | strategy | trades | total pnl |\n|---|---|---|---|\n");
+    for ((market, strategy), (count, total_pnl)) in &rows {
+        out.push_str(&format!(
+            "| {market} | {strategy} | {count} | {total_pnl:.4} |\n"
+        ));
+    }
+    let grand_total: f64 = trades.iter().map(|t| t.pnl).sum();
+    out.push_str(&format!("\n**Total pnl this hour: {grand_total:.4}**\n\n"));
+    out
+}
+
+/// Per-trade table, sorted by market then trade datetime (entry time) within each market —
+/// so all of e.g. XRP-15m's trades sit together in chronological order, then XRP-5m's, etc.,
+/// rather than interleaved by whichever variant happened to fire first.
+fn render_trade_table(trades: &[crate::record::SiglabTradeRecord]) -> String {
+    let mut out = String::from("#### Trades (past hour)\n\n");
+    if trades.is_empty() {
+        out.push_str("_No trades fired this hour._\n\n");
+        return out;
+    }
+
+    let mut sorted: Vec<_> = trades.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.market.cmp(&b.market).then(
+            a.entry_ts
+                .partial_cmp(&b.entry_ts)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+
+    out.push_str(
+        "| datetime (HKT) | market | variant | side | outcome | pnl |\n|---|---|---|---|---|---|\n",
+    );
+    for t in &sorted {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {:.4} |\n",
+            entry_datetime_hkt(t.entry_ts),
+            t.market,
+            t.variant_id,
+            t.side,
+            t.outcome,
+            t.pnl
+        ));
+    }
+    out.push('\n');
+    out
+}
+
+fn entry_datetime_hkt(entry_ts: f64) -> String {
+    Utc.timestamp_opt(entry_ts as i64, 0)
+        .single()
+        .map(|dt| {
+            dt.with_timezone(&hkt())
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| "?".to_string())
+}
+
 /// Renders a collapsible section grouping `snaps` of the given `kind` by the prefix before
 /// `": "` in their label (e.g. `"hong-kong: 33°C"` groups under `"hong-kong"`), showing one
 /// row per group with its current highest-probability outcome — the most informative single
@@ -283,9 +357,10 @@ pub fn write_hourly_report(
         "# siglab signal report — {date}\n\n\
          Auto-generated by siglab every hour (HKT), newest hour first. See\n\
          `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
-         `plan_weather_bot.md` for what this harness does and does not claim. Weather and\n\
-         World Cup markets are monitoring-only in this version — no simulated trades, see\n\
-         `siglab/src/event_monitor.rs`'s doc comment for why.\n\n"
+         `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md` for what this harness does\n\
+         and does not claim. Weather and World Cup markets trade via a self-contained\n\
+         `bucket_reversal.rs` reversal engine (18 variants per bucket, no delta/Gamma/resolve —\n\
+         see that file's doc comment), separate from crypto's `trader::machine::Machine`.\n\n"
     );
 
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -327,8 +402,8 @@ mod tests {
 
         std::fs::write(
             &path,
-            "{\"logged_at\":100.0,\"market_kind\":\"crypto\",\"variant_id\":\"v\",\"asset\":\"BTC\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":0.0,\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"WIN\",\"pnl\":0.1}\n\
-             {\"logged_at\":200.0,\"market_kind\":\"crypto\",\"variant_id\":\"v\",\"asset\":\"BTC\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":0.0,\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"WIN\",\"pnl\":0.2}\n",
+            "{\"logged_at\":100.0,\"market_kind\":\"crypto\",\"variant_id\":\"v\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":0.0,\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"WIN\",\"pnl\":0.1}\n\
+             {\"logged_at\":200.0,\"market_kind\":\"crypto\",\"variant_id\":\"v\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":0.0,\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"WIN\",\"pnl\":0.2}\n",
         )
         .unwrap();
 
@@ -340,11 +415,116 @@ mod tests {
     }
 
     #[test]
+    fn recent_trades_reads_pre_market_field_lines_via_serde_default() {
+        // Real lines from the production trade log, logged before the `market` field
+        // existed — must still deserialize (as market="") rather than being silently
+        // dropped, or every trade logged before this change disappears from every future
+        // report.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trades.jsonl");
+        std::fs::write(
+            &path,
+            "{\"logged_at\":1783915185.1,\"market_kind\":\"crypto\",\"variant_id\":\"high_prob_btc\",\"asset\":\"BTC\",\"slug\":\"btc-updown-15m-1783914300\",\"cycle_start\":1783914300.0,\"strategy\":\"high_prob\",\"side\":\"DOWN\",\"entry_ts\":1783915180.0,\"token_price\":0.885,\"exit_price\":0.955,\"outcome\":\"UNWIND\",\"pnl\":0.0791}\n",
+        )
+        .unwrap();
+
+        let trades = recent_trades(&path, 0.0);
+        assert_eq!(
+            trades.len(),
+            1,
+            "old-schema line must not be silently dropped"
+        );
+        assert_eq!(trades[0].market, "");
+        assert!((trades[0].pnl - 0.0791).abs() < 1e-9);
+    }
+
+    #[test]
     fn stale_log_caps_growth() {
         let log = new_stale_log();
         for i in 0..5100 {
             log_stale_event(&log, i, "m".to_string(), 1000, 1000);
         }
         assert_eq!(log.lock().unwrap().len(), 5000);
+    }
+
+    fn mk_trade(
+        market: &str,
+        variant_id: &str,
+        strategy: &str,
+        entry_ts: f64,
+        pnl: f64,
+    ) -> crate::record::SiglabTradeRecord {
+        crate::record::SiglabTradeRecord {
+            logged_at: entry_ts + 10.0,
+            market_kind: crate::record::MarketKind::Crypto,
+            variant_id: variant_id.to_string(),
+            asset: market.split('-').next().unwrap_or(market).to_string(),
+            market: market.to_string(),
+            slug: "s".to_string(),
+            cycle_start: 0.0,
+            strategy: strategy.to_string(),
+            side: "UP".to_string(),
+            entry_ts,
+            token_price: 0.5,
+            exit_price: 0.6,
+            outcome: "WIN".to_string(),
+            pnl,
+        }
+    }
+
+    #[test]
+    fn trade_table_sorts_by_market_then_entry_time() {
+        let trades = vec![
+            mk_trade("XRP-15m", "reversal_0.2_0.55", "reversal", 200.0, 0.1),
+            mk_trade("XRP-5m", "reversal_0.2_0.55", "reversal", 100.0, 0.2),
+            mk_trade("XRP-15m", "reversal_0.3_0.6", "reversal", 50.0, 0.3),
+        ];
+        let table = render_trade_table(&trades);
+        // XRP-15m rows (entry 50 then 200) should both precede XRP-5m's row (entry 100),
+        // and within XRP-15m, entry_ts=50 should come before entry_ts=200.
+        let pos_15m_early = table.find("reversal_0.3_0.6").unwrap();
+        let pos_15m_late = table.find("reversal_0.2_0.55").unwrap();
+        let pos_5m = table.rfind("XRP-5m").unwrap();
+        assert!(pos_15m_early < pos_15m_late);
+        assert!(pos_15m_late < pos_5m);
+    }
+
+    #[test]
+    fn trade_table_has_datetime_and_market_columns() {
+        let trades = vec![mk_trade(
+            "BTC-4h",
+            "reversal_0.4_0.8",
+            "reversal",
+            1_700_000_000.0,
+            0.5,
+        )];
+        let table = render_trade_table(&trades);
+        assert!(table.contains("datetime (HKT)"));
+        assert!(table.contains("market"));
+        assert!(table.contains("BTC-4h"));
+        // entry_ts formatted as a real date, not a raw epoch number.
+        assert!(table.contains("2023-"));
+    }
+
+    #[test]
+    fn trade_summary_aggregates_by_market_and_strategy() {
+        let trades = vec![
+            mk_trade("XRP-5m", "reversal_0.2_0.55", "reversal", 100.0, 0.1),
+            mk_trade("XRP-5m", "reversal_0.3_0.6", "reversal", 110.0, 0.2),
+            mk_trade("XRP-5m", "high_prob_xrp", "high_prob", 120.0, -0.05),
+        ];
+        let summary = render_trade_summary(&trades);
+        // Both reversal trades on XRP-5m should collapse into one aggregated row (2 trades,
+        // total 0.3), not two separate rows — this is the point of aggregating by
+        // (market, strategy) rather than by the finer-grained variant_id.
+        assert!(summary.contains("| XRP-5m | reversal | 2 | 0.3000 |"));
+        assert!(summary.contains("| XRP-5m | high_prob | 1 | -0.0500 |"));
+        assert!(summary.contains("Total pnl this hour: 0.2500"));
+    }
+
+    #[test]
+    fn empty_trades_render_gracefully() {
+        assert!(render_trade_summary(&[]).contains("No trades fired"));
+        assert!(render_trade_table(&[]).contains("No trades fired"));
     }
 }

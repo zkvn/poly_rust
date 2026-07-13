@@ -27,6 +27,7 @@ pub async fn run_event_supervisor_for(
         log_key: format!("worldcup:{slug}"),
         snapshot_prefix: format!("worldcup:{slug}"),
         kind: "worldcup",
+        market_kind: crate::record::MarketKind::Worldcup,
         display_name: slug.clone(),
     };
     let slug_fn = move || slug.clone();
