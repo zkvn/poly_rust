@@ -3,6 +3,10 @@
 Rust price recorder for Polymarket CLOB markets. Streams live order-book, price, and Binance
 spot-price data and writes hourly Parquet files.
 
+Sibling crates in this repo: `trader/` (the live trading bot) and `siglab/` (standalone
+multi-market signal live-testing harness — paper trades only, crypto + weather markets; see
+`siglab/README.md`). Neither reads or writes the other's config/state.
+
 <details>
 <summary><strong>Git branch convention</strong></summary>
 
@@ -256,23 +260,20 @@ on the remote before the nightly sync runs.
 
 - **`trader/src/bin/live.rs` opens duplicate Binance + CLOB subscriptions per (asset, strategy)
   worker instead of per asset — found 2026-07-13, not fixed (currently dormant).** Found while
-  auditing `siglab`'s own version of this same bug. `live.rs` calls `spawn_binance_task`/
-  `PolySub::start` inside its per-worker loop (one worker per (asset, strategy), so e.g. ETH's
-  `reversal` + `high_prob` workers would each open their own separate connection to the same
-  feed) — but both call sites are gated behind `args.nats_url.is_none()`, and
+  auditing `siglab`'s own version of this same bug (same root cause: a per-token subscribe call
+  where a shared/batched one would do). Gated behind `args.nats_url.is_none()`, and
   `../docker-compose.yml`'s `trader` service always passes `--nats-url`, so production takes the
-  NATS pub/sub path instead (price_feed publishes once, every worker subscribes to the NATS
-  subject) and never hits the duplicating code. Real bug in the non-NATS fallback path, not
-  currently live. See `siglab/doc/local_resource_test_2026-07-13.md`'s cross-crate audit section.
+  NATS pub/sub path instead and never hits the duplicating code — real bug, not currently live.
+  Full writeup: `siglab/doc/incident_ws_2026-07-13.md` §3.
 
-- **`siglab`'s memory grows ~25 MiB/min under full load (24 crypto markets + 51 weather cities)
-  — found 2026-07-13, not root-caused.** Observed in a 15-minute Docker run after fixing the
-  (separate, resolved) CPU/subscription-batching bug; not confidently isolated to the weather
-  code specifically — an earlier, unfixed run showed a similar-shaped growth too. Not urgent at
-  this rate (hours to become a real problem), but `siglab` is now deployed as a long-running,
-  systemd-timer-driven autonomous process, so this needs either a root cause or a periodic-restart
-  mitigation before it's been running for days unattended. See
-  `siglab/doc/local_resource_test_2026-07-13.md`'s "Run 3" section.
+- **`siglab`'s memory grows under full load (24 crypto markets + 51 weather cities), not
+  conclusively root-caused — found 2026-07-13, investigated.** An isolation test (1 city vs 51
+  cities, same crypto config) confirmed growth scales with weather scope, but the pattern is
+  *stepped and plateauing*, not smooth/continuous — more consistent with allocator working-set
+  growth than an unbounded leak, though not confirmed over more than ~15 minutes. Not urgent at
+  the observed rate, but `siglab` is now a long-running, systemd-timer-driven autonomous process,
+  so this needs either longer-window monitoring to confirm the plateau or a periodic-restart
+  mitigation. Full writeup: `siglab/doc/incident_ws_2026-07-13.md` §2.
 
 </details>
 
