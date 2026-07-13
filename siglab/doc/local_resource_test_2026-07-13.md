@@ -161,3 +161,96 @@ generated report, staleness telemetry and the per-class correlated-silence fix (
 session — see `staleness.rs`) both behaved correctly with no false alarms despite the much
 larger, much quieter weather feed set. The elevated CPU is a capacity/cost finding, not a
 correctness or stability one.
+
+---
+
+## Run 3 (same day): batched-subscription fix, verified
+
+**The fix (mitigation option (a) from Run 2, chosen over sharding):** rewrote
+`siglab/src/weather.rs` to subscribe **once per city** (batching that city's ~11 bucket
+tokens into a single `subscribe_best_bid_ask`/`subscribe_prices` call each, demuxed locally
+by `asset_id`) instead of once per bucket. ~51 cities × 2 calls ≈ 102 subscriptions instead
+of ~1,050 — mirrors `price_feed/src/collect.rs`'s `spawn_bba_task`, which already batches
+all of its tokens into one call per poll cycle. Confirmed against Polymarket's own WS docs
+(`docs.polymarket.com/developers/CLOB/websocket/wss-overview`, checked 2026-07-13): the
+market channel is explicitly designed for one connection subscribed to many `assets_ids` at
+once, modifiable without reconnecting — this was a bug in how siglab was calling the SDK,
+not a limitation of the API itself.
+
+**Result — real, large improvement:** 15-minute post-fix run (87 samples after warmup),
+same 24 crypto markets + 51 weather cities:
+
+| Metric | Run 2 (per-bucket subscribe) | Run 3 (per-city batched) |
+|---|---|---|
+| CPU avg | 221% | **44%** |
+| CPU max | 369% | **83%** |
+
+Roughly a 5x reduction — doesn't hit the full ~10x subscription-count reduction exactly
+(some fixed per-message-type overhead doesn't scale down with subscription count), but a
+clear, real fix, not a rounding difference.
+
+**New finding from this run, not yet resolved: memory grew steadily and close to linearly
+throughout the 15-minute window** — 50.9 MiB → 434.2 MiB, roughly +25 MiB/min, with no
+sample showing a decrease (checked every ~2 minutes). This is a different, separate issue
+from the CPU one and **is not confidently root-caused yet**:
+
+- It's not obviously the weather batching change itself — Run 2 (before this fix) also
+  showed growth over its sampled window (79 → 335 MiB) before an anomalous drop back to
+  23 MiB that's more consistent with the allocator releasing large freed blocks back to the
+  OS than with a clean restart (`RestartCount` stayed 0 in both runs). So *some* growth
+  pattern predates this session's batching fix — it isn't confidently new.
+- At ~25 MiB/min, this would take several hours to become a real problem (multi-GB), not
+  minutes — not urgent for this dev-box deployment, but real enough that an "unattended for
+  days" deployment (which is exactly what this is now, per the systemd timer) needs this
+  either fixed or watched.
+- **Not investigated further in this session** — flagging honestly rather than guessing at
+  a fix. Candidate next steps if it recurs: heap-profile the container (e.g. `dhat` or
+  `heaptrack` in a debug build), or bisect by running crypto-only vs weather-only to isolate
+  which side it correlates with.
+- **Immediate mitigation, not yet applied:** `docker-compose.yml` could add a memory limit
+  + `restart: unless-stopped` (already has the restart policy) so a slow leak self-heals via
+  restart rather than growing unbounded — deferred pending actually confirming this is a
+  leak and not, e.g., legitimate steady-state buffer growth that plateaus past 15 minutes.
+
+Added to `README.md`'s `## TODO` per this project's convention for deferred/skipped items.
+
+---
+
+## Cross-crate audit: are the same bugs in `price_feed` or `trader`? (2026-07-13)
+
+Requested check after the CPU/subscription-batching and duplicate-connection bugs above
+were found in siglab's own (new) code. Read the actual source in both sibling crates rather
+than assuming — read-only, nothing in `price_feed/` or `trader/` was modified.
+
+**`price_feed` — clean, does not have either bug:**
+- **Subscription batching:** `price_feed/src/collect.rs`'s `spawn_book_task`/`spawn_bba_task`
+  already batch every currently-relevant token into one `subscribe_orderbook`/
+  `subscribe_best_bid_ask`/`subscribe_prices` call per slot-rotation cycle (`ids.clone()`/
+  `up_ids.clone()` built from *all* configured assets, one call each, demuxed locally via a
+  `map: Vec<(U256, usize, bool)>` lookup) — exactly the pattern siglab's weather.rs now
+  follows after this session's fix, not the per-token pattern it had before.
+- **Duplicate Binance connections:** `spawn_binance_task` is called once per *asset* (not
+  per duration/strategy), with an explicit comment confirming this is deliberate: "Binance
+  feed (asset-level, period-independent — one WS + one writer per asset, shared across
+  durations". No fix needed.
+
+**`trader/src/bin/live.rs` — has the same pattern as both siglab bugs, but currently
+dormant in production:**
+- Both the Binance subscription (`spawn_binance_task`) and the direct Poly/CLOB subscription
+  (`PolySub::start`) are called inside a loop over `assets` where each entry is one
+  **(asset, strategy) worker**, not one per asset — e.g. ETH currently runs both `reversal`
+  and `high_prob` strategies (`trader/config/strategy_20260709.toml`'s `[strategies]` table),
+  so each would open its own separate Binance connection and its own separate CLOB
+  subscription to the *same* token, exactly like siglab's pre-fix duplication.
+- **This code path does not run in the actual production deployment.** Both subscriptions
+  are gated behind `if args.nats_url.is_none()` / `if let Some(ref clob) = clob` (where
+  `clob` is only `Some` when `nats_url` is `None`), and `../docker-compose.yml`'s `trader`
+  service always passes `--nats-url nats://localhost:4222`. In that (production) mode,
+  price_feed publishes Binance/Poly ticks to NATS once, and every trader worker subscribes
+  to the NATS subject — NATS pub/sub is natively efficient at this fan-out, so the
+  duplication only matters in the direct-WS fallback path, which production never takes.
+- **Not fixed here** — real bug, but dormant given current deployment config, and
+  `trader/`/`price_feed/` are out of scope to modify without explicit go-ahead per this
+  session's standing "don't touch the other crates" boundary. Flagged in `README.md`'s
+  `## TODO` for whoever next touches `live.rs`'s non-NATS path (e.g. if it's ever used for
+  local testing without a running NATS server, or if NATS is ever removed).

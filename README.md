@@ -254,6 +254,26 @@ on the remote before the nightly sync runs.
   unfilled for this window — btc_5mins only records BTC. A separate ~6.4h gap on 2026-07-03
   08:15–14:38 HKT (unrelated collector restart) was backfilled the same way and same day.
 
+- **`trader/src/bin/live.rs` opens duplicate Binance + CLOB subscriptions per (asset, strategy)
+  worker instead of per asset — found 2026-07-13, not fixed (currently dormant).** Found while
+  auditing `siglab`'s own version of this same bug. `live.rs` calls `spawn_binance_task`/
+  `PolySub::start` inside its per-worker loop (one worker per (asset, strategy), so e.g. ETH's
+  `reversal` + `high_prob` workers would each open their own separate connection to the same
+  feed) — but both call sites are gated behind `args.nats_url.is_none()`, and
+  `../docker-compose.yml`'s `trader` service always passes `--nats-url`, so production takes the
+  NATS pub/sub path instead (price_feed publishes once, every worker subscribes to the NATS
+  subject) and never hits the duplicating code. Real bug in the non-NATS fallback path, not
+  currently live. See `siglab/doc/local_resource_test_2026-07-13.md`'s cross-crate audit section.
+
+- **`siglab`'s memory grows ~25 MiB/min under full load (24 crypto markets + 51 weather cities)
+  — found 2026-07-13, not root-caused.** Observed in a 15-minute Docker run after fixing the
+  (separate, resolved) CPU/subscription-batching bug; not confidently isolated to the weather
+  code specifically — an earlier, unfixed run showed a similar-shaped growth too. Not urgent at
+  this rate (hours to become a real problem), but `siglab` is now deployed as a long-running,
+  systemd-timer-driven autonomous process, so this needs either a root cause or a periodic-restart
+  mitigation before it's been running for days unattended. See
+  `siglab/doc/local_resource_test_2026-07-13.md`'s "Run 3" section.
+
 </details>
 
 <details>

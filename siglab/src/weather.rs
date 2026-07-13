@@ -2,33 +2,47 @@
 //! through `trader::machine::Machine`. Every temperature bucket really is its own
 //! independent binary Yes/No CLOB market (confirmed live via Gamma, see
 //! `studies/weather/weather_poly_2026-07-12.md` and `plan_weather_bot.md` §1), so
-//! subscribing to one is just `spawn_poly_task`/`PolySub` again — no new plumbing needed
-//! there.
+//! subscribing to one is structurally the same as any crypto Up/Down token.
 //!
 //! What's deliberately *not* done here: running these through `Machine`. `Machine::
 //! cycle_close()` resolves a held position by comparing `last_binance` against
 //! `cycle_open_binance` — correct for crypto (that comparison *is* the market's real
 //! resolution rule), but wrong for weather, where the real resolution is the relevant
-//! weather station's actual reading, not a price-momentum proxy. Feeding a weather bucket's
-//! own price into `on_binance` (as a stand-in `delta_pct` reference, since there's no
-//! Chainlink-style feed) and then calling `cycle_close()` on it would silently fabricate
-//! win/loss labels from momentum instead of ground truth — worse than not testing a weather
-//! strategy at all. Real weather resolution needs its own Yes/No-aware Gamma poll (`Machine`
-//! only knows "UP"/"DOWN" outcome labels) and is real, deferred work — see
-//! `plan_weather_bot.md` §5 Phase 2/3. Until then, this module tracks live prices and feed
-//! health only, which is enough for the hourly report's "what's the market currently
-//! pricing" signal without inventing fake trade outcomes.
+//! weather station's actual reading, not a price-momentum proxy. Real weather resolution
+//! needs its own Yes/No-aware Gamma poll (`Machine` only knows "UP"/"DOWN" outcome labels)
+//! and is real, deferred work — see `plan_weather_bot.md` §5 Phase 2/3. Until then, this
+//! module tracks live prices and feed health only.
+//!
+//! **Subscription strategy — batched per city, not one call per bucket.** An earlier
+//! version called `PolySub::start`/`spawn_poly_task` once per bucket token (~525 tokens
+//! across 51 cities → ~1,050 individual `subscribe_best_bid_ask`/`subscribe_prices` calls).
+//! That caused sustained 200-370% CPU in a live Docker run — traced to
+//! `polymarket_client_sdk_v2`'s `ConnectionManager`, which holds one `broadcast::channel`
+//! per WS connection and hands every `subscribe_*()` call its own receiver on that *same*
+//! channel, filtering client-side; with ~1,050 receivers all filtering the same broadcast,
+//! cost is O(subscriptions × message rate). Polymarket's own WS docs
+//! (docs.polymarket.com/developers/CLOB/websocket/wss-overview, checked 2026-07-13) confirm
+//! the market channel is designed for **one connection subscribed to many `assets_ids` at
+//! once**, modifiable without reconnecting — `price_feed/src/collect.rs`'s
+//! `spawn_bba_task`/`spawn_book_task` already follow this (one batched subscribe call per
+//! poll cycle, demuxed locally by `asset_id`). This module now follows the same pattern:
+//! one `subscribe_best_bid_ask`/`subscribe_prices` call per city (not per bucket), covering
+//! that city's ~11 tokens in one call each, demultiplexed by `asset_id` into per-bucket
+//! snapshots/staleness updates. ~51 cities × 2 calls ≈ 102 subscriptions instead of ~1,050
+//! — a ~10x reduction, while staying scoped per-city so an hourly rediscovery only needs to
+//! replace one city's subscription, not a single global one covering everything.
 
+use std::collections::HashMap;
 use std::str::FromStr as _;
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, Utc};
+use futures::{Stream, StreamExt as _};
 use polymarket_client_sdk_v2::clob::ws::Client as ClobWsClient;
 use polymarket_client_sdk_v2::types::U256;
 use tokio::sync::mpsc;
 
-use trader::marketdata::{PolySub, now_secs_f64};
-use trader::types::PolyTick;
+use trader::marketdata::now_secs_f64;
 
 use crate::market::StalenessTick;
 use crate::snapshot::{MarketSnapshot, SharedSnapshots, update as update_snapshot};
@@ -37,6 +51,10 @@ use crate::snapshot::{MarketSnapshot, SharedSnapshots, update as update_snapshot
 pub struct Bucket {
     pub label: String, // groupItemTitle, e.g. "33°C" or "27°C or below"
     pub yes_token: U256,
+}
+
+fn d2f(d: &polymarket_client_sdk_v2::types::Decimal) -> f64 {
+    d.to_string().parse::<f64>().unwrap_or(f64::NAN)
 }
 
 fn month_name(m: u32) -> &'static str {
@@ -116,40 +134,90 @@ pub async fn fetch_buckets(http: &reqwest::Client, city: &str) -> Result<Option<
     Ok(Some(buckets))
 }
 
-/// One bucket's tick-consumer loop — spawned once per discovered bucket, one dedicated
-/// mpsc channel each (simpler and more robust than fanning many buckets into one shared
-/// channel and trying to disambiguate ticks post-hoc, since `PolyTick` itself doesn't carry
-/// its source token id).
-async fn run_bucket(
+/// Subscribes once (per reconnect attempt) for *all* of `ids`, merges `best_bid_ask` +
+/// `price_change`, and yields `(asset_id, up_price, down_price, server_ts_ms)` — the batched
+/// analogue of `trader::marketdata::spawn_poly_task`, which only handles one asset_id.
+fn merged_price_stream(
+    clob: &ClobWsClient,
+    ids: Vec<U256>,
+) -> Result<impl Stream<Item = (U256, f64, f64, i64)> + use<>> {
+    let bba = clob.subscribe_best_bid_ask(ids.clone())?;
+    let pc = clob.subscribe_prices(ids)?;
+
+    let bba_u = bba.filter_map(|r| async move {
+        r.ok()
+            .map(|m| (m.asset_id, d2f(&m.best_bid), d2f(&m.best_ask), m.timestamp))
+    });
+    let pc_u = pc.flat_map(|r| {
+        let items: Vec<(U256, f64, f64, i64)> = match r {
+            Ok(p) => {
+                let ts = p.timestamp;
+                p.price_changes
+                    .into_iter()
+                    .filter_map(move |e| match (e.best_bid, e.best_ask) {
+                        (Some(b), Some(a)) => Some((e.asset_id, d2f(&b), d2f(&a), ts)),
+                        _ => None,
+                    })
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        futures::stream::iter(items)
+    });
+
+    Ok(futures::stream::select(Box::pin(bba_u), Box::pin(pc_u)))
+}
+
+/// One city's live feed: batch-subscribes every currently-discovered bucket's Yes token in
+/// a single pair of calls, demuxes incoming ticks by `asset_id` via `labels`, and publishes
+/// snapshot/staleness updates. Reconnects (re-subscribing the same `ids`) on stream close.
+async fn run_city_feed(
     city: String,
-    label: String,
     clob: ClobWsClient,
-    yes_token: U256,
+    ids: Vec<U256>,
+    labels: HashMap<U256, String>,
     snapshots: SharedSnapshots,
     stale_tx: mpsc::UnboundedSender<StalenessTick>,
 ) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<PolyTick>();
-    let _sub = PolySub::start(&clob, yes_token, tx); // held for its Drop (aborts on task exit)
-    let key = format!("weather:{city}:{label}");
-    while let Some(tick) = rx.recv().await {
-        let _ = stale_tx.send((key.clone(), "poly", (tick.ts * 1000.0) as i64));
-        update_snapshot(
-            &snapshots,
-            &key,
-            MarketSnapshot {
-                kind: "weather",
-                label: format!("{city}: {label}"),
-                up_price: tick.up,
-                dn_price: tick.dn,
-                last_tick_ms: (now_secs_f64() * 1000.0) as i64,
-            },
-        );
+    loop {
+        match merged_price_stream(&clob, ids.clone()) {
+            Ok(stream) => {
+                let mut s = Box::pin(stream);
+                while let Some((asset_id, bid, ask, ts_ms)) = s.next().await {
+                    if !bid.is_finite() || !ask.is_finite() || bid <= 0.0 || ask <= 0.0 {
+                        continue;
+                    }
+                    let Some(label) = labels.get(&asset_id) else {
+                        continue; // message for a token we didn't ask about — ignore
+                    };
+                    let up = (bid + ask) / 2.0;
+                    let key = format!("weather:{city}:{label}");
+                    let _ = stale_tx.send((key.clone(), "poly", ts_ms));
+                    update_snapshot(
+                        &snapshots,
+                        &key,
+                        MarketSnapshot {
+                            kind: "weather",
+                            label: format!("{city}: {label}"),
+                            up_price: up,
+                            dn_price: 1.0 - up,
+                            last_tick_ms: (now_secs_f64() * 1000.0) as i64,
+                        },
+                    );
+                }
+                eprintln!("[weather:{city}] price stream closed, reconnecting…");
+            }
+            Err(e) => {
+                eprintln!("[weather:{city}] subscribe failed: {e:#}, retrying…");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 
 /// Entry point `main.rs` spawns once per configured city: (re)discovers today's buckets on
 /// `refresh_interval_secs` (handles the day rolling over and any bucket-set changes), and
-/// spawns/replaces one `run_bucket` task per discovered bucket each time. Runs forever;
+/// replaces the single batched `run_city_feed` task each time buckets change. Runs forever;
 /// errors are logged, not propagated, since one city's transient failure shouldn't take
 /// down every other city's monitoring.
 pub async fn run_city_supervisor(
@@ -160,7 +228,7 @@ pub async fn run_city_supervisor(
     stale_tx: mpsc::UnboundedSender<StalenessTick>,
     refresh_interval_secs: u64,
 ) {
-    let mut bucket_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut feed_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut refresh = tokio::time::interval(std::time::Duration::from_secs(refresh_interval_secs));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -168,27 +236,26 @@ pub async fn run_city_supervisor(
         refresh.tick().await;
         match fetch_buckets(&http, &city).await {
             Ok(Some(buckets)) if !buckets.is_empty() => {
-                eprintln!("[weather:{city}] {} bucket(s) discovered", buckets.len());
-                for t in bucket_tasks.drain(..) {
+                eprintln!(
+                    "[weather:{city}] {} bucket(s) discovered, batching into 1 subscribe call",
+                    buckets.len()
+                );
+                if let Some(t) = feed_task.take() {
                     t.abort();
                 }
-                for b in buckets {
-                    let (city, label, clob, snapshots, stale_tx) = (
-                        city.clone(),
-                        b.label.clone(),
-                        clob.clone(),
-                        snapshots.clone(),
-                        stale_tx.clone(),
-                    );
-                    bucket_tasks.push(tokio::spawn(run_bucket(
-                        city,
-                        label,
-                        clob,
-                        b.yes_token,
-                        snapshots,
-                        stale_tx,
-                    )));
-                }
+                let ids: Vec<U256> = buckets.iter().map(|b| b.yes_token).collect();
+                let labels: HashMap<U256, String> = buckets
+                    .into_iter()
+                    .map(|b| (b.yes_token, b.label))
+                    .collect();
+                feed_task = Some(tokio::spawn(run_city_feed(
+                    city.clone(),
+                    clob.clone(),
+                    ids,
+                    labels,
+                    snapshots.clone(),
+                    stale_tx.clone(),
+                )));
             }
             Ok(Some(_)) => {
                 eprintln!(
