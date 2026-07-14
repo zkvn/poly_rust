@@ -220,6 +220,399 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 
 **Total pnl: 0.1358**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+| BNB-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.1126 |
+| BNB-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.0062 |
+| BNB-15m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.1126 |
+| BNB-15m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0062 |
+| BNB-15m | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0714 |
+| BNB-15m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.1126 |
+| BNB-15m | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0062 |
+| BNB-4h | reversal_0.2_0.55 | 1 | 1 | 0 | 0 | -0.4286 |
+| BNB-4h | reversal_0.2_0.6 | 1 | 1 | 0 | 0 | -0.4286 |
+| BNB-4h | reversal_0.2_0.65 | 1 | 1 | 0 | 0 | -0.4286 |
+| BNB-4h | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.0909 |
+| BNB-4h | reversal_0.2_0.75 | 1 | 1 | 0 | 0 | -0.3947 |
+| BNB-4h | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1411 |
+| BNB-4h | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0494 |
+| BNB-4h | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0494 |
+| BNB-5m | reversal_0.2_0.55 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.2_0.6 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.2_0.65 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.2_0.7 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.2_0.75 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.2_0.8 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.3_0.55 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.3_0.6 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.3_0.65 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.3_0.7 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.3_0.75 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.3_0.8 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.4_0.55 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.4_0.6 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.4_0.65 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.4_0.7 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.4_0.75 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-5m | reversal_0.4_0.8 | 2 | 0 | 1 | 0 | 0.1398 |
+| BNB-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1235 |
+| BNB-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.1235 |
+| BNB-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.1235 |
+| BTC-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0315 |
+| BTC-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0315 |
+| BTC-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| BTC-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.1103 |
+| BTC-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0662 |
+| BTC-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.0124 |
+| BTC-15m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0315 |
+| BTC-15m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0315 |
+| BTC-15m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| BTC-15m | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.1103 |
+| BTC-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.0662 |
+| BTC-15m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0124 |
+| BTC-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0940 |
+| BTC-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0940 |
+| BTC-15m | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | 0.0625 |
+| BTC-15m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | 0.1728 |
+| BTC-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | 0.0070 |
+| BTC-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.1739 |
+| BTC-4h | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0511 |
+| BTC-4h | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.0511 |
+| BTC-4h | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0511 |
+| BTC-4h | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0511 |
+| BTC-5m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.2_0.75 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.2_0.8 | 3 | 0 | 3 | 0 | 0.1096 |
+| BTC-5m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.2853 |
+| BTC-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.1096 |
+| BTC-5m | reversal_0.4_0.55 | 4 | 0 | 4 | 0 | 0.2167 |
+| BTC-5m | reversal_0.4_0.6 | 4 | 0 | 4 | 0 | 0.2167 |
+| BTC-5m | reversal_0.4_0.65 | 4 | 0 | 4 | 0 | 0.2167 |
+| BTC-5m | reversal_0.4_0.7 | 4 | 0 | 4 | 0 | 0.2167 |
+| BTC-5m | reversal_0.4_0.75 | 4 | 0 | 4 | 0 | 0.2167 |
+| BTC-5m | reversal_0.4_0.8 | 4 | 0 | 4 | 0 | 0.0410 |
+| BTC-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0426 |
+| BTC-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| BTC-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0556 |
+| BTC-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0426 |
+| BTC-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| BTC-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.0556 |
+| BTC-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.1481 |
+| BTC-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.0387 |
+| BTC-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.0387 |
+| BTC-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0556 |
+| DOGE-15m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | -0.0434 |
+| DOGE-15m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | -0.0434 |
+| DOGE-15m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | -0.0434 |
+| DOGE-15m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | -0.0720 |
+| DOGE-15m | reversal_0.2_0.75 | 3 | 1 | 2 | 0 | -0.4267 |
+| DOGE-15m | reversal_0.2_0.8 | 3 | 0 | 3 | 0 | 0.0128 |
+| DOGE-15m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | -0.0434 |
+| DOGE-15m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | -0.0434 |
+| DOGE-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | -0.0434 |
+| DOGE-15m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | -0.0720 |
+| DOGE-15m | reversal_0.3_0.75 | 3 | 1 | 2 | 0 | -0.4267 |
+| DOGE-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.0128 |
+| DOGE-15m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | 0.2687 |
+| DOGE-15m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | 0.2687 |
+| DOGE-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | 0.2687 |
+| DOGE-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.2401 |
+| DOGE-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.1149 |
+| DOGE-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.0989 |
+| DOGE-4h | reversal_0.2_0.55 | 1 | 1 | 0 | 0 | -0.4762 |
+| DOGE-4h | reversal_0.2_0.6 | 1 | 1 | 0 | 0 | -0.4762 |
+| DOGE-4h | reversal_0.2_0.65 | 1 | 1 | 0 | 0 | -0.4580 |
+| DOGE-4h | reversal_0.2_0.7 | 1 | 1 | 0 | 0 | -0.4255 |
+| DOGE-4h | reversal_0.2_0.75 | 1 | 1 | 0 | 0 | -0.3947 |
+| DOGE-4h | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.0248 |
+| DOGE-4h | reversal_0.3_0.55 | 1 | 1 | 0 | 0 | -0.4762 |
+| DOGE-4h | reversal_0.3_0.6 | 1 | 1 | 0 | 0 | -0.4762 |
+| DOGE-4h | reversal_0.3_0.65 | 1 | 1 | 0 | 0 | -0.4580 |
+| DOGE-4h | reversal_0.3_0.7 | 1 | 1 | 0 | 0 | -0.4255 |
+| DOGE-4h | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3947 |
+| DOGE-4h | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0248 |
+| DOGE-5m | reversal_0.2_0.55 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.2_0.6 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.2_0.65 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.2_0.7 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.2_0.75 | 4 | 0 | 4 | 0 | 0.3420 |
+| DOGE-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | 0.0475 |
+| DOGE-5m | reversal_0.3_0.55 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.3_0.6 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.3_0.65 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.3_0.7 | 4 | 0 | 3 | 1 | 0.4752 |
+| DOGE-5m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | 0.3420 |
+| DOGE-5m | reversal_0.3_0.8 | 4 | 0 | 4 | 0 | 0.0475 |
+| DOGE-5m | reversal_0.4_0.55 | 7 | 0 | 5 | 2 | 0.3009 |
+| DOGE-5m | reversal_0.4_0.6 | 7 | 0 | 5 | 2 | 0.3009 |
+| DOGE-5m | reversal_0.4_0.65 | 7 | 0 | 5 | 2 | 0.3009 |
+| DOGE-5m | reversal_0.4_0.7 | 7 | 0 | 5 | 2 | 0.2468 |
+| DOGE-5m | reversal_0.4_0.75 | 7 | 0 | 5 | 2 | 0.8033 |
+| DOGE-5m | reversal_0.4_0.8 | 7 | 0 | 7 | 0 | 0.3957 |
+| DOGE-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.1473 |
+| DOGE-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.1473 |
+| DOGE-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.2254 |
+| DOGE-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.2254 |
+| DOGE-hourly-et | reversal_0.2_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
+| DOGE-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.2840 |
+| DOGE-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.1473 |
+| DOGE-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.1473 |
+| DOGE-hourly-et | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.2254 |
+| DOGE-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.2254 |
+| DOGE-hourly-et | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
+| DOGE-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.2840 |
+| DOGE-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.1563 |
+| DOGE-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.1563 |
+| DOGE-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.2254 |
+| DOGE-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.2254 |
+| DOGE-hourly-et | reversal_0.4_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
+| DOGE-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.2840 |
+| ETH-15m | reversal_0.2_0.55 | 2 | 0 | 2 | 0 | 0.0547 |
+| ETH-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | 0.0547 |
+| ETH-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | -0.0458 |
+| ETH-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0567 |
+| ETH-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | 0.0530 |
+| ETH-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | -0.0372 |
+| ETH-15m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | 0.0547 |
+| ETH-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | 0.0547 |
+| ETH-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | -0.0458 |
+| ETH-15m | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0567 |
+| ETH-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | 0.0530 |
+| ETH-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.0372 |
+| ETH-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0547 |
+| ETH-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0547 |
+| ETH-15m | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | -0.0458 |
+| ETH-15m | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.0567 |
+| ETH-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | 0.0530 |
+| ETH-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.0372 |
+| ETH-4h | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.1802 |
+| ETH-4h | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0076 |
+| ETH-4h | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0076 |
+| ETH-4h | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0197 |
+| ETH-4h | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0076 |
+| ETH-4h | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.0076 |
+| ETH-4h | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.0197 |
+| ETH-4h | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0357 |
+| ETH-4h | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0076 |
+| ETH-4h | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0076 |
+| ETH-4h | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0197 |
+| ETH-4h | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0357 |
+| ETH-5m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.2_0.75 | 3 | 0 | 3 | 0 | 0.1202 |
+| ETH-5m | reversal_0.2_0.8 | 3 | 0 | 3 | 0 | 0.1182 |
+| ETH-5m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.1202 |
+| ETH-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.1182 |
+| ETH-5m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.2511 |
+| ETH-5m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | 0.1202 |
+| ETH-5m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | 0.1182 |
+| ETH-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0360 |
+| ETH-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
+| ETH-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| ETH-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1429 |
+| ETH-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0373 |
+| ETH-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0360 |
+| ETH-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
+| ETH-hourly-et | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| ETH-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.1429 |
+| ETH-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.0373 |
+| ETH-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0360 |
+| ETH-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
+| ETH-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| ETH-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.0284 |
+| ETH-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0373 |
+| SOL-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.0238 |
+| SOL-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0238 |
+| SOL-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | 0.1221 |
+| SOL-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | 0.0780 |
+| SOL-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | 0.1126 |
+| SOL-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | 0.0372 |
+| SOL-15m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | -0.1698 |
+| SOL-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | -0.1698 |
+| SOL-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | -0.0239 |
+| SOL-15m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | -0.0981 |
+| SOL-15m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.0472 |
+| SOL-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | -0.0706 |
+| SOL-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | -0.1698 |
+| SOL-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | -0.1698 |
+| SOL-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | -0.0239 |
+| SOL-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | -0.0981 |
+| SOL-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | 0.0472 |
+| SOL-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.0706 |
+| SOL-5m | reversal_0.2_0.55 | 4 | 0 | 4 | 0 | 0.3950 |
+| SOL-5m | reversal_0.2_0.6 | 4 | 0 | 4 | 0 | 0.3950 |
+| SOL-5m | reversal_0.2_0.65 | 4 | 0 | 4 | 0 | 0.3950 |
+| SOL-5m | reversal_0.2_0.7 | 4 | 0 | 4 | 0 | 0.2871 |
+| SOL-5m | reversal_0.2_0.75 | 5 | 0 | 5 | 0 | 0.4800 |
+| SOL-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | 0.3110 |
+| SOL-5m | reversal_0.3_0.55 | 5 | 0 | 5 | 0 | 0.4208 |
+| SOL-5m | reversal_0.3_0.6 | 5 | 0 | 5 | 0 | 0.4208 |
+| SOL-5m | reversal_0.3_0.65 | 5 | 0 | 5 | 0 | 0.4208 |
+| SOL-5m | reversal_0.3_0.7 | 5 | 0 | 5 | 0 | 0.3129 |
+| SOL-5m | reversal_0.3_0.75 | 6 | 0 | 6 | 0 | 0.5058 |
+| SOL-5m | reversal_0.3_0.8 | 5 | 0 | 5 | 0 | 0.2675 |
+| SOL-5m | reversal_0.4_0.55 | 5 | 0 | 5 | 0 | 0.4208 |
+| SOL-5m | reversal_0.4_0.6 | 5 | 0 | 5 | 0 | 0.4208 |
+| SOL-5m | reversal_0.4_0.65 | 5 | 0 | 5 | 0 | 0.4208 |
+| SOL-5m | reversal_0.4_0.7 | 5 | 0 | 5 | 0 | 0.3129 |
+| SOL-5m | reversal_0.4_0.75 | 6 | 0 | 6 | 0 | 0.5058 |
+| SOL-5m | reversal_0.4_0.8 | 5 | 0 | 5 | 0 | 0.2675 |
+| SOL-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0270 |
+| SOL-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0165 |
+| SOL-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.0076 |
+| SOL-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0426 |
+| SOL-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| SOL-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0497 |
+| SOL-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0270 |
+| SOL-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.0165 |
+| SOL-hourly-et | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.0076 |
+| SOL-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0426 |
+| SOL-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| SOL-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.0497 |
+| SOL-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0270 |
+| SOL-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.0165 |
+| SOL-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0076 |
+| SOL-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.0426 |
+| SOL-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| SOL-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0497 |
+| XRP-15m | reversal_0.2_0.55 | 2 | 0 | 2 | 0 | -0.0038 |
+| XRP-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | -0.0038 |
+| XRP-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | 0.0272 |
+| XRP-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | 0.1549 |
+| XRP-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | 0.0331 |
+| XRP-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | -0.2038 |
+| XRP-15m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | -0.0038 |
+| XRP-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | -0.0038 |
+| XRP-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | 0.0272 |
+| XRP-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | 0.1549 |
+| XRP-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | 0.0331 |
+| XRP-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.2038 |
+| XRP-15m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | -0.0322 |
+| XRP-15m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | -0.0322 |
+| XRP-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | -0.0012 |
+| XRP-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.1265 |
+| XRP-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.0976 |
+| XRP-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.1976 |
+| XRP-4h | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.0901 |
+| XRP-4h | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.0519 |
+| XRP-4h | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.0519 |
+| XRP-4h | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.1351 |
+| XRP-4h | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| XRP-4h | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0901 |
+| XRP-4h | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.0519 |
+| XRP-4h | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0519 |
+| XRP-4h | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1351 |
+| XRP-4h | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
+| XRP-5m | reversal_0.2_0.55 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0861 |
+| XRP-5m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | 0.0124 |
+| XRP-5m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.0861 |
+| XRP-5m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | 0.0124 |
+| XRP-5m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | 0.0861 |
+| XRP-5m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0861 |
+| XRP-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.0124 |
+| XRP-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0087 |
+| XRP-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0331 |
+| XRP-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.0840 |
+| XRP-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.0426 |
+| XRP-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0263 |
+| XRP-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1030 |
+| XRP-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0087 |
+| XRP-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.0331 |
+| XRP-hourly-et | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.0840 |
+| XRP-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.0426 |
+| XRP-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.0263 |
+| XRP-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.1030 |
+| XRP-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0087 |
+| XRP-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.0331 |
+| XRP-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0288 |
+| XRP-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0000 |
+| XRP-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.1030 |
+| weather:houston:84-85°F | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.1802 |
+| weather:houston:84-85°F | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.1802 |
+| weather:houston:84-85°F | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.1802 |
+| weather:madrid:33°C | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.1261 |
+| weather:madrid:33°C | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.1261 |
+| weather:madrid:33°C | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.1261 |
+| weather:sao-paulo:17°C | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0450 |
+| weather:seattle:78-79°F | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0811 |
+| weather:warsaw:25°C | reversal_0.2_0.55 | 2 | 1 | 1 | 0 | -0.4411 |
+| weather:warsaw:25°C | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0661 |
+| weather:warsaw:25°C | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.1439 |
+| weather:warsaw:25°C | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1560 |
+| weather:warsaw:25°C | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0993 |
+| weather:warsaw:25°C | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0000 |
+| weather:warsaw:25°C | reversal_0.3_0.55 | 2 | 1 | 1 | 0 | -0.4411 |
+| weather:warsaw:25°C | reversal_0.3_0.6 | 2 | 0 | 1 | 1 | 0.3140 |
+| weather:warsaw:25°C | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | -0.3357 |
+| weather:warsaw:25°C | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | -0.3478 |
+| weather:warsaw:25°C | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | -0.2914 |
+| weather:warsaw:25°C | reversal_0.3_0.8 | 2 | 1 | 1 | 0 | -0.3727 |
+| weather:warsaw:25°C | reversal_0.4_0.55 | 5 | 1 | 3 | 1 | -0.6595 |
+| weather:warsaw:25°C | reversal_0.4_0.6 | 2 | 0 | 1 | 1 | 0.3140 |
+| weather:warsaw:25°C | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | -0.3357 |
+| weather:warsaw:25°C | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | -0.3478 |
+| weather:warsaw:25°C | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.2914 |
+| weather:warsaw:25°C | reversal_0.4_0.8 | 2 | 1 | 1 | 0 | -0.3727 |
+| weather:warsaw:26°C | reversal_0.2_0.55 | 2 | 1 | 1 | 0 | -0.5839 |
+| weather:warsaw:26°C | reversal_0.2_0.6 | 2 | 1 | 1 | 0 | -0.5839 |
+| weather:warsaw:26°C | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.1761 |
+| weather:warsaw:26°C | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1761 |
+| weather:warsaw:26°C | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0331 |
+| weather:warsaw:26°C | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0000 |
+| weather:warsaw:26°C | reversal_0.3_0.55 | 4 | 1 | 2 | 1 | -0.4738 |
+| weather:warsaw:26°C | reversal_0.3_0.6 | 4 | 1 | 2 | 1 | -0.4823 |
+| weather:warsaw:26°C | reversal_0.3_0.65 | 3 | 2 | 1 | 0 | -0.9710 |
+| weather:warsaw:26°C | reversal_0.3_0.7 | 3 | 2 | 1 | 0 | -0.9710 |
+| weather:warsaw:26°C | reversal_0.3_0.75 | 3 | 2 | 1 | 0 | -0.7565 |
+| weather:warsaw:26°C | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.0788 |
+| weather:warsaw:26°C | reversal_0.4_0.55 | 4 | 1 | 2 | 1 | -0.4738 |
+| weather:warsaw:26°C | reversal_0.4_0.6 | 4 | 1 | 2 | 1 | -0.4823 |
+| weather:warsaw:26°C | reversal_0.4_0.65 | 4 | 2 | 2 | 0 | -0.8271 |
+| weather:warsaw:26°C | reversal_0.4_0.7 | 4 | 2 | 2 | 0 | -0.8433 |
+| weather:warsaw:26°C | reversal_0.4_0.75 | 4 | 2 | 2 | 0 | -0.8353 |
+| weather:warsaw:26°C | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.0788 |
+| worldcup:world-cup-lionel-messi-goals-20260611144827122:9+ | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0167 |
+| worldcup:world-cup-lionel-messi-goals-20260611144827122:9+ | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0083 |
+
+**Total pnl: 0.1358**
+
 <details>
 <summary>BNB-15m — 15 trade(s), total pnl 0.2862</summary>
 
@@ -1297,6 +1690,333 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | XRP-hourly-et | reversal | 3 | 3 | 0 | 0 | -1.5789 |
 | weather:warsaw:25°C | reversal | 20 | 1 | 19 | 0 | -1.6913 |
 | weather:warsaw:26°C | reversal | 41 | 12 | 23 | 6 | -4.0126 |
+
+**Total pnl: -37.1839**
+
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+| BNB-15m | reversal_0.2_0.55 | 2 | 0 | 1 | 1 | 0.1388 |
+| BNB-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | -0.2510 |
+| BNB-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.1356 |
+| BNB-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1356 |
+| BNB-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.1356 |
+| BNB-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1356 |
+| BNB-15m | reversal_0.3_0.55 | 4 | 0 | 3 | 1 | -0.2443 |
+| BNB-15m | reversal_0.3_0.6 | 4 | 0 | 4 | 0 | -0.7020 |
+| BNB-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | -0.6459 |
+| BNB-15m | reversal_0.3_0.7 | 2 | 1 | 1 | 0 | -0.5611 |
+| BNB-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | -0.0892 |
+| BNB-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.1603 |
+| BNB-15m | reversal_0.4_0.55 | 6 | 0 | 5 | 1 | 0.1453 |
+| BNB-15m | reversal_0.4_0.6 | 6 | 0 | 6 | 0 | -0.4788 |
+| BNB-15m | reversal_0.4_0.65 | 6 | 0 | 6 | 0 | -0.6548 |
+| BNB-15m | reversal_0.4_0.7 | 4 | 1 | 3 | 0 | -0.5611 |
+| BNB-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.0892 |
+| BNB-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.0376 |
+| BNB-4h | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.4286 |
+| BNB-4h | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.4146 |
+| BNB-4h | reversal_0.2_0.7 | 1 | 1 | 0 | 0 | -0.4225 |
+| BNB-4h | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | -0.6895 |
+| BNB-4h | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | -0.6755 |
+| BNB-4h | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.2609 |
+| BNB-4h | reversal_0.3_0.7 | 2 | 2 | 0 | 0 | -0.8421 |
+| BNB-4h | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | -0.6895 |
+| BNB-4h | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | -0.6755 |
+| BNB-4h | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.2609 |
+| BNB-4h | reversal_0.4_0.7 | 2 | 2 | 0 | 0 | -0.8421 |
+| BNB-5m | reversal_0.2_0.55 | 3 | 0 | 2 | 1 | 0.2600 |
+| BNB-5m | reversal_0.2_0.6 | 3 | 0 | 2 | 1 | 0.2600 |
+| BNB-5m | reversal_0.2_0.65 | 3 | 0 | 2 | 1 | 0.2600 |
+| BNB-5m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | 0.1041 |
+| BNB-5m | reversal_0.2_0.75 | 3 | 0 | 3 | 0 | 0.0210 |
+| BNB-5m | reversal_0.2_0.8 | 3 | 0 | 3 | 0 | 0.0832 |
+| BNB-5m | reversal_0.3_0.55 | 3 | 0 | 2 | 1 | 0.2600 |
+| BNB-5m | reversal_0.3_0.6 | 4 | 0 | 2 | 2 | 0.4981 |
+| BNB-5m | reversal_0.3_0.65 | 4 | 0 | 2 | 2 | 0.4890 |
+| BNB-5m | reversal_0.3_0.7 | 4 | 0 | 4 | 0 | 0.2055 |
+| BNB-5m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | 0.0934 |
+| BNB-5m | reversal_0.3_0.8 | 4 | 0 | 4 | 0 | 0.0894 |
+| BNB-5m | reversal_0.4_0.55 | 5 | 0 | 4 | 1 | 0.3881 |
+| BNB-5m | reversal_0.4_0.6 | 6 | 0 | 4 | 2 | 0.6262 |
+| BNB-5m | reversal_0.4_0.65 | 6 | 0 | 4 | 2 | 0.6171 |
+| BNB-5m | reversal_0.4_0.7 | 6 | 0 | 6 | 0 | 0.3336 |
+| BNB-5m | reversal_0.4_0.75 | 6 | 0 | 6 | 0 | 0.2215 |
+| BNB-5m | reversal_0.4_0.8 | 6 | 0 | 6 | 0 | 0.2163 |
+| BNB-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.2743 |
+| BNB-hourly-et | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | -0.4098 |
+| BNB-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.1781 |
+| BNB-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1781 |
+| BNB-hourly-et | reversal_0.3_0.55 | 1 | 0 | 0 | 1 | 0.2239 |
+| BNB-hourly-et | reversal_0.3_0.6 | 2 | 0 | 1 | 1 | 0.1501 |
+| BNB-hourly-et | reversal_0.3_0.65 | 2 | 0 | 1 | 1 | 0.0458 |
+| BNB-hourly-et | reversal_0.3_0.7 | 2 | 1 | 1 | 0 | -0.5249 |
+| BNB-hourly-et | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3468 |
+| BNB-hourly-et | reversal_0.3_0.8 | 1 | 1 | 0 | 0 | -0.3468 |
+| BNB-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0901 |
+| BNB-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.0738 |
+| BNB-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.1781 |
+| BNB-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1781 |
+| BNB-hourly-et | reversal_0.4_0.75 | 1 | 1 | 0 | 0 | -0.3468 |
+| BNB-hourly-et | reversal_0.4_0.8 | 1 | 1 | 0 | 0 | -0.3468 |
+| BTC-15m | reversal_0.2_0.55 | 2 | 0 | 2 | 0 | -0.0445 |
+| BTC-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | -0.0445 |
+| BTC-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | -0.0445 |
+| BTC-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | -0.0445 |
+| BTC-15m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | -0.1569 |
+| BTC-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.3807 |
+| BTC-15m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | -0.0787 |
+| BTC-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | -0.0445 |
+| BTC-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1437 |
+| BTC-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.1569 |
+| BTC-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.3807 |
+| BTC-5m | reversal_0.2_0.55 | 4 | 0 | 1 | 3 | 0.8439 |
+| BTC-5m | reversal_0.2_0.6 | 4 | 0 | 1 | 3 | 0.8439 |
+| BTC-5m | reversal_0.2_0.65 | 5 | 0 | 1 | 4 | 0.8102 |
+| BTC-5m | reversal_0.2_0.7 | 5 | 0 | 3 | 2 | 0.8250 |
+| BTC-5m | reversal_0.2_0.75 | 5 | 0 | 3 | 2 | 0.5634 |
+| BTC-5m | reversal_0.2_0.8 | 5 | 0 | 4 | 1 | 0.3603 |
+| BTC-5m | reversal_0.3_0.55 | 4 | 0 | 1 | 3 | 0.8439 |
+| BTC-5m | reversal_0.3_0.6 | 4 | 0 | 1 | 3 | 0.8439 |
+| BTC-5m | reversal_0.3_0.65 | 5 | 0 | 1 | 4 | 0.8102 |
+| BTC-5m | reversal_0.3_0.7 | 5 | 0 | 3 | 2 | 0.8250 |
+| BTC-5m | reversal_0.3_0.75 | 5 | 0 | 3 | 2 | 0.5634 |
+| BTC-5m | reversal_0.3_0.8 | 5 | 0 | 4 | 1 | 0.3603 |
+| BTC-5m | reversal_0.4_0.55 | 7 | 0 | 4 | 3 | 0.4561 |
+| BTC-5m | reversal_0.4_0.6 | 7 | 0 | 4 | 3 | 0.4561 |
+| BTC-5m | reversal_0.4_0.65 | 8 | 0 | 4 | 4 | 0.4224 |
+| BTC-5m | reversal_0.4_0.7 | 7 | 0 | 5 | 2 | 0.3243 |
+| BTC-5m | reversal_0.4_0.75 | 7 | 1 | 4 | 2 | 0.1528 |
+| BTC-5m | reversal_0.4_0.8 | 6 | 0 | 5 | 1 | 0.5198 |
+| BTC-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.0541 |
+| BTC-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0331 |
+| BTC-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.1325 |
+| BTC-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0782 |
+| BTC-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.2158 |
+| BTC-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.2158 |
+| BTC-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.2158 |
+| BTC-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.2270 |
+| BTC-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.1325 |
+| BTC-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0782 |
+| DOGE-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0342 |
+| DOGE-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0902 |
+| DOGE-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.0902 |
+| DOGE-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1024 |
+| DOGE-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.1024 |
+| DOGE-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1024 |
+| DOGE-15m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | -0.0915 |
+| DOGE-15m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | -0.2159 |
+| DOGE-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | -0.2159 |
+| DOGE-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | -0.1166 |
+| DOGE-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.1024 |
+| DOGE-15m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.1024 |
+| DOGE-15m | reversal_0.4_0.55 | 4 | 0 | 4 | 0 | -0.1545 |
+| DOGE-15m | reversal_0.4_0.6 | 4 | 0 | 4 | 0 | -0.2789 |
+| DOGE-15m | reversal_0.4_0.65 | 4 | 0 | 4 | 0 | -0.2922 |
+| DOGE-15m | reversal_0.4_0.7 | 4 | 0 | 4 | 0 | -0.2041 |
+| DOGE-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.2030 |
+| DOGE-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.3100 |
+| DOGE-4h | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.1339 |
+| DOGE-4h | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.2164 |
+| DOGE-4h | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.1690 |
+| DOGE-4h | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | -0.1125 |
+| DOGE-4h | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0214 |
+| DOGE-4h | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | -0.1950 |
+| DOGE-4h | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | -0.2344 |
+| DOGE-4h | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.0654 |
+| DOGE-5m | high_prob_doge | 2 | 0 | 0 | 0 | -0.9418 |
+| DOGE-5m | reversal_0.2_0.55 | 5 | 0 | 4 | 1 | 0.0554 |
+| DOGE-5m | reversal_0.2_0.6 | 5 | 0 | 5 | 0 | -0.1114 |
+| DOGE-5m | reversal_0.2_0.65 | 5 | 0 | 5 | 0 | -0.1280 |
+| DOGE-5m | reversal_0.2_0.7 | 5 | 0 | 5 | 0 | -0.2245 |
+| DOGE-5m | reversal_0.2_0.75 | 4 | 0 | 4 | 0 | -0.1217 |
+| DOGE-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | -0.2338 |
+| DOGE-5m | reversal_0.3_0.55 | 6 | 0 | 5 | 1 | 0.1301 |
+| DOGE-5m | reversal_0.3_0.6 | 6 | 0 | 6 | 0 | -0.0367 |
+| DOGE-5m | reversal_0.3_0.65 | 6 | 0 | 6 | 0 | -0.0533 |
+| DOGE-5m | reversal_0.3_0.7 | 6 | 0 | 6 | 0 | -0.1498 |
+| DOGE-5m | reversal_0.3_0.75 | 5 | 0 | 5 | 0 | -0.0470 |
+| DOGE-5m | reversal_0.3_0.8 | 5 | 0 | 5 | 0 | -0.1591 |
+| DOGE-5m | reversal_0.4_0.55 | 10 | 0 | 8 | 2 | 0.3424 |
+| DOGE-5m | reversal_0.4_0.6 | 10 | 0 | 9 | 1 | 0.1200 |
+| DOGE-5m | reversal_0.4_0.65 | 10 | 0 | 9 | 1 | 0.0115 |
+| DOGE-5m | reversal_0.4_0.7 | 10 | 0 | 9 | 1 | -0.1358 |
+| DOGE-5m | reversal_0.4_0.75 | 8 | 0 | 8 | 0 | -0.0915 |
+| DOGE-5m | reversal_0.4_0.8 | 9 | 0 | 9 | 0 | -0.1547 |
+| DOGE-hourly-et | reversal_0.2_0.55 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.2_0.6 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.2_0.65 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.2_0.7 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.2_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
+| DOGE-hourly-et | reversal_0.3_0.55 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.3_0.6 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.3_0.65 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.3_0.7 | 1 | 1 | 0 | 0 | -0.4167 |
+| DOGE-hourly-et | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
+| DOGE-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0915 |
+| DOGE-hourly-et | reversal_0.4_0.55 | 2 | 1 | 1 | 0 | -0.4943 |
+| DOGE-hourly-et | reversal_0.4_0.6 | 2 | 1 | 1 | 0 | -0.5090 |
+| DOGE-hourly-et | reversal_0.4_0.65 | 2 | 2 | 0 | 0 | -0.8363 |
+| DOGE-hourly-et | reversal_0.4_0.7 | 2 | 2 | 0 | 0 | -0.8363 |
+| DOGE-hourly-et | reversal_0.4_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
+| DOGE-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0915 |
+| ETH-15m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | -0.1197 |
+| ETH-15m | reversal_0.2_0.6 | 3 | 0 | 2 | 1 | 0.2183 |
+| ETH-15m | reversal_0.2_0.65 | 3 | 0 | 2 | 1 | 0.1753 |
+| ETH-15m | reversal_0.2_0.7 | 3 | 0 | 2 | 1 | -0.0405 |
+| ETH-15m | reversal_0.2_0.75 | 2 | 0 | 1 | 1 | 0.0521 |
+| ETH-15m | reversal_0.2_0.8 | 3 | 0 | 2 | 1 | -0.0494 |
+| ETH-15m | reversal_0.3_0.55 | 4 | 0 | 4 | 0 | -0.0842 |
+| ETH-15m | reversal_0.3_0.6 | 4 | 0 | 3 | 1 | 0.2538 |
+| ETH-15m | reversal_0.3_0.65 | 4 | 0 | 3 | 1 | 0.2108 |
+| ETH-15m | reversal_0.3_0.7 | 4 | 0 | 3 | 1 | -0.0050 |
+| ETH-15m | reversal_0.3_0.75 | 3 | 0 | 2 | 1 | 0.0876 |
+| ETH-15m | reversal_0.3_0.8 | 4 | 0 | 3 | 1 | -0.0139 |
+| ETH-15m | reversal_0.4_0.55 | 5 | 0 | 5 | 0 | -0.1618 |
+| ETH-15m | reversal_0.4_0.6 | 4 | 0 | 3 | 1 | 0.2663 |
+| ETH-15m | reversal_0.4_0.65 | 5 | 0 | 4 | 1 | 0.0990 |
+| ETH-15m | reversal_0.4_0.7 | 5 | 0 | 4 | 1 | -0.0547 |
+| ETH-15m | reversal_0.4_0.75 | 3 | 0 | 2 | 1 | -0.1731 |
+| ETH-15m | reversal_0.4_0.8 | 4 | 0 | 3 | 1 | -0.0139 |
+| ETH-4h | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.0360 |
+| ETH-4h | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0360 |
+| ETH-5m | high_prob_eth | 1 | 0 | 0 | 1 | 0.1257 |
+| ETH-5m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | 0.2089 |
+| ETH-5m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | 0.2089 |
+| ETH-5m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | 0.2089 |
+| ETH-5m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | 0.1917 |
+| ETH-5m | reversal_0.2_0.75 | 3 | 0 | 3 | 0 | 0.1141 |
+| ETH-5m | reversal_0.2_0.8 | 3 | 0 | 3 | 0 | 0.0238 |
+| ETH-5m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | 0.2089 |
+| ETH-5m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | 0.2089 |
+| ETH-5m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | 0.2089 |
+| ETH-5m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.1917 |
+| ETH-5m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.1141 |
+| ETH-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.0238 |
+| ETH-5m | reversal_0.4_0.55 | 7 | 1 | 6 | 0 | -0.4894 |
+| ETH-5m | reversal_0.4_0.6 | 7 | 1 | 6 | 0 | -0.4894 |
+| ETH-5m | reversal_0.4_0.65 | 7 | 1 | 6 | 0 | -0.4894 |
+| ETH-5m | reversal_0.4_0.7 | 6 | 1 | 5 | 0 | -0.5191 |
+| ETH-5m | reversal_0.4_0.75 | 6 | 1 | 5 | 0 | -0.6715 |
+| ETH-5m | reversal_0.4_0.8 | 4 | 0 | 4 | 0 | 0.1853 |
+| ETH-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.3363 |
+| ETH-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.1240 |
+| ETH-hourly-et | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.1221 |
+| ETH-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.1060 |
+| ETH-hourly-et | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0838 |
+| ETH-hourly-et | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0446 |
+| ETH-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.0413 |
+| ETH-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.2323 |
+| ETH-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0838 |
+| SOL-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.2156 |
+| SOL-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.2156 |
+| SOL-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | -0.1853 |
+| SOL-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | -0.1589 |
+| SOL-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | -0.2285 |
+| SOL-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.2156 |
+| SOL-15m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.2156 |
+| SOL-15m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.2156 |
+| SOL-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | -0.1853 |
+| SOL-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | -0.1589 |
+| SOL-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | -0.2285 |
+| SOL-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.3647 |
+| SOL-15m | reversal_0.4_0.55 | 1 | 1 | 0 | 0 | -0.5405 |
+| SOL-15m | reversal_0.4_0.6 | 1 | 1 | 0 | 0 | -0.4918 |
+| SOL-15m | reversal_0.4_0.65 | 2 | 1 | 1 | 0 | -0.4277 |
+| SOL-15m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | -0.1589 |
+| SOL-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.2285 |
+| SOL-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.3647 |
+| SOL-5m | reversal_0.2_0.55 | 5 | 0 | 3 | 2 | 0.0330 |
+| SOL-5m | reversal_0.2_0.6 | 4 | 0 | 3 | 1 | -0.2234 |
+| SOL-5m | reversal_0.2_0.65 | 5 | 0 | 4 | 1 | -0.0962 |
+| SOL-5m | reversal_0.2_0.7 | 5 | 0 | 4 | 1 | -0.3347 |
+| SOL-5m | reversal_0.2_0.75 | 5 | 0 | 4 | 1 | 0.1025 |
+| SOL-5m | reversal_0.2_0.8 | 4 | 0 | 3 | 1 | 0.1166 |
+| SOL-5m | reversal_0.3_0.55 | 5 | 0 | 3 | 2 | 0.0330 |
+| SOL-5m | reversal_0.3_0.6 | 4 | 0 | 3 | 1 | -0.2234 |
+| SOL-5m | reversal_0.3_0.65 | 5 | 0 | 4 | 1 | -0.0962 |
+| SOL-5m | reversal_0.3_0.7 | 5 | 0 | 4 | 1 | -0.3347 |
+| SOL-5m | reversal_0.3_0.75 | 5 | 0 | 4 | 1 | 0.1025 |
+| SOL-5m | reversal_0.3_0.8 | 4 | 0 | 3 | 1 | 0.1166 |
+| SOL-5m | reversal_0.4_0.55 | 5 | 0 | 2 | 3 | 0.3892 |
+| SOL-5m | reversal_0.4_0.6 | 4 | 0 | 2 | 2 | 0.1328 |
+| SOL-5m | reversal_0.4_0.65 | 5 | 0 | 3 | 2 | 0.2528 |
+| SOL-5m | reversal_0.4_0.7 | 5 | 1 | 3 | 1 | -0.6402 |
+| SOL-5m | reversal_0.4_0.75 | 5 | 1 | 3 | 1 | -0.1749 |
+| SOL-5m | reversal_0.4_0.8 | 4 | 1 | 2 | 1 | -0.1361 |
+| XRP-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0252 |
+| XRP-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | -0.0827 |
+| XRP-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | -0.2839 |
+| XRP-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | -0.1384 |
+| XRP-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.2093 |
+| XRP-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | -0.1846 |
+| XRP-15m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0252 |
+| XRP-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | -0.0827 |
+| XRP-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | -0.2839 |
+| XRP-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | -0.1384 |
+| XRP-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.2093 |
+| XRP-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.1846 |
+| XRP-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0095 |
+| XRP-15m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | -0.0984 |
+| XRP-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | -0.3450 |
+| XRP-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | -0.2519 |
+| XRP-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.2027 |
+| XRP-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.1846 |
+| XRP-5m | reversal_0.2_0.55 | 3 | 1 | 1 | 1 | -0.0269 |
+| XRP-5m | reversal_0.2_0.6 | 3 | 1 | 2 | 0 | -0.1987 |
+| XRP-5m | reversal_0.2_0.65 | 3 | 1 | 2 | 0 | -0.2070 |
+| XRP-5m | reversal_0.2_0.7 | 3 | 1 | 2 | 0 | -0.3772 |
+| XRP-5m | reversal_0.2_0.75 | 4 | 1 | 3 | 0 | -0.2815 |
+| XRP-5m | reversal_0.2_0.8 | 6 | 1 | 5 | 0 | -0.3472 |
+| XRP-5m | reversal_0.3_0.55 | 3 | 1 | 1 | 1 | -0.0269 |
+| XRP-5m | reversal_0.3_0.6 | 3 | 1 | 2 | 0 | -0.1987 |
+| XRP-5m | reversal_0.3_0.65 | 3 | 1 | 2 | 0 | -0.2070 |
+| XRP-5m | reversal_0.3_0.7 | 3 | 1 | 2 | 0 | -0.3772 |
+| XRP-5m | reversal_0.3_0.75 | 4 | 1 | 3 | 0 | -0.2815 |
+| XRP-5m | reversal_0.3_0.8 | 6 | 1 | 5 | 0 | -0.3472 |
+| XRP-5m | reversal_0.4_0.55 | 5 | 2 | 3 | 0 | -0.7118 |
+| XRP-5m | reversal_0.4_0.6 | 5 | 2 | 3 | 0 | -0.7118 |
+| XRP-5m | reversal_0.4_0.65 | 5 | 1 | 4 | 0 | -0.1477 |
+| XRP-5m | reversal_0.4_0.7 | 5 | 1 | 4 | 0 | -0.3179 |
+| XRP-5m | reversal_0.4_0.75 | 6 | 1 | 5 | 0 | -0.2882 |
+| XRP-5m | reversal_0.4_0.8 | 8 | 1 | 7 | 0 | -0.3722 |
+| XRP-hourly-et | reversal_0.2_0.55 | 1 | 1 | 0 | 0 | -0.5263 |
+| XRP-hourly-et | reversal_0.3_0.55 | 1 | 1 | 0 | 0 | -0.5263 |
+| XRP-hourly-et | reversal_0.4_0.55 | 1 | 1 | 0 | 0 | -0.5263 |
+| weather:warsaw:25°C | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0450 |
+| weather:warsaw:25°C | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | -0.3602 |
+| weather:warsaw:25°C | reversal_0.4_0.55 | 7 | 0 | 7 | 0 | -0.3631 |
+| weather:warsaw:25°C | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | -0.0151 |
+| weather:warsaw:25°C | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | -0.3062 |
+| weather:warsaw:25°C | reversal_0.4_0.7 | 2 | 1 | 1 | 0 | -0.4307 |
+| weather:warsaw:25°C | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.2857 |
+| weather:warsaw:25°C | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0247 |
+| weather:warsaw:26°C | reversal_0.2_0.55 | 2 | 0 | 0 | 2 | 0.5334 |
+| weather:warsaw:26°C | reversal_0.2_0.6 | 2 | 1 | 1 | 0 | -0.2975 |
+| weather:warsaw:26°C | reversal_0.2_0.65 | 2 | 1 | 1 | 0 | -0.3529 |
+| weather:warsaw:26°C | reversal_0.2_0.7 | 2 | 1 | 1 | 0 | -0.4665 |
+| weather:warsaw:26°C | reversal_0.2_0.75 | 2 | 1 | 1 | 0 | -0.4665 |
+| weather:warsaw:26°C | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.1491 |
+| weather:warsaw:26°C | reversal_0.3_0.55 | 3 | 0 | 1 | 2 | 0.5424 |
+| weather:warsaw:26°C | reversal_0.3_0.6 | 2 | 1 | 1 | 0 | -0.2975 |
+| weather:warsaw:26°C | reversal_0.3_0.65 | 2 | 1 | 1 | 0 | -0.3529 |
+| weather:warsaw:26°C | reversal_0.3_0.7 | 2 | 1 | 1 | 0 | -0.4665 |
+| weather:warsaw:26°C | reversal_0.3_0.75 | 2 | 1 | 1 | 0 | -0.4665 |
+| weather:warsaw:26°C | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.1491 |
+| weather:warsaw:26°C | reversal_0.4_0.55 | 6 | 0 | 4 | 2 | 0.4314 |
+| weather:warsaw:26°C | reversal_0.4_0.6 | 5 | 1 | 4 | 0 | -0.6198 |
+| weather:warsaw:26°C | reversal_0.4_0.65 | 2 | 1 | 1 | 0 | -0.3529 |
+| weather:warsaw:26°C | reversal_0.4_0.7 | 2 | 1 | 1 | 0 | -0.4665 |
+| weather:warsaw:26°C | reversal_0.4_0.75 | 2 | 1 | 1 | 0 | -0.4665 |
+| weather:warsaw:26°C | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.1491 |
 
 **Total pnl: -37.1839**
 
@@ -2456,6 +3176,153 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 9.6763**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_doge | 3 | 0 | 0 | 0 | 0.2146 |
+|  | reversal_0.2_0.55 | 21 | 0 | 18 | 3 | 0.2479 |
+|  | reversal_0.2_0.6 | 21 | 0 | 18 | 3 | 0.2102 |
+|  | reversal_0.2_0.65 | 21 | 0 | 18 | 3 | 0.2489 |
+|  | reversal_0.2_0.7 | 20 | 1 | 17 | 2 | -0.0149 |
+|  | reversal_0.2_0.75 | 22 | 1 | 20 | 1 | -0.0482 |
+|  | reversal_0.2_0.8 | 21 | 1 | 20 | 0 | -0.0319 |
+|  | reversal_0.3_0.55 | 24 | 0 | 21 | 3 | 0.2053 |
+|  | reversal_0.3_0.6 | 24 | 0 | 21 | 3 | 0.1676 |
+|  | reversal_0.3_0.65 | 24 | 0 | 21 | 3 | 0.2063 |
+|  | reversal_0.3_0.7 | 23 | 1 | 20 | 2 | -0.2969 |
+|  | reversal_0.3_0.75 | 25 | 1 | 23 | 1 | -0.2706 |
+|  | reversal_0.3_0.8 | 24 | 1 | 23 | 0 | -0.0745 |
+|  | reversal_0.4_0.55 | 28 | 0 | 23 | 5 | 0.2152 |
+|  | reversal_0.4_0.6 | 29 | 0 | 24 | 5 | 0.3110 |
+|  | reversal_0.4_0.65 | 28 | 0 | 23 | 5 | 0.3586 |
+|  | reversal_0.4_0.7 | 27 | 0 | 23 | 4 | 0.2561 |
+|  | reversal_0.4_0.75 | 32 | 1 | 29 | 2 | -0.3384 |
+|  | reversal_0.4_0.8 | 29 | 2 | 27 | 0 | -0.7502 |
+| BNB-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-15m | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.1557 |
+| BNB-5m | reversal_0.4_0.55 | 2 | 0 | 1 | 1 | 0.3490 |
+| BNB-5m | reversal_0.4_0.6 | 2 | 0 | 1 | 1 | 0.3490 |
+| BNB-5m | reversal_0.4_0.65 | 2 | 0 | 1 | 1 | 0.3490 |
+| BNB-5m | reversal_0.4_0.7 | 2 | 0 | 1 | 1 | 0.3490 |
+| BNB-5m | reversal_0.4_0.75 | 2 | 0 | 1 | 1 | 0.3490 |
+| BNB-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.1804 |
+| BTC-15m | high_prob_btc | 1 | 0 | 0 | 1 | 0.0870 |
+| BTC-15m | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.1081 |
+| BTC-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.2137 |
+| BTC-15m | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.1277 |
+| BTC-15m | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0497 |
+| BTC-5m | reversal_0.3_0.55 | 1 | 0 | 0 | 1 | 0.2564 |
+| BTC-5m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.3712 |
+| BTC-5m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.3712 |
+| BTC-5m | reversal_0.3_0.7 | 1 | 1 | 0 | 0 | -0.4225 |
+| BTC-5m | reversal_0.3_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+| BTC-5m | reversal_0.3_0.8 | 1 | 0 | 0 | 1 | 0.1863 |
+| BTC-5m | reversal_0.4_0.55 | 2 | 0 | 0 | 2 | 0.4820 |
+| BTC-5m | reversal_0.4_0.6 | 2 | 0 | 1 | 1 | -0.1456 |
+| BTC-5m | reversal_0.4_0.65 | 2 | 0 | 1 | 1 | -0.1456 |
+| BTC-5m | reversal_0.4_0.7 | 2 | 1 | 0 | 1 | -0.2097 |
+| BTC-5m | reversal_0.4_0.75 | 2 | 0 | 1 | 1 | 0.3576 |
+| BTC-5m | reversal_0.4_0.8 | 3 | 0 | 2 | 1 | 0.3229 |
+| DOGE-15m | high_prob_doge | 1 | 0 | 0 | 1 | 0.1047 |
+| DOGE-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.0000 |
+| DOGE-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.1135 |
+| DOGE-15m | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1135 |
+| DOGE-15m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0927 |
+| DOGE-15m | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0741 |
+| DOGE-5m | reversal_0.2_0.55 | 1 | 0 | 0 | 1 | 0.2586 |
+| DOGE-5m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0516 |
+| DOGE-5m | reversal_0.3_0.55 | 1 | 0 | 0 | 1 | 0.2586 |
+| DOGE-5m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | -0.1425 |
+| DOGE-5m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.0909 |
+| DOGE-5m | reversal_0.4_0.55 | 1 | 0 | 0 | 1 | 0.2256 |
+| DOGE-5m | reversal_0.4_0.6 | 1 | 0 | 0 | 1 | 0.2256 |
+| DOGE-5m | reversal_0.4_0.65 | 1 | 0 | 0 | 1 | 0.2256 |
+| DOGE-5m | reversal_0.4_0.7 | 2 | 1 | 0 | 1 | -0.2186 |
+| DOGE-5m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.0771 |
+| DOGE-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.0353 |
+| DOGE-hourly-et | reversal_0.2_0.55 | 1 | 0 | 0 | 1 | 0.2439 |
+| DOGE-hourly-et | reversal_0.2_0.6 | 1 | 0 | 0 | 1 | 0.2439 |
+| DOGE-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.3759 |
+| DOGE-hourly-et | reversal_0.2_0.7 | 1 | 1 | 0 | 0 | -0.4082 |
+| DOGE-hourly-et | reversal_0.2_0.75 | 1 | 1 | 0 | 0 | -0.3922 |
+| DOGE-hourly-et | reversal_0.3_0.55 | 1 | 0 | 0 | 1 | 0.2439 |
+| DOGE-hourly-et | reversal_0.3_0.6 | 1 | 0 | 0 | 1 | 0.2439 |
+| DOGE-hourly-et | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.3759 |
+| DOGE-hourly-et | reversal_0.3_0.7 | 1 | 1 | 0 | 0 | -0.4082 |
+| DOGE-hourly-et | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3922 |
+| DOGE-hourly-et | reversal_0.4_0.55 | 1 | 1 | 0 | 0 | -0.5042 |
+| DOGE-hourly-et | reversal_0.4_0.6 | 1 | 1 | 0 | 0 | -0.4878 |
+| DOGE-hourly-et | reversal_0.4_0.65 | 1 | 0 | 0 | 1 | 0.2290 |
+| DOGE-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1111 |
+| DOGE-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.1529 |
+| DOGE-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.1304 |
+| ETH-15m | reversal_0.3_0.55 | 1 | 0 | 0 | 1 | 0.2256 |
+| ETH-15m | reversal_0.3_0.6 | 1 | 0 | 0 | 1 | 0.2256 |
+| ETH-15m | reversal_0.3_0.65 | 1 | 0 | 0 | 1 | 0.2256 |
+| ETH-15m | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0354 |
+| ETH-15m | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0331 |
+| ETH-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.1221 |
+| ETH-5m | high_prob_eth | 1 | 0 | 0 | 1 | 0.1366 |
+| ETH-5m | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | -0.0146 |
+| ETH-5m | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | -0.0146 |
+| ETH-5m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.0146 |
+| ETH-5m | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0350 |
+| ETH-5m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.0329 |
+| ETH-5m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.1104 |
+| ETH-5m | reversal_0.4_0.55 | 3 | 0 | 1 | 2 | 0.4544 |
+| ETH-5m | reversal_0.4_0.6 | 3 | 0 | 1 | 2 | 0.4544 |
+| ETH-5m | reversal_0.4_0.65 | 3 | 0 | 1 | 2 | 0.4434 |
+| ETH-5m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | 0.2194 |
+| ETH-5m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.0329 |
+| ETH-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.1477 |
+| SOL-15m | reversal_0.2_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+| SOL-15m | reversal_0.2_0.8 | 1 | 0 | 0 | 1 | 0.1829 |
+| SOL-15m | reversal_0.3_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+| SOL-15m | reversal_0.3_0.8 | 1 | 0 | 0 | 1 | 0.1829 |
+| SOL-15m | reversal_0.4_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+| SOL-15m | reversal_0.4_0.8 | 1 | 0 | 0 | 1 | 0.1829 |
+| SOL-5m | reversal_0.4_0.55 | 1 | 0 | 0 | 1 | 0.2239 |
+| SOL-5m | reversal_0.4_0.6 | 1 | 0 | 0 | 1 | 0.2239 |
+| SOL-5m | reversal_0.4_0.65 | 1 | 0 | 0 | 1 | 0.2239 |
+| SOL-5m | reversal_0.4_0.7 | 2 | 0 | 0 | 2 | 0.4182 |
+| SOL-5m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | 0.0178 |
+| SOL-5m | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0809 |
+| XRP-5m | reversal_0.4_0.55 | 1 | 0 | 0 | 1 | 0.2190 |
+| XRP-5m | reversal_0.4_0.6 | 1 | 0 | 0 | 1 | 0.2190 |
+| XRP-5m | reversal_0.4_0.65 | 1 | 0 | 0 | 1 | 0.2190 |
+| XRP-5m | reversal_0.4_0.7 | 1 | 0 | 0 | 1 | 0.2128 |
+| XRP-5m | reversal_0.4_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+
+**Total pnl: 9.6763**
+
 <details>
 <summary>(unknown market) — 446 trade(s), total pnl 0.8161</summary>
 
@@ -3183,6 +4050,34 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: -21.4391**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_btc | 1 | 0 | 0 | 0 | 0.0753 |
+|  | high_prob_doge | 4 | 0 | 0 | 2 | 0.3878 |
+|  | high_prob_eth | 1 | 0 | 0 | 1 | 0.1350 |
+|  | reversal_0.2_0.55 | 17 | 1 | 14 | 2 | -1.2484 |
+|  | reversal_0.2_0.6 | 17 | 2 | 13 | 2 | -1.3538 |
+|  | reversal_0.2_0.65 | 14 | 1 | 11 | 2 | -0.5944 |
+|  | reversal_0.2_0.7 | 14 | 1 | 11 | 2 | -0.6020 |
+|  | reversal_0.2_0.75 | 13 | 1 | 11 | 1 | -0.8890 |
+|  | reversal_0.2_0.8 | 11 | 2 | 9 | 0 | -0.7223 |
+|  | reversal_0.3_0.55 | 25 | 1 | 21 | 3 | -1.5633 |
+|  | reversal_0.3_0.6 | 24 | 2 | 19 | 3 | -1.6867 |
+|  | reversal_0.3_0.65 | 21 | 1 | 17 | 3 | -0.9273 |
+|  | reversal_0.3_0.7 | 20 | 1 | 17 | 2 | -1.2379 |
+|  | reversal_0.3_0.75 | 18 | 1 | 17 | 0 | -1.7785 |
+|  | reversal_0.3_0.8 | 17 | 2 | 15 | 0 | -1.0476 |
+|  | reversal_0.4_0.55 | 43 | 3 | 30 | 10 | -0.7522 |
+|  | reversal_0.4_0.6 | 41 | 3 | 29 | 9 | -1.0663 |
+|  | reversal_0.4_0.65 | 37 | 2 | 27 | 8 | -0.8034 |
+|  | reversal_0.4_0.7 | 35 | 2 | 28 | 5 | -1.9323 |
+|  | reversal_0.4_0.75 | 32 | 2 | 29 | 1 | -2.3784 |
+|  | reversal_0.4_0.8 | 34 | 3 | 30 | 1 | -1.4534 |
+
+**Total pnl: -21.4391**
+
 <details>
 <summary>(unknown market) — 439 trade(s), total pnl -21.4391</summary>
 
@@ -3658,6 +4553,33 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: -5.3918**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_doge | 3 | 0 | 0 | 1 | 0.2237 |
+|  | high_prob_eth | 2 | 0 | 0 | 0 | 0.1335 |
+|  | reversal_0.2_0.55 | 13 | 1 | 11 | 1 | -0.8240 |
+|  | reversal_0.2_0.6 | 13 | 0 | 12 | 1 | -0.6116 |
+|  | reversal_0.2_0.65 | 13 | 1 | 11 | 1 | -0.4549 |
+|  | reversal_0.2_0.7 | 11 | 0 | 10 | 1 | 0.0264 |
+|  | reversal_0.2_0.75 | 12 | 0 | 12 | 0 | 0.2258 |
+|  | reversal_0.2_0.8 | 10 | 0 | 10 | 0 | -0.1896 |
+|  | reversal_0.3_0.55 | 19 | 0 | 17 | 2 | -0.5745 |
+|  | reversal_0.3_0.6 | 19 | 0 | 16 | 3 | -0.4910 |
+|  | reversal_0.3_0.65 | 18 | 1 | 15 | 2 | -0.4792 |
+|  | reversal_0.3_0.7 | 15 | 0 | 14 | 1 | -0.3760 |
+|  | reversal_0.3_0.75 | 17 | 1 | 16 | 0 | -0.7357 |
+|  | reversal_0.3_0.8 | 16 | 0 | 16 | 0 | -0.5085 |
+|  | reversal_0.4_0.55 | 22 | 0 | 19 | 3 | 0.1550 |
+|  | reversal_0.4_0.6 | 22 | 0 | 19 | 3 | -0.0770 |
+|  | reversal_0.4_0.65 | 23 | 1 | 19 | 3 | -0.1235 |
+|  | reversal_0.4_0.7 | 20 | 0 | 18 | 2 | -0.1750 |
+|  | reversal_0.4_0.75 | 21 | 1 | 19 | 1 | -0.4300 |
+|  | reversal_0.4_0.8 | 19 | 0 | 19 | 0 | -0.1057 |
+
+**Total pnl: -5.3918**
+
 <details>
 <summary>(unknown market) — 308 trade(s), total pnl -5.3918</summary>
 
@@ -4001,6 +4923,15 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.1685**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_doge | 1 | 0 | 0 | 1 | 0.1047 |
+|  | high_prob_eth | 1 | 0 | 0 | 0 | 0.0638 |
+
+**Total pnl: 0.1685**
+
 <details>
 <summary>(unknown market) — 2 trade(s), total pnl 0.1685</summary>
 
@@ -4035,6 +4966,15 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | market | strategy | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
 |  | high_prob | 3 | 0 | 0 | 1 | 0.2131 |
+
+**Total pnl: 0.2131**
+
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_btc | 1 | 0 | 0 | 1 | 0.0854 |
+|  | high_prob_doge | 2 | 0 | 0 | 0 | 0.1277 |
 
 **Total pnl: 0.2131**
 
@@ -4074,6 +5014,16 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 |---|---|---|---|---|---|---|
 |  | high_prob | 4 | 0 | 0 | 2 | 0.3117 |
 |  | reversal | 1 | 0 | 0 | 1 | 0.1935 |
+
+**Total pnl: 0.5052**
+
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_btc | 1 | 0 | 0 | 1 | 0.0782 |
+|  | high_prob_doge | 3 | 0 | 0 | 1 | 0.2335 |
+|  | reversal_btc | 1 | 0 | 0 | 1 | 0.1935 |
 
 **Total pnl: 0.5052**
 
@@ -4118,6 +5068,16 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.1200**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_btc | 1 | 0 | 0 | 0 | 0.0753 |
+|  | high_prob_doge | 5 | 1 | 0 | 1 | -0.1349 |
+|  | reversal_btc | 1 | 0 | 0 | 1 | 0.1796 |
+
+**Total pnl: 0.1200**
+
 <details>
 <summary>(unknown market) — 7 trade(s), total pnl 0.1200</summary>
 
@@ -4158,6 +5118,17 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 |---|---|---|---|---|---|---|
 |  | high_prob | 8 | 0 | 0 | 4 | 0.7066 |
 |  | reversal | 1 | 0 | 0 | 1 | 0.2679 |
+
+**Total pnl: 0.9745**
+
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_btc | 1 | 0 | 0 | 0 | 0.0811 |
+|  | high_prob_doge | 6 | 0 | 0 | 4 | 0.5560 |
+|  | high_prob_eth | 1 | 0 | 0 | 0 | 0.0695 |
+|  | reversal_sol | 1 | 0 | 0 | 1 | 0.2679 |
 
 **Total pnl: 0.9745**
 
@@ -4205,6 +5176,14 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.0582**
 
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_doge | 1 | 0 | 0 | 0 | 0.0582 |
+
+**Total pnl: 0.0582**
+
 <details>
 <summary>(unknown market) — 1 trade(s), total pnl 0.0582</summary>
 
@@ -4238,6 +5217,15 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | market | strategy | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
 |  | high_prob | 4 | 0 | 0 | 0 | 0.2497 |
+
+**Total pnl: 0.2497**
+
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_doge | 3 | 0 | 0 | 0 | 0.1915 |
+|  | high_prob_eth | 1 | 0 | 0 | 0 | 0.0582 |
 
 **Total pnl: 0.2497**
 
@@ -4277,6 +5265,14 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | market | strategy | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
 |  | high_prob | 1 | 0 | 0 | 1 | 0.0791 |
+
+**Total pnl: 0.0791**
+
+#### Summary: PnL by market and variant
+
+| market | variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+|  | high_prob_btc | 1 | 0 | 0 | 1 | 0.0791 |
 
 **Total pnl: 0.0791**
 

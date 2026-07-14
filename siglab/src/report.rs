@@ -148,7 +148,10 @@ struct MarketStrategyAgg {
 /// happened." Note this aggregates by `strategy` (`"reversal"`/`"high_prob"`), not by the
 /// finer-grained `variant_id` — with 18 reversal variants often firing together on the same
 /// dip (they share the same underlying price move, just different thresholds), a
-/// per-variant summary here would mostly repeat near-identical rows.
+/// per-variant summary here would mostly repeat near-identical rows. See
+/// `render_variant_summary` immediately below for the per-variant breakdown (added
+/// 2026-07-14 per explicit request) — that's exactly what makes the repetition visible and
+/// quantifiable rather than just asserted.
 ///
 /// `sl`/`timeout`/`unwind` are the only exits reachable since the 2026-07-14
 /// `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` change (a still-open position can no longer ride to
@@ -181,6 +184,43 @@ fn render_trade_summary(trades: &[SiglabTradeRecord]) -> String {
     for ((market, strategy), a) in &rows {
         out.push_str(&format!(
             "| {market} | {strategy} | {} | {} | {} | {} | {:.4} |\n",
+            a.trades, a.sl, a.timeout, a.unwind, a.pnl
+        ));
+    }
+    let grand_total: f64 = trades.iter().map(|t| t.pnl).sum();
+    out.push_str(&format!("\n**Total pnl: {grand_total:.4}**\n\n"));
+    out
+}
+
+/// Same shape as `render_trade_summary`, but broken down by (market, `variant_id`) instead
+/// of (market, `strategy`) — e.g. `reversal_0.2_0.7` rather than just `reversal`. Shown
+/// directly below the market/strategy summary; added 2026-07-14 per explicit request.
+fn render_variant_summary(trades: &[SiglabTradeRecord]) -> String {
+    let mut out = String::from("#### Summary: PnL by market and variant\n\n");
+    let mut agg: HashMap<(String, String), MarketStrategyAgg> = HashMap::new();
+    for t in trades {
+        let entry = agg
+            .entry((t.market.clone(), t.variant_id.clone()))
+            .or_default();
+        entry.trades += 1;
+        entry.pnl += t.pnl;
+        match t.outcome.as_str() {
+            "STOPLOSS" => entry.sl += 1,
+            "TIMEOUT" => entry.timeout += 1,
+            "UNWIND" => entry.unwind += 1,
+            _ => {}
+        }
+    }
+    let mut rows: Vec<_> = agg.into_iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    out.push_str(
+        "| market | variant | trades | sl | timeout | unwind | total pnl |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for ((market, variant), a) in &rows {
+        out.push_str(&format!(
+            "| {market} | {variant} | {} | {} | {} | {} | {:.4} |\n",
             a.trades, a.sl, a.timeout, a.unwind, a.pnl
         ));
     }
@@ -240,6 +280,7 @@ fn render_hour_trades_section(trades: &[SiglabTradeRecord]) -> String {
     }
 
     out.push_str(&render_trade_summary(trades));
+    out.push_str(&render_variant_summary(trades));
 
     let mut by_market: HashMap<&str, Vec<&SiglabTradeRecord>> = HashMap::new();
     for t in trades {
@@ -912,9 +953,12 @@ mod tests {
         // Two distinct per-market collapsible tables, one per market.
         assert!(section.contains("<summary>XRP-15m — 2 trade(s), total pnl 0.4000</summary>"));
         assert!(section.contains("<summary>XRP-5m — 1 trade(s), total pnl 0.2000</summary>"));
-        // Within XRP-15m's own table, sorted by entry time (50 before 200).
-        let pos_early = section.find("reversal_0.3_0.6").unwrap();
-        let pos_late = section.find("reversal_0.2_0.55").unwrap();
+        // Within XRP-15m's own table, sorted by entry time (50 before 200). rfind, not
+        // find: both variant_ids also appear earlier in the market/variant summary table
+        // above the per-market tables (see render_variant_summary) — the per-market row
+        // order is what's under test here, so target the *last* occurrence of each.
+        let pos_early = section.rfind("reversal_0.3_0.6").unwrap();
+        let pos_late = section.rfind("reversal_0.2_0.55").unwrap();
         assert!(pos_early < pos_late);
     }
 
@@ -952,6 +996,37 @@ mod tests {
         assert!(summary.contains("| XRP-5m | reversal | 2 | 0 | 0 | 0 | 0.3000 |"));
         assert!(summary.contains("| XRP-5m | high_prob | 1 | 0 | 0 | 0 | -0.0500 |"));
         assert!(summary.contains("Total pnl: 0.2500"));
+    }
+
+    #[test]
+    fn variant_summary_breaks_out_each_reversal_variant_separately() {
+        let trades = vec![
+            mk_trade("XRP-5m", "reversal_0.2_0.55", "reversal", 100.0, 0.1),
+            mk_trade("XRP-5m", "reversal_0.3_0.6", "reversal", 110.0, 0.2),
+            mk_trade("XRP-5m", "high_prob_xrp", "high_prob", 120.0, -0.05),
+        ];
+        let summary = render_variant_summary(&trades);
+        // Unlike render_trade_summary, the two reversal trades must NOT collapse -- each
+        // variant_id gets its own row.
+        assert!(summary.contains("| XRP-5m | reversal_0.2_0.55 | 1 | 0 | 0 | 0 | 0.1000 |"));
+        assert!(summary.contains("| XRP-5m | reversal_0.3_0.6 | 1 | 0 | 0 | 0 | 0.2000 |"));
+        assert!(summary.contains("| XRP-5m | high_prob_xrp | 1 | 0 | 0 | 0 | -0.0500 |"));
+        assert!(summary.contains("Total pnl: 0.2500"));
+    }
+
+    #[test]
+    fn hour_trades_section_includes_both_summary_tables() {
+        let trades = vec![mk_trade(
+            "XRP-5m",
+            "reversal_0.2_0.55",
+            "reversal",
+            100.0,
+            0.1,
+        )];
+        let section = render_hour_trades_section(&trades);
+        assert!(section.contains("PnL by market and strategy"));
+        assert!(section.contains("PnL by market and variant"));
+        assert!(section.contains("reversal_0.2_0.55"));
     }
 
     #[test]
