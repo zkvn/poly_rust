@@ -10,7 +10,8 @@
 //! `price_feed` — see `siglab/config.rs`'s doc comment and
 //! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
 //!
-//! Every hour (HKT), writes/updates `{report_dir}/signal_report_{date}.md` — a
+//! Every hour (HKT), writes/updates `{report_dir}/signal_report_{date}_{AM|PM}.md` (split
+//! at the 12:00 HKT boundary — see `report.rs`'s module doc comment) — a
 //! collapsible-sections Markdown summary of the last hour's trades, market state,
 //! staleness health, and CPU/memory usage. A separate host-side script
 //! (`siglab/scripts/push_report.sh`, run by a systemd --user timer, not by this process)
@@ -66,7 +67,7 @@ struct Args {
     #[arg(long, default_value = "siglab_trades.jsonl")]
     log: PathBuf,
 
-    /// Directory the hourly signal_report_{date}.md is written into.
+    /// Directory the hourly signal_report_{date}_{AM|PM}.md files are written into.
     #[arg(long, default_value = "reports")]
     report_dir: PathBuf,
 

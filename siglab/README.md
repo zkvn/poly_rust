@@ -87,8 +87,10 @@ Editing any of these has zero effect on `../trader`'s live config, and vice vers
 
 ## Autonomous report + push
 
-The container writes `doc/report/signal_report_{YYYY-MM-DD}.md` (HKT date, new file per
-day). Each real HKT hour is one collapsible top-level `<details>` section, newest hour
+The container writes `doc/report/signal_report_{YYYY-MM-DD}_{AM|PM}.md` (HKT date, split
+into an AM (00:00-11:59) and PM (12:00-23:59) file each day — added 2026-07-14 after the
+single-file-per-day report grew to 2.2MB and became unwieldy to open). Each real HKT hour
+is one collapsible top-level `<details>` section, newest hour
 first; every report-writer run that lands within that hour (production writes every 15 min
 — `--report-interval-secs 900`, see `docker-compose.yml`) nests inside it as its own
 collapsible run sub-section, newest run first, rather than starting a new top-level section
