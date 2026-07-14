@@ -172,10 +172,780 @@ see that file's doc comment), separate from crypto's `trader::machine::Machine`.
 Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid via `bucket_reversal.rs::reversal_grid()` (fixed `sl_pnl=0.3`/`unwind_pnl=0.15`/`max_hold=25s`), not `config/markets.toml` — see that module's doc comment. Crypto reversal variants additionally force-close (labeled `UNWIND`) within 10s of the market's own cycle-end regardless of holding time — weather/World Cup buckets have no cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s doc comment).
 
 <!-- siglab-config-end -->
+<!-- siglab-hour:2026-07-14T14 -->
+### 2026-07-14 14:00 HKT
+
+<details open>
+<summary><strong>1 report run(s), 202 trade(s) this hour, total pnl 11.3834</strong></summary>
+
+<!-- siglab-hour-body-start -->
+<!-- siglab-hour-trades-start -->
+<details>
+<summary>Trades this hour: 202 trade(s)</summary>
+
+#### Summary: PnL by market and strategy
+
+| market | strategy | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|---|
+| BNB-15m | reversal | 12 | 0 | 12 | 0 | 0.9732 |
+| BNB-5m | reversal | 36 | 0 | 30 | 6 | 4.8585 |
+| BTC-5m | reversal | 24 | 3 | 9 | 12 | 1.7197 |
+| DOGE-15m | reversal | 3 | 0 | 3 | 0 | 0.0204 |
+| DOGE-hourly-et | reversal | 15 | 0 | 15 | 0 | -0.7389 |
+| ETH-5m | reversal | 9 | 0 | 2 | 7 | 1.3937 |
+| ETH-hourly-et | reversal | 3 | 0 | 3 | 0 | 0.1722 |
+| SOL-15m | reversal | 9 | 0 | 9 | 0 | 0.6426 |
+| SOL-5m | reversal | 12 | 0 | 6 | 6 | 2.4684 |
+| SOL-hourly-et | reversal | 6 | 0 | 6 | 0 | 0.1350 |
+| XRP-15m | reversal | 15 | 0 | 15 | 0 | -0.0015 |
+| XRP-5m | reversal | 24 | 0 | 24 | 0 | -0.4629 |
+| XRP-hourly-et | reversal | 15 | 0 | 15 | 0 | 0.0474 |
+| weather:beijing:33°C | reversal | 1 | 0 | 1 | 0 | -0.1591 |
+| weather:beijing:34°C | reversal | 2 | 0 | 2 | 0 | -0.1082 |
+| weather:chengdu:39°C | reversal | 2 | 0 | 2 | 0 | 0.0000 |
+| weather:hong-kong:28°C | reversal | 1 | 0 | 1 | 0 | 0.0067 |
+| weather:manila:32°C | reversal | 12 | 0 | 12 | 0 | 0.4612 |
+| weather:wuhan:38°C | reversal | 1 | 0 | 1 | 0 | -0.0450 |
+
+**Total pnl: 11.3834**
+
+<details>
+<summary>BNB-15m — 12 trade(s), total pnl 0.9732</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:00:26.654 | 2026-07-14 14:00:51.687 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.1000 |
+| 2026-07-14 14:00:26.654 | 2026-07-14 14:00:51.687 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.1000 |
+| 2026-07-14 14:00:26.654 | 2026-07-14 14:00:51.687 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.1000 |
+| 2026-07-14 14:00:26.676 | 2026-07-14 14:00:51.687 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.0820 |
+| 2026-07-14 14:00:26.676 | 2026-07-14 14:00:51.687 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0820 |
+| 2026-07-14 14:00:26.676 | 2026-07-14 14:00:51.687 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0820 |
+| 2026-07-14 14:00:26.752 | 2026-07-14 14:00:51.847 | 25.1 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.0076 |
+| 2026-07-14 14:00:26.752 | 2026-07-14 14:00:51.847 | 25.1 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0076 |
+| 2026-07-14 14:00:26.752 | 2026-07-14 14:00:51.847 | 25.1 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0076 |
+| 2026-07-14 14:02:26.702 | 2026-07-14 14:02:51.853 | 25.2 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.1348 |
+| 2026-07-14 14:02:26.702 | 2026-07-14 14:02:51.853 | 25.2 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.1348 |
+| 2026-07-14 14:02:26.702 | 2026-07-14 14:02:51.853 | 25.2 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.1348 |
+
+</details>
+
+<details>
+<summary>BNB-5m — 36 trade(s), total pnl 4.8585</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:00:25.907 | 2026-07-14 14:00:28.736 | 2.8 | reversal_0.2_0.55 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:00:25.907 | 2026-07-14 14:00:28.736 | 2.8 | reversal_0.2_0.6 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:00:25.907 | 2026-07-14 14:00:28.736 | 2.8 | reversal_0.3_0.55 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:00:25.907 | 2026-07-14 14:00:28.736 | 2.8 | reversal_0.3_0.6 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:00:25.907 | 2026-07-14 14:00:28.736 | 2.8 | reversal_0.4_0.55 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:00:25.907 | 2026-07-14 14:00:28.736 | 2.8 | reversal_0.4_0.6 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:00:26.139 | 2026-07-14 14:00:51.152 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 14:00:26.139 | 2026-07-14 14:00:51.152 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 14:00:26.139 | 2026-07-14 14:00:51.152 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 14:00:26.199 | 2026-07-14 14:00:51.279 | 25.1 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0067 |
+| 2026-07-14 14:00:26.199 | 2026-07-14 14:00:51.279 | 25.1 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0067 |
+| 2026-07-14 14:00:26.199 | 2026-07-14 14:00:51.279 | 25.1 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0067 |
+| 2026-07-14 14:00:26.226 | 2026-07-14 14:00:51.279 | 25.1 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:00:26.226 | 2026-07-14 14:00:51.279 | 25.1 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:00:26.226 | 2026-07-14 14:00:51.279 | 25.1 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.084 | 25.1 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0124 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.084 | 25.1 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0124 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.084 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0124 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.2_0.55 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.2_0.6 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.2_0.65 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.3_0.55 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.3_0.6 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.3_0.65 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.4_0.55 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:07.911 | 2026-07-14 14:10:32.926 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | 0.2214 |
+| 2026-07-14 14:10:13.915 | 2026-07-14 14:10:38.932 | 25.0 | reversal_0.2_0.7 | UP | TIMEOUT | 0.1348 |
+| 2026-07-14 14:10:13.915 | 2026-07-14 14:10:38.932 | 25.0 | reversal_0.3_0.7 | UP | TIMEOUT | 0.1348 |
+| 2026-07-14 14:10:13.915 | 2026-07-14 14:10:38.932 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | 0.1348 |
+| 2026-07-14 14:10:30.565 | 2026-07-14 14:10:55.631 | 25.1 | reversal_0.2_0.75 | UP | TIMEOUT | 0.1195 |
+| 2026-07-14 14:10:30.565 | 2026-07-14 14:10:55.631 | 25.1 | reversal_0.3_0.75 | UP | TIMEOUT | 0.1195 |
+| 2026-07-14 14:10:30.565 | 2026-07-14 14:10:55.631 | 25.1 | reversal_0.4_0.75 | UP | TIMEOUT | 0.1195 |
+| 2026-07-14 14:10:45.333 | 2026-07-14 14:11:10.438 | 25.1 | reversal_0.2_0.8 | UP | TIMEOUT | 0.1118 |
+| 2026-07-14 14:10:45.333 | 2026-07-14 14:11:10.438 | 25.1 | reversal_0.3_0.8 | UP | TIMEOUT | 0.1118 |
+| 2026-07-14 14:10:45.333 | 2026-07-14 14:11:10.438 | 25.1 | reversal_0.4_0.8 | UP | TIMEOUT | 0.1118 |
+
+</details>
+
+<details>
+<summary>BTC-5m — 24 trade(s), total pnl 1.7197</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.2_0.55 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.2_0.6 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.2_0.65 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.3_0.55 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.3_0.6 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.3_0.65 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.4_0.55 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.4_0.6 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:00.796 | 2026-07-14 14:03:18.852 | 18.1 | reversal_0.4_0.65 | DOWN | UNWIND | 0.2222 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:03:18.852 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0571 |
+| 2026-07-14 14:09:24.784 | 2026-07-14 14:09:24.911 | 0.1 | reversal_0.4_0.55 | DOWN | STOPLOSS | -0.4651 |
+| 2026-07-14 14:09:24.784 | 2026-07-14 14:09:24.911 | 0.1 | reversal_0.4_0.6 | DOWN | STOPLOSS | -0.4651 |
+| 2026-07-14 14:09:24.871 | 2026-07-14 14:09:24.875 | 0.0 | reversal_0.4_0.65 | DOWN | STOPLOSS | -0.4580 |
+| 2026-07-14 14:09:25.508 | 2026-07-14 14:09:28.288 | 2.8 | reversal_0.4_0.7 | DOWN | UNWIND | 0.2128 |
+| 2026-07-14 14:09:27.588 | 2026-07-14 14:09:28.859 | 1.3 | reversal_0.4_0.75 | DOWN | UNWIND | 0.1974 |
+| 2026-07-14 14:09:28.208 | 2026-07-14 14:09:29.264 | 1.1 | reversal_0.4_0.8 | DOWN | UNWIND | 0.1840 |
+
+</details>
+
+<details>
+<summary>DOGE-15m — 3 trade(s), total pnl 0.0204</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:05:28.246 | 2026-07-14 14:05:53.297 | 25.1 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0068 |
+| 2026-07-14 14:05:28.246 | 2026-07-14 14:05:53.297 | 25.1 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0068 |
+| 2026-07-14 14:05:28.246 | 2026-07-14 14:05:53.297 | 25.1 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0068 |
+
+</details>
+
+<details>
+<summary>DOGE-hourly-et — 15 trade(s), total pnl -0.7389</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.2_0.55 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.2_0.6 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.2_0.65 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.3_0.55 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.3_0.6 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.3_0.65 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.4_0.6 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:06:34.598 | 2026-07-14 14:07:00.393 | 25.8 | reversal_0.4_0.65 | DOWN | TIMEOUT | -0.0305 |
+| 2026-07-14 14:09:14.747 | 2026-07-14 14:09:40.217 | 25.5 | reversal_0.2_0.7 | DOWN | TIMEOUT | -0.0282 |
+| 2026-07-14 14:09:14.747 | 2026-07-14 14:09:40.217 | 25.5 | reversal_0.3_0.7 | DOWN | TIMEOUT | -0.0282 |
+| 2026-07-14 14:09:14.747 | 2026-07-14 14:09:40.217 | 25.5 | reversal_0.4_0.7 | DOWN | TIMEOUT | -0.0282 |
+| 2026-07-14 14:09:14.809 | 2026-07-14 14:09:40.217 | 25.4 | reversal_0.2_0.75 | DOWN | TIMEOUT | -0.1266 |
+| 2026-07-14 14:09:14.809 | 2026-07-14 14:09:40.217 | 25.4 | reversal_0.3_0.75 | DOWN | TIMEOUT | -0.1266 |
+| 2026-07-14 14:09:14.809 | 2026-07-14 14:09:40.217 | 25.4 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.1266 |
+
+</details>
+
+<details>
+<summary>ETH-5m — 9 trade(s), total pnl 1.3937</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:01:18.437 | 2026-07-14 14:01:41.532 | 23.1 | reversal_0.4_0.55 | DOWN | UNWIND | 0.2609 |
+| 2026-07-14 14:01:41.027 | 2026-07-14 14:02:06.044 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | -0.1399 |
+| 2026-07-14 14:02:27.056 | 2026-07-14 14:02:52.071 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.1325 |
+| 2026-07-14 14:09:33.548 | 2026-07-14 14:09:41.678 | 8.1 | reversal_0.3_0.55 | DOWN | UNWIND | 0.2439 |
+| 2026-07-14 14:09:33.548 | 2026-07-14 14:09:41.678 | 8.1 | reversal_0.3_0.6 | DOWN | UNWIND | 0.2439 |
+| 2026-07-14 14:09:38.875 | 2026-07-14 14:09:46.320 | 7.4 | reversal_0.3_0.65 | DOWN | UNWIND | 0.2290 |
+| 2026-07-14 14:09:41.040 | 2026-07-14 14:09:46.599 | 5.6 | reversal_0.3_0.7 | DOWN | UNWIND | 0.2128 |
+| 2026-07-14 14:09:41.672 | 2026-07-14 14:09:47.594 | 5.9 | reversal_0.3_0.75 | DOWN | UNWIND | 0.1987 |
+| 2026-07-14 14:09:46.320 | 2026-07-14 14:09:50.005 | 3.7 | reversal_0.3_0.8 | DOWN | UNWIND | 0.0119 |
+
+</details>
+
+<details>
+<summary>ETH-hourly-et — 3 trade(s), total pnl 0.1722</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:03:40.999 | 2026-07-14 14:04:06.114 | 25.1 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.0574 |
+| 2026-07-14 14:03:40.999 | 2026-07-14 14:04:06.114 | 25.1 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0574 |
+| 2026-07-14 14:03:40.999 | 2026-07-14 14:04:06.114 | 25.1 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0574 |
+
+</details>
+
+<details>
+<summary>SOL-15m — 9 trade(s), total pnl 0.6426</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:51.845 | 25.1 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.1593 |
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:51.845 | 25.1 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.1593 |
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:51.845 | 25.1 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.1593 |
+| 2026-07-14 14:03:19.293 | 2026-07-14 14:03:44.338 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0284 |
+| 2026-07-14 14:03:19.293 | 2026-07-14 14:03:44.338 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0284 |
+| 2026-07-14 14:03:19.293 | 2026-07-14 14:03:44.338 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0284 |
+| 2026-07-14 14:03:40.921 | 2026-07-14 14:04:05.954 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0265 |
+| 2026-07-14 14:03:40.921 | 2026-07-14 14:04:05.954 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0265 |
+| 2026-07-14 14:03:40.921 | 2026-07-14 14:04:05.954 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.0265 |
+
+</details>
+
+<details>
+<summary>SOL-5m — 12 trade(s), total pnl 2.4684</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:39.843 | 13.1 | reversal_0.2_0.55 | DOWN | UNWIND | 0.2521 |
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:39.843 | 13.1 | reversal_0.3_0.55 | DOWN | UNWIND | 0.2521 |
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:39.843 | 13.1 | reversal_0.4_0.55 | DOWN | UNWIND | 0.2521 |
+| 2026-07-14 14:02:26.802 | 2026-07-14 14:02:42.824 | 16.0 | reversal_0.2_0.6 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:02:26.802 | 2026-07-14 14:02:42.824 | 16.0 | reversal_0.3_0.6 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:02:26.802 | 2026-07-14 14:02:42.824 | 16.0 | reversal_0.4_0.6 | DOWN | UNWIND | 0.2419 |
+| 2026-07-14 14:02:26.806 | 2026-07-14 14:02:51.850 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.1955 |
+| 2026-07-14 14:02:26.806 | 2026-07-14 14:02:51.850 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.1955 |
+| 2026-07-14 14:02:26.806 | 2026-07-14 14:02:51.850 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.1955 |
+| 2026-07-14 14:03:18.853 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.1333 |
+| 2026-07-14 14:03:18.853 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.1333 |
+| 2026-07-14 14:03:18.853 | 2026-07-14 14:03:43.866 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.1333 |
+
+</details>
+
+<details>
+<summary>SOL-hourly-et — 6 trade(s), total pnl 0.1350</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:52.171 | 25.4 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.0450 |
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:52.171 | 25.4 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0450 |
+| 2026-07-14 14:02:26.782 | 2026-07-14 14:02:52.171 | 25.4 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.0450 |
+| 2026-07-14 14:06:34.593 | 2026-07-14 14:06:59.828 | 25.2 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:06:34.593 | 2026-07-14 14:06:59.828 | 25.2 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:06:34.593 | 2026-07-14 14:06:59.828 | 25.2 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0000 |
+
+</details>
+
+<details>
+<summary>XRP-15m — 15 trade(s), total pnl -0.0015</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.036 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | -0.1488 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.036 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | -0.1488 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.036 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | -0.1488 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.036 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | -0.1488 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.036 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.1488 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.036 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | -0.1488 |
+| 2026-07-14 14:03:24.634 | 2026-07-14 14:03:49.651 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.1538 |
+| 2026-07-14 14:03:24.634 | 2026-07-14 14:03:49.651 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.1538 |
+| 2026-07-14 14:03:24.634 | 2026-07-14 14:03:49.651 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.1538 |
+| 2026-07-14 14:03:39.303 | 2026-07-14 14:04:05.619 | 26.3 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.1060 |
+| 2026-07-14 14:03:39.303 | 2026-07-14 14:04:05.619 | 26.3 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.1060 |
+| 2026-07-14 14:03:39.303 | 2026-07-14 14:04:05.619 | 26.3 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.1060 |
+| 2026-07-14 14:03:47.497 | 2026-07-14 14:04:12.504 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0373 |
+| 2026-07-14 14:03:47.497 | 2026-07-14 14:04:12.504 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0373 |
+| 2026-07-14 14:03:47.497 | 2026-07-14 14:04:12.504 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0373 |
+
+</details>
+
+<details>
+<summary>XRP-5m — 24 trade(s), total pnl -0.4629</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:01:56.030 | 2026-07-14 14:02:21.050 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | -0.2336 |
+| 2026-07-14 14:02:56.309 | 2026-07-14 14:03:21.311 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0497 |
+| 2026-07-14 14:02:56.309 | 2026-07-14 14:03:21.311 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0497 |
+| 2026-07-14 14:02:56.309 | 2026-07-14 14:03:21.311 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0497 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.1242 |
+| 2026-07-14 14:08:16.578 | 2026-07-14 14:08:41.579 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.1242 |
+
+</details>
+
+<details>
+<summary>XRP-hourly-et — 15 trade(s), total pnl 0.0474</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:02:53.092 | 2026-07-14 14:03:18.863 | 25.8 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.0180 |
+| 2026-07-14 14:02:53.092 | 2026-07-14 14:03:18.863 | 25.8 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0180 |
+| 2026-07-14 14:02:53.092 | 2026-07-14 14:03:18.863 | 25.8 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.0180 |
+| 2026-07-14 14:03:39.397 | 2026-07-14 14:04:05.660 | 26.3 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.0323 |
+| 2026-07-14 14:03:39.397 | 2026-07-14 14:04:05.660 | 26.3 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0323 |
+| 2026-07-14 14:03:39.397 | 2026-07-14 14:04:05.660 | 26.3 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0323 |
+| 2026-07-14 14:05:28.248 | 2026-07-14 14:05:53.253 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | -0.0221 |
+| 2026-07-14 14:05:28.248 | 2026-07-14 14:05:53.253 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | -0.0221 |
+| 2026-07-14 14:05:28.248 | 2026-07-14 14:05:53.253 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | -0.0221 |
+| 2026-07-14 14:08:24.079 | 2026-07-14 14:08:49.157 | 25.1 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:08:24.079 | 2026-07-14 14:08:49.157 | 25.1 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:08:24.079 | 2026-07-14 14:08:49.157 | 25.1 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 14:09:17.928 | 2026-07-14 14:09:43.216 | 25.3 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.0124 |
+| 2026-07-14 14:09:17.928 | 2026-07-14 14:09:43.216 | 25.3 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.0124 |
+| 2026-07-14 14:09:17.928 | 2026-07-14 14:09:43.216 | 25.3 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.0124 |
+
+</details>
+
+<details>
+<summary>weather:beijing:33°C — 1 trade(s), total pnl -0.1591</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:03:54.141 | 2026-07-14 14:04:27.039 | 32.9 | reversal_0.4_0.65 | DOWN | TIMEOUT | -0.1591 |
+
+</details>
+
+<details>
+<summary>weather:beijing:34°C — 2 trade(s), total pnl -0.1082</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:12:36.433 | 2026-07-14 14:13:01.559 | 25.1 | reversal_0.3_0.55 | UP | TIMEOUT | -0.0541 |
+| 2026-07-14 14:12:36.433 | 2026-07-14 14:13:01.559 | 25.1 | reversal_0.4_0.55 | UP | TIMEOUT | -0.0541 |
+
+</details>
+
+<details>
+<summary>weather:chengdu:39°C — 2 trade(s), total pnl 0.0000</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:03:58.474 | 2026-07-14 14:04:31.149 | 32.7 | reversal_0.3_0.55 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 14:03:58.474 | 2026-07-14 14:04:31.149 | 32.7 | reversal_0.4_0.55 | UP | TIMEOUT | 0.0000 |
+
+</details>
+
+<details>
+<summary>weather:hong-kong:28°C — 1 trade(s), total pnl 0.0067</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:09:30.414 | 2026-07-14 14:09:55.995 | 25.6 | reversal_0.4_0.6 | UP | TIMEOUT | 0.0067 |
+
+</details>
+
+<details>
+<summary>weather:manila:32°C — 12 trade(s), total pnl 0.4612</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:00:20.006 | 2026-07-14 14:00:47.457 | 27.5 | reversal_0.3_0.55 | UP | TIMEOUT | 0.2523 |
+| 2026-07-14 14:00:20.006 | 2026-07-14 14:00:47.457 | 27.5 | reversal_0.4_0.55 | UP | TIMEOUT | 0.2523 |
+| 2026-07-14 14:00:21.418 | 2026-07-14 14:00:47.457 | 26.0 | reversal_0.3_0.6 | UP | TIMEOUT | 0.0945 |
+| 2026-07-14 14:00:21.418 | 2026-07-14 14:00:47.457 | 26.0 | reversal_0.4_0.6 | UP | TIMEOUT | 0.0945 |
+| 2026-07-14 14:00:37.137 | 2026-07-14 14:01:02.792 | 25.7 | reversal_0.3_0.65 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 14:00:37.137 | 2026-07-14 14:01:02.792 | 25.7 | reversal_0.4_0.65 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 14:01:04.828 | 2026-07-14 14:01:29.938 | 25.1 | reversal_0.3_0.7 | UP | TIMEOUT | -0.0204 |
+| 2026-07-14 14:01:04.828 | 2026-07-14 14:01:29.938 | 25.1 | reversal_0.4_0.7 | UP | TIMEOUT | -0.0204 |
+| 2026-07-14 14:01:05.505 | 2026-07-14 14:01:30.650 | 25.1 | reversal_0.3_0.75 | UP | TIMEOUT | -0.0464 |
+| 2026-07-14 14:01:05.505 | 2026-07-14 14:01:30.650 | 25.1 | reversal_0.4_0.75 | UP | TIMEOUT | -0.0464 |
+| 2026-07-14 14:10:51.904 | 2026-07-14 14:11:17.129 | 25.2 | reversal_0.3_0.8 | UP | TIMEOUT | -0.0494 |
+| 2026-07-14 14:10:51.904 | 2026-07-14 14:11:17.129 | 25.2 | reversal_0.4_0.8 | UP | TIMEOUT | -0.0494 |
+
+</details>
+
+<details>
+<summary>weather:wuhan:38°C — 1 trade(s), total pnl -0.0450</summary>
+
+| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
+|---|---|---|---|---|---|---|
+| 2026-07-14 14:09:54.371 | 2026-07-14 14:10:19.875 | 25.5 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.0450 |
+
+</details>
+
+</details>
+
+<!-- siglab-hour-trades-end -->
+<!-- siglab-run -->
+<details>
+<summary>2026-07-14 14:13 HKT — 24 crypto market(s), 322 weather bucket(s), 316 World Cup bucket(s), 234 new trade(s), 5000 stale event(s)</summary>
+
+<details>
+<summary>Crypto market state snapshot</summary>
+
+| market | up | down | age (s) |
+|---|---|---|---|
+| BNB-15m | 0.0105 | 0.9895 | 0.0 |
+| BNB-4h | 0.4500 | 0.5500 | 3.5 |
+| BNB-5m | 0.9700 | 0.0300 | 0.0 |
+| BNB-hourly-et | 0.2650 | 0.7350 | 0.0 |
+| BTC-15m | 0.1050 | 0.8950 | 0.0 |
+| BTC-4h | 0.7150 | 0.2850 | 2.1 |
+| BTC-5m | 0.7350 | 0.2650 | 0.0 |
+| BTC-hourly-et | 0.4450 | 0.5550 | 0.0 |
+| DOGE-15m | 0.4450 | 0.5550 | 0.0 |
+| DOGE-4h | 0.7850 | 0.2150 | 4.0 |
+| DOGE-5m | 0.9750 | 0.0250 | 0.0 |
+| DOGE-hourly-et | 0.4850 | 0.5150 | 0.0 |
+| ETH-15m | 0.0850 | 0.9150 | 0.0 |
+| ETH-4h | 0.6000 | 0.4000 | 0.0 |
+| ETH-5m | 0.9350 | 0.0650 | 0.0 |
+| ETH-hourly-et | 0.4050 | 0.5950 | 0.0 |
+| SOL-15m | 0.0060 | 0.9940 | 0.0 |
+| SOL-4h | 0.6150 | 0.3850 | 0.0 |
+| SOL-5m | 0.9250 | 0.0750 | 0.0 |
+| SOL-hourly-et | 0.2950 | 0.7050 | 0.0 |
+| XRP-15m | 0.0110 | 0.9890 | 0.0 |
+| XRP-4h | 0.8150 | 0.1850 | 0.0 |
+| XRP-5m | 0.9400 | 0.0600 | 0.0 |
+| XRP-hourly-et | 0.2750 | 0.7250 | 0.0 |
+
+</details>
+
+<details>
+<summary>Weather market state snapshot (49 reporting)</summary>
+
+| city | top outcome | probability | age (s) |
+|---|---|---|---|
+| amsterdam | 28°C | 0.460 | 0.0 |
+| ankara | 29°C | 0.670 | 0.4 |
+| atlanta | 82-83°F | 0.345 | 0.4 |
+| austin | 82-83°F | 0.360 | 0.0 |
+| beijing | 34°C | 0.525 | 0.0 |
+| buenos-aires | 16°C | 0.425 | 0.9 |
+| busan | 30°C | 0.988 | 3.5 |
+| cape-town | 16°C | 0.355 | 0.0 |
+| chengdu | 38°C | 0.480 | 3.7 |
+| chicago | 96-97°F | 0.475 | 0.0 |
+| chongqing | 41°C | 0.455 | 0.0 |
+| dallas | 88-89°F | 0.350 | 0.0 |
+| denver | 94-95°F | 0.530 | 3.8 |
+| guangzhou | 34°C or higher | 1.000 | 1.8 |
+| helsinki | 24°C | 0.440 | 27.1 |
+| hong-kong | 28°C | 0.617 | 0.0 |
+| houston | 82-83°F | 0.370 | 7.4 |
+| istanbul | 25°C | 0.675 | 0.4 |
+| jeddah | 38°C or higher | 0.545 | 10.4 |
+| karachi | 33°C | 0.405 | 0.5 |
+| kuala-lumpur | 33°C | 0.860 | 3.8 |
+| london | 29°C | 0.495 | 0.0 |
+| los-angeles | 74-75°F | 0.490 | 0.0 |
+| lucknow | 36°C | 0.385 | 0.0 |
+| madrid | 37°C | 0.645 | 3.4 |
+| manila | 32°C | 0.865 | 3.5 |
+| mexico-city | 25°C | 0.405 | 0.0 |
+| miami | 92-93°F | 0.550 | 0.0 |
+| milan | 34°C | 0.555 | 1.0 |
+| moscow | 25°C | 0.485 | 4.5 |
+| munich | 29°C | 0.380 | 0.0 |
+| nyc | 96-97°F | 0.495 | 0.0 |
+| panama-city | 33°C | 0.435 | 0.0 |
+| paris | 35°C | 0.520 | 0.0 |
+| qingdao | 29°C | 0.920 | 0.7 |
+| san-francisco | 76-77°F | 0.340 | 0.0 |
+| sao-paulo | 18°C | 0.535 | 0.2 |
+| seattle | 82-83°F | 0.440 | 0.1 |
+| seoul | 32°C | 0.998 | 0.0 |
+| shanghai | 36°C | 0.938 | 0.0 |
+| shenzhen | 29°C | 0.610 | 0.0 |
+| singapore | 32°C | 0.976 | 0.0 |
+| taipei | 35°C | 0.940 | 3.8 |
+| tel-aviv | 32°C | 0.590 | 3.8 |
+| tokyo | 34°C | 0.995 | 0.0 |
+| toronto | 37°C | 0.390 | 1.6 |
+| warsaw | 26°C | 0.415 | 1.1 |
+| wellington | 15°C | 0.995 | 0.0 |
+| wuhan | 38°C | 0.630 | 7.4 |
+
+</details>
+
+<details>
+<summary>World Cup market state snapshot (52 reporting)</summary>
+
+| event | top outcome | probability | age (s) |
+|---|---|---|---|
+| another-world-cup-card-reversed-20260706193823524 | Another World Cup card reversed? | 0.020 | 716.6 |
+| how-many-world-cup-matches-will-trump-attend-20260610185739769 | 1 | 0.962 | 0.0 |
+| president-trump-to-attend-world-cup-final-20260608152749044 | President Trump to Attend World Cup Final? | 0.948 | 0.1 |
+| what-song-will-be-played-first-at-the-world-cup-halftime-show-20260703154131021 | Dynamite | 0.385 | 95.3 |
+| what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487 | Waka Waka (This Time for Africa) | 0.570 | 71.7 |
+| which-continent-will-win-the-world-cup | Europe (UEFA) | 0.825 | 3.8 |
+| who-will-perform-at-world-cup-halftime-show | Shakira | 0.994 | 18.5 |
+| will-messi-and-ronaldo-shake-hands-during-world-cup-20260609221211643 | Will Messi and Ronaldo Shake Hands During World Cup? | 0.007 | 8.7 |
+| world-cup-3rd-place-game-exact-matchup-20260708194423346 | ESP vs ARG | 0.330 | 37.5 |
+| world-cup-argentina-stage-of-elimination | Semifinals | 0.552 | 0.0 |
+| world-cup-boot-brand-worn-by-golden-ball-winner-20260623194803363 | Adidas | 0.390 | 54.8 |
+| world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153 | Nike | 0.605 | 1.9 |
+| world-cup-bronze-ball-winner-20260603194938828 | Lionel Messi | 0.200 | 0.3 |
+| world-cup-bronze-boot-winner-20260603200444388 | Jude Bellingham | 0.399 | 0.2 |
+| world-cup-continent-to-score-the-most-goals-20260612155037505 | Europe (UEFA) | 0.998 | 100.1 |
+| world-cup-england-stage-of-elimination | Semifinals | 0.445 | 0.0 |
+| world-cup-fair-play-award-winner-20260603201520240 | Norway | 0.824 | 0.4 |
+| world-cup-fastest-goal-in-a-final-record-broken-20260609182956386 | World Cup: Fastest Goal in a Final Record Broken? | 0.011 | 1.9 |
+| world-cup-finals-exact-matchup-20260708195422328 | FRA vs ENG | 0.335 | 0.6 |
+| world-cup-france-stage-of-elimination | Semifinals | 0.405 | 0.0 |
+| world-cup-furthest-advancing-uefa-nation | France | 0.475 | 0.7 |
+| world-cup-goalkeeper-to-score-20260607161409835 | World Cup: Goalkeeper to Score? | 0.007 | 3.5 |
+| world-cup-golden-ball-winner-20260603194031758 | Kylian Mbappé | 0.405 | 1.1 |
+| world-cup-golden-boot-winner | Kylian Mbappe | 0.565 | 3.0 |
+| world-cup-golden-glove-winner-20260603195306910 | Mike Maignan | 0.360 | 0.0 |
+| world-cup-group-of-champion-20260605001357294 | Group I (Senegal, Norway, France, Iraq) | 0.395 | 0.0 |
+| world-cup-julian-alvarez-goals-20260611150351743 | 2+ | 0.410 | 40.0 |
+| world-cup-kylian-mbappe-goals-20260611144016735 | 9+ | 0.690 | 4.0 |
+| world-cup-lamine-yamal-goals-20260610223923587 | 2+ | 0.475 | 85.6 |
+| world-cup-lionel-messi-goals-20260611144827122 | 9+ | 0.615 | 2.9 |
+| world-cup-messi-to-score-2-penalties-20260605004829032 | World Cup: Messi to Score 2+ Penalties? | 0.080 | 22.3 |
+| world-cup-most-assists | Michael Olise | 0.922 | 7.9 |
+| world-cup-most-clean-sheets-gk | Mike Maignan | 0.186 | 10.2 |
+| world-cup-most-goal-contributions | Kylian Mbappé | 0.700 | 0.0 |
+| world-cup-most-goals-record-broken-20260608192914170 | World Cup: Most Player Goals Record Broken? | 0.018 | 1.6 |
+| world-cup-nation-of-top-goalscorer | France | 0.555 | 0.0 |
+| world-cup-nation-to-reach-final | France | 0.595 | 0.2 |
+| world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234 | 5+ matches | 0.570 | 5.5 |
+| world-cup-nopt-of-matches-suspended-by-weather-protocol-20260610211248548 | 4+ matches | 0.110 | 47.2 |
+| world-cup-nopt-of-matches-to-go-to-extra-time-20260610205948193 | 9+ matches | 0.790 | 1.1 |
+| world-cup-number-of-missed-penalties-20260610205749652 | 10+ missed penalties | 0.013 | 65.9 |
+| world-cup-player-to-score | Michael Olise | 0.385 | 1.7 |
+| world-cup-shirt-manufacturer-worn-by-champion-20260623192343445 | Nike | 0.605 | 9.5 |
+| world-cup-silver-ball-winner-20260603194459107 | Lionel Messi | 0.411 | 0.0 |
+| world-cup-silver-boot-winner-20260603195826159 | Lionel Messi | 0.537 | 39.6 |
+| world-cup-single-match-yellow-cards-record-broken-20260608181825534 | World Cup: Single Match Yellow Cards Record Broken? | 0.013 | 16.8 |
+| world-cup-spain-stage-of-elimination | Semifinals | 0.595 | 0.0 |
+| world-cup-team-with-the-most-clean-sheets-20260612153557923 | Spain | 0.805 | 0.3 |
+| world-cup-top-scorer-nation | France | 0.550 | 2.9 |
+| world-cup-unbeaten-champion |  | 1.000 | 92.5 |
+| world-cup-winner | France | 0.390 | 0.0 |
+| world-cup-young-player-award-winner-20260602160649063 | Lamine Yamal | 0.435 | 0.9 |
+
+</details>
+
+<details>
+<summary>Staleness events (observe-only — no auto action taken)</summary>
+
+| market | silent (ms) | bucket crossed (ms) |
+|---|---|---|
+| weather:sao-paulo:15°C:poly | 13832 | 10000 |
+| weather:mexico-city:26°C:poly | 10827 | 10000 |
+| weather:london:26°C:poly | 13215 | 10000 |
+| weather:nyc:96-97°F:poly | 14884 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Jay-Z:poly | 30938 | 30000 |
+| weather:houston:78-79°F:poly | 11511 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Spain:poly | 14576 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Pau Cubarsí:poly | 10923 | 10000 |
+| worldcup:will-messi-and-ronaldo-shake-hands-during-world-cup-20260609221211643:Will Messi and Ronaldo Shake Hands During World Cup?:poly | 61603 | 60000 |
+| weather:mexico-city:23°C:poly | 10709 | 10000 |
+| weather:denver:100-101°F:poly | 14798 | 10000 |
+| worldcup:what-song-will-be-played-first-at-the-world-cup-halftime-show-20260703154131021:Hips Don't Lie:poly | 30626 | 30000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Álvaro Morata:poly | 11431 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Wizkid:poly | 11224 | 10000 |
+| worldcup:world-cup-golden-boot-winner:Jude Bellingham:poly | 12375 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:J Balvin:poly | 30267 | 30000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:4+:poly | 33654 | 30000 |
+| weather:seattle:74-75°F:poly | 10245 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Kylian Mbappé:poly | 10038 | 10000 |
+| weather:karachi:33°C:poly | 11417 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Lamine Yamal:poly | 14591 | 10000 |
+| SOL-4h:poly | 12371 | 10000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:3+:poly | 33575 | 30000 |
+| worldcup:world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234:6+ matches:poly | 62778 | 60000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Kylian Mbappé:poly | 10037 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:England:poly | 11276 | 10000 |
+| weather:warsaw:23°C:poly | 12207 | 10000 |
+| weather:karachi:32°C:poly | 11416 | 10000 |
+| weather:dallas:92-93°F:poly | 34614 | 30000 |
+| weather:wuhan:37°C:poly | 121672 | 120000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Justin Bieber:poly | 62973 | 60000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Shakira:poly | 11328 | 10000 |
+| worldcup:world-cup-lionel-messi-goals-20260611144827122:13+:poly | 10038 | 10000 |
+| weather:seattle:84-85°F:poly | 10239 | 10000 |
+| weather:miami:88-89°F:poly | 14393 | 10000 |
+| weather:mexico-city:27°C:poly | 10751 | 10000 |
+| weather:nyc:87°F or below:poly | 14124 | 10000 |
+| worldcup:world-cup-shirt-manufacturer-worn-by-champion-20260623192343445:Adidas:poly | 10038 | 10000 |
+| worldcup:world-cup-argentina-stage-of-elimination:Semifinals:poly | 11499 | 10000 |
+| worldcup:world-cup-finals-exact-matchup-20260708195422328:FRA vs ARG:poly | 11327 | 10000 |
+| weather:shanghai:37°C:poly | 12066 | 10000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Harry Kane:poly | 10037 | 10000 |
+| worldcup:world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234:8+ matches:poly | 62760 | 60000 |
+| worldcup:world-cup-finals-exact-matchup-20260708195422328:ESP vs ENG:poly | 11415 | 10000 |
+| weather:nyc:92-93°F:poly | 14303 | 10000 |
+| worldcup:world-cup-team-with-the-most-clean-sheets-20260612153557923:France:poly | 12232 | 10000 |
+| weather:los-angeles:82-83°F:poly | 11310 | 10000 |
+| weather:sao-paulo:18°C:poly | 30311 | 30000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Rayan:poly | 11454 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:BTS:poly | 11237 | 10000 |
+| weather:buenos-aires:12°C:poly | 13115 | 10000 |
+| weather:cape-town:10°C:poly | 11480 | 10000 |
+| worldcup:world-cup-most-goals-record-broken-20260608192914170:World Cup: Most Player Goals Record Broken?:poly | 10037 | 10000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:Nike:poly | 14584 | 10000 |
+| weather:helsinki:20°C or below:poly | 11502 | 10000 |
+| weather:istanbul:27°C:poly | 11794 | 10000 |
+| worldcup:world-cup-england-stage-of-elimination:Final:poly | 12875 | 10000 |
+| worldcup:world-cup-golden-glove-winner-20260603195306910:Yassine Bounou:poly | 33537 | 30000 |
+| worldcup:world-cup-boot-brand-worn-by-golden-ball-winner-20260623194803363:Mizuno:poly | 60315 | 60000 |
+| weather:amsterdam:27°C:poly | 31048 | 30000 |
+| weather:helsinki:22°C:poly | 13932 | 10000 |
+| weather:dallas:84-85°F:poly | 14906 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Gavi:poly | 13022 | 10000 |
+| worldcup:world-cup-golden-boot-winner:Ousmane Dembele:poly | 31450 | 30000 |
+| worldcup:world-cup-golden-glove-winner-20260603195306910:Thibaut Courtois:poly | 34875 | 30000 |
+| weather:warsaw:27°C:poly | 11438 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Lautaro Martínez:poly | 13193 | 10000 |
+| weather:singapore:34°C:poly | 32399 | 30000 |
+| weather:wellington:16°C:poly | 13885 | 10000 |
+| weather:tel-aviv:33°C:poly | 14064 | 10000 |
+| weather:atlanta:78-79°F:poly | 13400 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Drake:poly | 34200 | 30000 |
+| weather:panama-city:35°C:poly | 13053 | 10000 |
+| weather:helsinki:26°C:poly | 12238 | 10000 |
+| weather:buenos-aires:13°C:poly | 31747 | 30000 |
+| weather:buenos-aires:17°C:poly | 31307 | 30000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Harry Kane:poly | 13427 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Camila Cabello:poly | 14079 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Arda Güler:poly | 14939 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Harry Kane:poly | 11878 | 10000 |
+| weather:milan:33°C:poly | 11466 | 10000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Pedri:poly | 123144 | 120000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Rodri:poly | 12030 | 10000 |
+| worldcup:world-cup-winner:England:poly | 14571 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Erling Haaland:poly | 13027 | 10000 |
+| weather:milan:31°C:poly | 11463 | 10000 |
+| worldcup:world-cup-golden-boot-winner:Harry Kane:poly | 13583 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Ousmane Dembélé:poly | 13190 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Ferran Torres:poly | 13193 | 10000 |
+| weather:dallas:90-91°F:poly | 32224 | 30000 |
+| weather:seattle:92°F or higher:poly | 14613 | 10000 |
+| weather:amsterdam:26°C:poly | 11607 | 10000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Michael Olise:poly | 12546 | 10000 |
+| worldcup:world-cup-spain-stage-of-elimination:Champion:poly | 31547 | 30000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Lamine Yamal:poly | 13193 | 10000 |
+| worldcup:world-cup-single-match-yellow-cards-record-broken-20260608181825534:World Cup: Single Match Yellow Cards Record Broken?:poly | 12358 | 10000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:Mizuno:poly | 60897 | 60000 |
+| weather:istanbul:26°C:poly | 11563 | 10000 |
+| weather:panama-city:30°C:poly | 14192 | 10000 |
+| weather:shenzhen:33°C:poly | 13765 | 10000 |
+| worldcup:world-cup-spain-stage-of-elimination:Final:poly | 30935 | 30000 |
+| worldcup:what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487:Sorry:poly | 14126 | 10000 |
+| weather:cape-town:18°C:poly | 12762 | 10000 |
+| weather:dallas:80-81°F:poly | 32307 | 30000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Nico Paz:poly | 14294 | 10000 |
+| weather:lucknow:38°C:poly | 11561 | 10000 |
+| worldcup:what-song-will-be-played-first-at-the-world-cup-halftime-show-20260703154131021:Like a Virgin:poly | 34731 | 30000 |
+| weather:istanbul:24°C:poly | 11510 | 10000 |
+| weather:toronto:38°C:poly | 11930 | 10000 |
+| weather:dallas:82-83°F:poly | 11455 | 10000 |
+| weather:toronto:33°C:poly | 11912 | 10000 |
+| worldcup:world-cup-finals-exact-matchup-20260708195422328:ESP vs ARG:poly | 12513 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:The Weeknd:poly | 31109 | 30000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:ESP vs ENG:poly | 32125 | 30000 |
+| worldcup:world-cup-golden-boot-winner:Kylian Mbappe:poly | 11852 | 10000 |
+| weather:shanghai:38°C:poly | 11423 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Álvaro Morata:poly | 13193 | 10000 |
+| weather:san-francisco:74-75°F:poly | 12772 | 10000 |
+| worldcup:world-cup-player-to-score:Michael Olise:poly | 30274 | 30000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Norway:poly | 13353 | 10000 |
+| weather:toronto:40°C:poly | 12125 | 10000 |
+| worldcup:world-cup-nation-to-reach-final:Spain:poly | 14979 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Mexico:poly | 14758 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Neymar:poly | 13026 | 10000 |
+| weather:istanbul:29°C:poly | 11794 | 10000 |
+| weather:dallas:94°F or higher:poly | 32088 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Charli XCX:poly | 60845 | 60000 |
+| worldcup:world-cup-nation-of-top-goalscorer:Spain:poly | 14904 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Taylor Swift:poly | 11651 | 10000 |
+| worldcup:world-cup-finals-exact-matchup-20260708195422328:FRA vs ENG:poly | 12501 | 10000 |
+| worldcup:world-cup-player-to-score:Ferran Torres:poly | 60626 | 60000 |
+| weather:munich:28°C:poly | 13516 | 10000 |
+| weather:munich:31°C:poly | 33059 | 30000 |
+| weather:atlanta:86-87°F:poly | 11742 | 10000 |
+| weather:milan:35°C:poly | 11463 | 10000 |
+| weather:buenos-aires:11°C or below:poly | 32082 | 30000 |
+| weather:guangzhou:34°C or higher:poly | 11902 | 10000 |
+| weather:taipei:37°C:poly | 33185 | 30000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Ousmane Dembélé:poly | 11822 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Ayyoub Bouaddi:poly | 30747 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Daddy Yankee:poly | 14274 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Rayan Cherki:poly | 13023 | 10000 |
+| weather:toronto:39°C:poly | 11508 | 10000 |
+| weather:milan:36°C:poly | 11463 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Jude Bellingham:poly | 13280 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Pedri:poly | 13025 | 10000 |
+| worldcup:world-cup-player-to-score:David Raya:poly | 61983 | 60000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Harry Kane:poly | 12554 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Mikel Oyarzabal:poly | 13193 | 10000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:ESP vs ARG:poly | 32095 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Ed Sheeran:poly | 30633 | 30000 |
+| weather:manila:36°C:poly | 11886 | 10000 |
+| worldcup:world-cup-julian-alvarez-goals-20260611150351743:4+:poly | 33333 | 30000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Ousmane Dembélé:poly | 13853 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Olivia Rodrigo:poly | 31076 | 30000 |
+| worldcup:world-cup-player-to-score:Bukayo Saka:poly | 33536 | 30000 |
+| worldcup:world-cup-group-of-champion-20260605001357294:Group H (Cape Verde, Uruguay, Spain, Saudi Arabia):poly | 13962 | 10000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:FRA vs ENG:poly | 14209 | 10000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:5+:poly | 33354 | 30000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:FRA vs ARG:poly | 32127 | 30000 |
+| worldcup:world-cup-boot-brand-worn-by-golden-ball-winner-20260623194803363:Skechers:poly | 303884 | 300000 |
+| worldcup:world-cup-number-of-missed-penalties-20260610205749652:15+ missed penalties:poly | 63612 | 60000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Travis Scott:poly | 61347 | 60000 |
+| worldcup:world-cup-player-to-score:William Saliba:poly | 30990 | 30000 |
+| weather:san-francisco:71°F or below:poly | 33422 | 30000 |
+| worldcup:world-cup-number-of-missed-penalties-20260610205749652:20+ missed penalties:poly | 30368 | 30000 |
+| worldcup:world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234:5+ matches:poly | 30673 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Rihanna:poly | 122512 | 120000 |
+| worldcup:world-cup-kylian-mbappe-goals-20260611144016735:11+:poly | 31642 | 30000 |
+| worldcup:world-cup-player-to-score:Jules Koundé:poly | 30996 | 30000 |
+| worldcup:world-cup-player-to-score:Eberechi Eze:poly | 32628 | 30000 |
+| worldcup:what-song-will-be-played-first-at-the-world-cup-halftime-show-20260703154131021:Dai Dai:poly | 30629 | 30000 |
+| worldcup:what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487:Chantaje:poly | 34779 | 30000 |
+| worldcup:world-cup-nopt-of-matches-suspended-by-weather-protocol-20260610211248548:5+ matches:poly | 201251 | 200000 |
+| worldcup:world-cup-julian-alvarez-goals-20260611150351743:6+:poly | 60822 | 60000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Vinícius Jr.:poly | 31463 | 30000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Declan Rice:poly | 33937 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Karol G:poly | 201256 | 200000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Harry Styles:poly | 32220 | 30000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Lionel Messi:poly | 33923 | 30000 |
+| worldcup:world-cup-fastest-goal-in-a-final-record-broken-20260609182956386:World Cup: Fastest Goal in a Final Record Broken?:poly | 30525 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:David Guetta:poly | 201119 | 200000 |
+| weather:moscow:21°C:poly | 13530 | 10000 |
+| worldcup:world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234:7+ matches:poly | 12126 | 10000 |
+| worldcup:world-cup-group-of-champion-20260605001357294:Group L (England, Ghana, Croatia, Panama):poly | 32072 | 30000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Sabrina Carpenter:poly | 10720 | 10000 |
+| worldcup:president-trump-to-attend-world-cup-final-20260608152749044:President Trump to Attend World Cup Final?:poly | 11189 | 10000 |
+| worldcup:world-cup-england-stage-of-elimination:Semifinals:poly | 12686 | 10000 |
+| weather:warsaw:26°C:poly | 13275 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Bukayo Saka:poly | 11283 | 10000 |
+| weather:moscow:22°C:poly | 13470 | 10000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Gavi:poly | 12762 | 10000 |
+| weather:tel-aviv:32°C:poly | 12722 | 10000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:New Balance:poly | 10061 | 10000 |
+| weather:moscow:28°C:poly | 13531 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Cardi B:poly | 10533 | 10000 |
+| worldcup:world-cup-golden-glove-winner-20260603195306910:Diogo Costa:poly | 13247 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Ozuna:poly | 64984 | 60000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Ousmane Dembélé:poly | 11162 | 10000 |
+| worldcup:world-cup-player-to-score:Marc Cucurella:poly | 10794 | 10000 |
+
+_... and 4800 more._
+
+</details>
+
+<details>
+<summary>CPU / memory</summary>
+
+- CPU (avg over this run's window, one-core=100%): **52.69%**
+- Memory (current): **241.7 MiB**
+
+</details>
+
+</details>
+
+<!-- siglab-hour-body-end -->
+</details>
+
 <!-- siglab-hour:2026-07-14T13 -->
 ### 2026-07-14 13:00 HKT
 
-<details open>
+<details>
 <summary><strong>1 report run(s), 415 trade(s) this hour, total pnl 1.4530</strong></summary>
 
 <!-- siglab-hour-body-start -->
