@@ -118,6 +118,21 @@ pub struct TradeRecord {
     pub strategy: &'static str,
     pub side: Side,
     pub entry_ts: f64,
+    /// Timestamp of the actual poly-price observation (`LatestPolySignal::ts`) that
+    /// satisfied entry — distinct from `entry_ts`, which is the *triggering* tick's own
+    /// timestamp (poly or binance, whichever caused the `try_enter` check to run). Entry
+    /// evaluation fires on both feeds; when a binance tick triggers it using an
+    /// already-cached poly price, `entry_ts` reflects that binance tick, not when the poly
+    /// price was actually seen. Since one asset's binance feed broadcasts identically to
+    /// every duration task trading it, this made economically distinct markets (e.g.
+    /// BTC-5m and BTC-15m) log identical `entry_ts` values purely because the same shared
+    /// binance tick happened to trigger both — see
+    /// `siglab/doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
+    /// 0.0 for records predating this field (added 2026-07-14) or where the observation
+    /// timestamp genuinely wasn't tracked (some `worker.rs` paths — see that field's own
+    /// call sites).
+    #[serde(default)]
+    pub entry_price_ts: f64,
     pub token_price: f64,
     pub exit_price: f64,
     pub outcome: Outcome,

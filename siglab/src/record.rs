@@ -49,6 +49,13 @@ pub struct SiglabTradeRecord {
     pub strategy: String,
     pub side: String,
     pub entry_ts: f64,
+    /// The actual poly-price observation's own timestamp (`trader::types::TradeRecord::
+    /// entry_price_ts`) — distinct from `entry_ts`, the *triggering* tick's timestamp
+    /// (poly or binance). See that field's doc comment and
+    /// `doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
+    /// `#[serde(default)]` so records logged before this field existed still deserialize.
+    #[serde(default)]
+    pub entry_price_ts: f64,
     pub token_price: f64,
     pub exit_price: f64,
     pub outcome: String,
@@ -75,6 +82,7 @@ impl SiglabTradeRecord {
             strategy: rec.strategy.to_string(),
             side: rec.side.as_str().to_string(),
             entry_ts: rec.entry_ts,
+            entry_price_ts: rec.entry_price_ts,
             token_price: rec.token_price,
             exit_price: rec.exit_price,
             outcome: rec.outcome.as_str().to_string(),
@@ -110,6 +118,9 @@ impl SiglabTradeRecord {
             strategy: "reversal".to_string(),
             side: if side_up { "UP" } else { "DOWN" }.to_string(),
             entry_ts,
+            // bucket_reversal.rs has no separate triggering-tick-vs-observation-tick
+            // distinction (single on_tick stream, no binance reference feed) — same value.
+            entry_price_ts: entry_ts,
             token_price: entry_price,
             exit_price,
             outcome: outcome.to_string(),

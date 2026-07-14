@@ -24,6 +24,10 @@ pub struct HoldingData {
     pub entry_type: EntryType,
     pub token_price: f64,
     pub entry_ts: f64,
+    /// The poly-price observation's own timestamp (`LatestPolySignal::ts`) at the moment
+    /// entry fired — see `TradeRecord::entry_price_ts`'s doc comment for why this can
+    /// differ from `entry_ts`.
+    pub entry_price_ts: f64,
     pub binance_at_entry: f64,
 }
 
@@ -337,6 +341,7 @@ impl Machine {
             entry_type: intent.entry_type,
             token_price,
             entry_ts: now,
+            entry_price_ts: self.latest_poly.ts,
             binance_at_entry: intent.binance_price,
         });
     }
@@ -378,6 +383,7 @@ impl Machine {
             strategy: self.strategy_name,
             side: h.side,
             entry_ts: h.entry_ts,
+            entry_price_ts: h.entry_price_ts,
             token_price: h.token_price,
             exit_price,
             outcome,
@@ -779,6 +785,80 @@ mod tests {
         assert!(
             !m.is_holding(),
             "must not fire on a delta_pct left over from the previous cycle"
+        );
+    }
+
+    /// `entry_ts` is the *triggering* tick's timestamp (poly or binance, whichever
+    /// caused `try_enter` to run); `entry_price_ts` must instead reflect when the poly
+    /// price that actually satisfied the condition was observed. When a stale cached
+    /// poly reading is what qualifies, and a later binance tick is what finally fires
+    /// the entry (delta_pct only becomes ready then), the two timestamps must diverge —
+    /// this is the mechanism behind the cross-duration `entry_ts` collision documented in
+    /// siglab/doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md.
+    #[test]
+    fn entry_price_ts_reflects_stale_cached_poly_tick_not_triggering_binance_tick() {
+        let p = btc_params();
+        let mut m = Machine::new_reversal(&p);
+        m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", false);
+
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }); // dip latches saw_low_dn
+
+        // Recovery is visible now, but delta_pct isn't cached yet (no BinanceTick this
+        // cycle) -- try_enter's dp check fails, so no entry yet. latest_poly is left
+        // holding this (dn=0.70, ts=1210) reading.
+        m.on_poly(PolyTick {
+            ts: 1210.0,
+            up: 0.30,
+            dn: 0.70,
+        });
+        assert!(
+            !m.is_holding(),
+            "setup: must not fire without delta_pct cached"
+        );
+
+        // 40s later, a BinanceTick finally caches delta_pct in the right direction and
+        // triggers try_enter -- entry fires using the stale ts=1210 poly reading, at
+        // `now` = this binance tick's own ts=1250.
+        let none = m.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        });
+        assert!(none.is_none());
+        assert!(
+            m.is_holding(),
+            "expected entry on the binance-triggered check"
+        );
+
+        // Force an immediate stop-loss to read back the recorded HoldingData via the
+        // emitted TradeRecord (Machine exposes no direct HoldingData getter).
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1211.0,
+                up: 0.55,
+                dn: 0.45, // <= entry(0.70) - sl_pnl_rev(0.20) = 0.50
+            })
+            .expect("stop-loss should fire");
+
+        assert_eq!(
+            rec.entry_ts, 1250.0,
+            "entry_ts is the triggering binance tick"
+        );
+        assert_eq!(
+            rec.entry_price_ts, 1210.0,
+            "entry_price_ts must be the actual poly observation's own timestamp"
+        );
+        assert_ne!(
+            rec.entry_ts, rec.entry_price_ts,
+            "the whole point of the field: these differ when a binance tick fires \
+             entry off a stale cached poly reading"
+        );
+        assert_eq!(
+            rec.token_price, 0.70,
+            "fill uses the cached poly price, not binance"
         );
     }
 

@@ -118,7 +118,9 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let args = Args::parse();
-    let cfg = config::load(&args.config)?;
+    // Arc'd so the report-writer task (spawned below) can hold its own cheap handle and
+    // render an always-current config table without cloning the whole config on every write.
+    let cfg = std::sync::Arc::new(config::load(&args.config)?);
     let weather_cfg = config::load_weather(&args.weather_config)?;
     let worldcup_cfg = config::load_worldcup(&args.worldcup_config)?;
 
@@ -333,6 +335,7 @@ async fn main() -> Result<()> {
 
     // ── hourly report writer ──
     let report_task = {
+        let cfg = cfg.clone();
         let snapshots = snapshots.clone();
         let stale_log = stale_log.clone();
         let trade_log_path = args.log.clone();
@@ -355,6 +358,7 @@ async fn main() -> Result<()> {
                 let cgroup_now = cgroup::sample();
                 match report::write_hourly_report(
                     &report_dir,
+                    &cfg,
                     &snapshots,
                     &trade_log_path,
                     &stale_log,

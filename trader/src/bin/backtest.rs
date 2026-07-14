@@ -160,6 +160,7 @@ mod tests {
             strategy: "high_prob",
             side: Side::Up,
             entry_ts: 1783046105.0,
+            entry_price_ts: 1783046105.0,
             token_price: 0.93,
             exit_price: 1.0,
             outcome: Outcome::Win,

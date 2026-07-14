@@ -38,6 +38,11 @@ pub struct HoldingData {
     pub entry_type: EntryType,
     pub token_price: f64,
     pub entry_ts: f64,
+    /// The cached poly-price observation's own timestamp (`LatestPolySignal::ts`) at fill
+    /// time — see `TradeRecord::entry_price_ts`'s doc comment. `#[serde(default)]` so a
+    /// state file persisted before this field existed still deserializes.
+    #[serde(default)]
+    pub entry_price_ts: f64,
     pub shares: f64,
     pub exit_arm: ExitArm,
     /// Count of failed exit-order attempts (unwind and/or stop-loss) seen
@@ -810,6 +815,7 @@ impl Worker {
             strategy: self.strategy_name,
             side: h.side,
             entry_ts: h.entry_ts,
+            entry_price_ts: h.entry_price_ts,
             token_price: h.token_price,
             exit_price,
             outcome,
@@ -1036,6 +1042,7 @@ impl Worker {
             entry_type,
             token_price: cost,
             entry_ts: self.last_binance_ts(),
+            entry_price_ts: self.latest_poly.ts,
             shares: filled_shares,
             exit_arm,
             exit_attempts: 0,
@@ -1088,6 +1095,7 @@ impl Worker {
                     strategy: self.strategy_name,
                     side: h.side,
                     entry_ts: h.entry_ts,
+                    entry_price_ts: h.entry_price_ts,
                     token_price: h.token_price,
                     exit_price,
                     outcome: Outcome::Unwind,
@@ -1178,6 +1186,7 @@ impl Worker {
             strategy: self.strategy_name,
             side: h.side,
             entry_ts: h.entry_ts,
+            entry_price_ts: h.entry_price_ts,
             token_price: h.token_price,
             exit_price,
             outcome,
@@ -3288,6 +3297,7 @@ mod tests {
             entry_type: EntryType::Reversal,
             token_price: 0.70,
             entry_ts: 1250.0,
+            entry_price_ts: 1250.0,
             shares: 10.0,
             exit_arm: ExitArm::GtcResting {
                 order_id: "gone-order".to_string(),
@@ -3316,6 +3326,7 @@ mod tests {
             entry_type: EntryType::Reversal,
             token_price: 0.70,
             entry_ts: 1250.0,
+            entry_price_ts: 1250.0,
             shares: 10.0,
             exit_arm: ExitArm::GtcResting {
                 order_id: "still-live".to_string(),
@@ -3347,6 +3358,7 @@ mod tests {
             entry_type: EntryType::Reversal,
             token_price: 0.70,
             entry_ts: 1250.0,
+            entry_price_ts: 1250.0,
             shares: 10.0,
             exit_arm: ExitArm::PriceMonitor { tp_price: 0.73 },
             exit_attempts: 0,

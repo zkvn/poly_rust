@@ -835,6 +835,25 @@ code). Summary:
 
 ## Trading engine — known incidents
 
+### `TradeRecord`/`HoldingData` gained `entry_price_ts` — additive, compiled/tested, not deployed (2026-07-14, added)
+
+Investigating a `siglab` report anomaly (18 reversal-variant paper-trades logging identical
+entry timestamps across *different* real markets) traced the root cause into shared code:
+`Machine::try_enter`/`Worker`'s live entry path stamp `entry_ts` with whichever tick (poly or
+Binance) triggered the check, not the timestamp of the poly price actually observed — since
+every duration-task for an asset shares one Binance broadcast, this made economically
+distinct markets (e.g. `sol-updown-5m`/`sol-updown-15m`) log identical `entry_ts`. Added
+`TradeRecord::entry_price_ts`/`HoldingData::entry_price_ts` (from `LatestPolySignal::ts`,
+`#[serde(default)]`) to both `trader/src/machine.rs` (backtest/siglab path) and
+`trader/src/worker.rs` (live path, for schema consistency) — purely additive, zero change to
+`entry_ts` itself or any entry/gate/fill/timeout decision. `cargo test --lib --bins`,
+`cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings` all
+clean on `trader` (187 tests passing; 4 pre-existing unrelated config-fixture failures
+confirmed present before this change too). **Not deployed to the live `trader-live.service`**
+per explicit instruction — compiled and tested locally only; redeploy separately if/when
+wanted. Full writeup:
+`siglab/doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
+
 ### ETH TIMEOUT losses ran overnight without ever tripping the loss-streak halt (2026-07-14, fixed)
 
 `Outcome::is_loss_for_halt()` blanket-excluded `Timeout` (the `unwind_time_rev`/`unwind_time_hp`

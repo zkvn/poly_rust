@@ -23,6 +23,7 @@ use anyhow::{Context, Result};
 use chrono::{FixedOffset, TimeZone as _, Timelike, Utc};
 
 use crate::cgroup;
+use crate::config::SiglabConfig;
 use crate::record::SiglabTradeRecord;
 use crate::snapshot::SharedSnapshots;
 
@@ -30,6 +31,13 @@ const HOUR_MARKER_PREFIX: &str = "<!-- siglab-hour:";
 const HOUR_BODY_START: &str = "<!-- siglab-hour-body-start -->\n";
 const HOUR_BODY_END: &str = "<!-- siglab-hour-body-end -->\n";
 const RUN_MARKER: &str = "<!-- siglab-run -->\n";
+// Wraps the config-table section so it can be replaced wholesale on every write (reflects
+// whatever `markets.toml` currently says, not whatever it said the first time the file was
+// created) without disturbing the header-based file-identity check in
+// `write_hourly_report` — that check only looks at the fixed `header` string, and this
+// section always lives right after it.
+const CONFIG_MARKER_START: &str = "<!-- siglab-config-start -->\n";
+const CONFIG_MARKER_END: &str = "<!-- siglab-config-end -->\n";
 
 /// One staleness event, timestamped so the report can filter to "this run's window".
 #[derive(Debug, Clone)]
@@ -108,12 +116,19 @@ fn window_label(window_secs: f64) -> String {
     }
 }
 
-fn entry_datetime_hkt(entry_ts: f64) -> String {
-    Utc.timestamp_opt(entry_ts as i64, 0)
+/// Renders a unix timestamp as an HKT datetime string, to millisecond precision. Truncating
+/// to whole seconds (the previous behavior) made genuinely-distinct trades a fraction of a
+/// second apart look identical in the rendered report — part of what made the correlated-
+/// variant-firing incident harder to read from the report alone; see
+/// `doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
+fn datetime_hkt(ts: f64) -> String {
+    let secs = ts.trunc() as i64;
+    let nanos = (ts.fract().max(0.0) * 1_000_000_000.0).round() as u32;
+    Utc.timestamp_opt(secs, nanos)
         .single()
         .map(|dt| {
             dt.with_timezone(&hkt())
-                .format("%Y-%m-%d %H:%M:%S")
+                .format("%Y-%m-%d %H:%M:%S%.3f")
                 .to_string()
         })
         .unwrap_or_else(|| "?".to_string())
@@ -159,12 +174,18 @@ fn render_market_trade_table(rows: &[&SiglabTradeRecord]) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut out = String::from(
-        "| datetime (HKT) | variant | side | outcome | pnl |\n|---|---|---|---|---|\n",
+        "| entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |\n\
+         |---|---|---|---|---|---|---|\n",
     );
     for t in &sorted {
+        // `logged_at` is stamped immediately after the trade record is produced (same
+        // synchronous handler as the exit decision) — an accurate proxy for exit time
+        // without needing a further trader/src change to carry a real exit_ts through.
+        let holding_secs = t.logged_at - t.entry_ts;
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {:.4} |\n",
-            entry_datetime_hkt(t.entry_ts),
+            "| {} | {} | {holding_secs:.1} | {} | {} | {} | {:.4} |\n",
+            datetime_hkt(t.entry_ts),
+            datetime_hkt(t.logged_at),
             t.variant_id,
             t.side,
             t.outcome,
@@ -394,6 +415,73 @@ fn render_run_section(
     out
 }
 
+fn fmt_opt(x: Option<f64>) -> String {
+    x.map(|v| format!("{v}")).unwrap_or_else(|| "-".to_string())
+}
+
+/// Config-table section, wrapped in `CONFIG_MARKER_START/END` so `write_hourly_report` can
+/// replace it wholesale on every write rather than let it go stale — reflects whatever
+/// `config/markets.toml` currently says. Added after the correlated-variant-firing incident
+/// made clear how easy it is to lose track of which of the 18 reversal variants maps to
+/// which (low, high) pair purely by reading trade rows; see
+/// `doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
+fn render_config_section(cfg: &SiglabConfig) -> String {
+    let mut out = format!("{CONFIG_MARKER_START}### Strategy config\n\n");
+
+    out.push_str("<details>\n<summary>Crypto markets & durations</summary>\n\n");
+    out.push_str("| asset | duration | period (s) |\n|---|---|---|\n");
+    for m in &cfg.markets {
+        out.push_str(&format!(
+            "| {} | {} | {} |\n",
+            m.asset, m.suffix, m.period_secs
+        ));
+    }
+    for m in &cfg.hourly_markets {
+        out.push_str(&format!("| {} | hourly-et | 3600 |\n", m.asset));
+    }
+    out.push_str("\n</details>\n\n");
+
+    out.push_str("<details>\n<summary>Strategy variants</summary>\n\n");
+    out.push_str(
+        "| variant | strategy | assets | reversal_low_threshold | reversal | sl_pnl_rev | \
+         unwind_pnl_rev | unwind_time_rev (s) | price_high_rev | delta_pct_rev | \
+         max_buy_price | trade_size ($) |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    for v in &cfg.variants {
+        let assets = if v.assets.is_empty() {
+            "all".to_string()
+        } else {
+            v.assets.join(", ")
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.4} | {:.2} | {:.2} |\n",
+            v.id,
+            v.strategy,
+            assets,
+            fmt_opt(v.reversal_low_threshold),
+            fmt_opt(v.reversal),
+            fmt_opt(v.sl_pnl_rev),
+            fmt_opt(v.unwind_pnl_rev),
+            fmt_opt(v.unwind_time_rev),
+            v.price_high_rev,
+            v.delta_pct_rev,
+            v.max_buy_price,
+            v.trade_size_usdc,
+        ));
+    }
+    out.push_str("\n</details>\n\n");
+
+    out.push_str(
+        "Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid via \
+         `bucket_reversal.rs::reversal_grid()` (fixed `sl_pnl=0.3`/`unwind_pnl=0.15`/\
+         `max_hold=30s`), not this config file — see that module's doc comment.\n\n",
+    );
+
+    out.push_str(CONFIG_MARKER_END);
+    out
+}
+
 /// Renders one hour's whole `<details>` block (marker comment + summary + `inner`, which is
 /// the concatenation of that hour's `RUN_MARKER`-prefixed run blocks, newest first).
 fn render_hour_block(
@@ -419,8 +507,10 @@ fn render_hour_block(
 /// the still-current hour's `<details>` (if the last write was in the same real HKT hour)
 /// or as a fresh hour section on top (collapsing the previous hour's section, since only the
 /// current hour stays expanded by default).
+#[allow(clippy::too_many_arguments)]
 pub fn write_hourly_report(
     report_dir: &Path,
+    cfg: &SiglabConfig,
     snapshots: &SharedSnapshots,
     trade_log_path: &Path,
     stale_log: &SharedStaleLog,
@@ -451,6 +541,17 @@ pub fn write_hourly_report(
         // Missing file, or an existing file from a previous day/format — start fresh
         // rather than guess where the header ends.
         String::new()
+    };
+    // Strip out any previously-written config section — it's always regenerated fresh
+    // below from the current `cfg` rather than left stale from whenever the file was
+    // first created today.
+    let body = match (body.find(CONFIG_MARKER_START), body.find(CONFIG_MARKER_END)) {
+        (Some(start), Some(end)) if end >= start => {
+            let mut b = body[..start].to_string();
+            b.push_str(&body[end + CONFIG_MARKER_END.len()..]);
+            b
+        }
+        _ => body,
     };
 
     let now = now_hkt();
@@ -546,6 +647,7 @@ pub fn write_hourly_report(
 
     let mut f = std::fs::File::create(&path).with_context(|| format!("write {path:?}"))?;
     f.write_all(header.as_bytes())?;
+    f.write_all(render_config_section(cfg).as_bytes())?;
     f.write_all(new_body.as_bytes())?;
     Ok(path)
 }
@@ -595,6 +697,7 @@ mod tests {
             1,
             "old-schema line must not be silently dropped"
         );
+        assert_eq!(trades[0].entry_price_ts, 0.0);
         assert_eq!(trades[0].market, "");
         assert!((trades[0].pnl - 0.0791).abs() < 1e-9);
     }
@@ -626,6 +729,7 @@ mod tests {
             strategy: strategy.to_string(),
             side: "UP".to_string(),
             entry_ts,
+            entry_price_ts: entry_ts,
             token_price: 0.5,
             exit_price: 0.6,
             outcome: "WIN".to_string(),
@@ -660,7 +764,9 @@ mod tests {
             0.5,
         )];
         let section = render_trades_section(&trades, "past 15 min");
-        assert!(section.contains("datetime (HKT)"));
+        assert!(section.contains("entry (HKT)"));
+        assert!(section.contains("exit (HKT)"));
+        assert!(section.contains("holding (s)"));
         assert!(section.contains("BTC-4h — 1 trade(s)"));
         // entry_ts formatted as a real date, not a raw epoch number.
         assert!(section.contains("2023-"));
@@ -694,6 +800,84 @@ mod tests {
         assert_eq!(window_label(90.0), "past 90s");
     }
 
+    fn sample_cfg() -> SiglabConfig {
+        SiglabConfig {
+            markets: vec![crate::config::MarketCfg {
+                asset: "BTC".to_string(),
+                suffix: "5m".to_string(),
+                period_secs: 300,
+            }],
+            hourly_markets: vec![],
+            variants: vec![crate::config::VariantCfg {
+                id: "reversal_0.2_0.55".to_string(),
+                strategy: "reversal".to_string(),
+                assets: vec![],
+                no_enter_when_time_left: 0.0,
+                max_buy_price: 0.95,
+                spread_premium_limit: 1.05,
+                spread_discount_limit: 0.95,
+                max_price_age_secs: 2.0,
+                delta_pct_rev: 0.0008,
+                delta_pct_hp: 0.0004,
+                price_high_rev: 0.90,
+                trade_size_usdc: 1.0,
+                reversal: Some(0.55),
+                reversal_low_threshold: Some(0.2),
+                reversal_start_time: Some(999999.0),
+                sl_reversal: Some(0.0),
+                unwind_pnl_rev: Some(0.15),
+                sl_pnl_rev: Some(0.3),
+                unwind_time_rev: Some(30.0),
+                price_low: None,
+                price_high: None,
+                enter_when_time_left: None,
+                sl_high_prob: None,
+                unwind_pnl_hp: None,
+                sl_pnl_hp: None,
+                unwind_time_hp: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn config_section_lists_markets_and_variant_grid() {
+        let section = render_config_section(&sample_cfg());
+        assert!(section.starts_with(CONFIG_MARKER_START));
+        assert!(section.trim_end().ends_with(CONFIG_MARKER_END.trim_end()));
+        assert!(section.contains("BTC"));
+        assert!(section.contains("5m"));
+        assert!(section.contains("reversal_0.2_0.55"));
+        assert!(section.contains("0.55"));
+    }
+
+    #[test]
+    fn config_section_is_replaced_not_duplicated_across_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path();
+        let trade_log = dir.path().join("trades.jsonl");
+        std::fs::write(&trade_log, "").unwrap();
+        let snapshots: SharedSnapshots = Arc::new(Mutex::new(HashMap::new()));
+        let stale_log = new_stale_log();
+        let cfg = sample_cfg();
+
+        let path = write_hourly_report(
+            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+        )
+        .unwrap();
+        write_hourly_report(
+            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content.matches(CONFIG_MARKER_START).count(),
+            1,
+            "config section must be replaced wholesale on every write, not duplicated"
+        );
+        assert_eq!(content.matches("reversal_0.2_0.55").count(), 1);
+    }
+
     #[test]
     fn second_run_in_same_hour_nests_inside_one_hour_details() {
         let dir = tempfile::tempdir().unwrap();
@@ -702,9 +886,14 @@ mod tests {
         std::fs::write(&trade_log, "").unwrap();
         let snapshots: SharedSnapshots = Arc::new(Mutex::new(HashMap::new()));
         let stale_log = new_stale_log();
+        let cfg = SiglabConfig {
+            markets: vec![],
+            hourly_markets: vec![],
+            variants: vec![],
+        };
 
         let path1 = write_hourly_report(
-            report_dir, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
         )
         .unwrap();
         let after_first = std::fs::read_to_string(&path1).unwrap();
@@ -713,7 +902,7 @@ mod tests {
         assert_eq!(after_first.matches("<details open>").count(), 1);
 
         let path2 = write_hourly_report(
-            report_dir, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
         )
         .unwrap();
         let after_second = std::fs::read_to_string(&path2).unwrap();

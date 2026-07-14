@@ -723,6 +723,7 @@ mod tests {
             strategy,
             side: crate::types::Side::Down,
             entry_ts: 0.0,
+            entry_price_ts: 0.0,
             token_price: 0.5,
             exit_price: 0.5,
             outcome,

@@ -180,12 +180,28 @@ issue applies there independently — see the TODO below.
 </details>
 
 <details>
-<summary><strong>Incidents (descending by when found/occurred, all 2026-07-13)</strong></summary>
+<summary><strong>Incidents (descending by when found/occurred)</strong></summary>
 
 ## Incidents
 
-Full writeups in `doc/incident_ws_2026-07-13.md` unless noted. All same calendar day —
-this module was built and put into production in one session.
+Full writeups in `doc/incident_ws_2026-07-13.md` unless noted.
+
+### 2026-07-14 — Reversal variants logged correlated entry timestamps across different markets — **fixed**
+`Machine::try_enter` stamped `entry_ts` with whichever tick (poly or Binance) triggered the
+check, not the timestamp of the poly price actually observed. Since every duration-task for
+an asset shares one Binance broadcast, this made economically distinct markets (e.g.
+`sol-updown-5m` and `sol-updown-15m`) log identical `entry_ts` to the microsecond — 1,151
+trades (~15.5% of crypto reversal trades) affected. Fixed by adding an additive
+`entry_price_ts` field (from `LatestPolySignal::ts`), zero change to any trading decision.
+Also investigated (per explicit request) whether TIMEOUT-dominance meant SL/TP were broken —
+confirmed not a bug (30s `unwind_time_rev` is far shorter than any cycle, so timeout
+mathematically precedes cycle-close in effectively every trade; SL/TP do fire correctly when
+price actually moves enough). Report gained exit-time/holding-duration columns, a strategy
+config table, and millisecond-precision timestamps.
+Full writeup: `doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
+
+All entries below are the same calendar day (2026-07-13) — this module was built and put
+into production in one session.
 
 ### 21:16 HKT — Hourly report push silently failing on SSH auth — **fixed**
 systemd `--user` services don't inherit the interactive shell's SSH agent (see "SSH agent
