@@ -396,7 +396,7 @@ impl HaltTracker {
     /// while already halted (an open position resolving after halt engaged
     /// mid-cycle) must not re-signal.
     pub(crate) fn record_trade(&mut self, rec: &TradeRecord, strategy_name: &str) -> bool {
-        if rec.strategy == strategy_name && rec.outcome.is_loss_for_halt() {
+        if rec.strategy == strategy_name && rec.outcome.is_loss_for_halt(rec.pnl) {
             let was_halted = self.is_halted();
             self.losses += 1;
             return !was_halted && self.is_halted();
@@ -417,10 +417,12 @@ impl HaltTracker {
     pub(crate) fn correct_trade(
         &mut self,
         previous_outcome: Outcome,
+        previous_pnl: f64,
         corrected_outcome: Outcome,
+        corrected_pnl: f64,
     ) -> HaltCorrection {
-        let was_loss = previous_outcome.is_loss_for_halt();
-        let is_loss = corrected_outcome.is_loss_for_halt();
+        let was_loss = previous_outcome.is_loss_for_halt(previous_pnl);
+        let is_loss = corrected_outcome.is_loss_for_halt(corrected_pnl);
         if was_loss == is_loss {
             return HaltCorrection::Unchanged;
         }
@@ -779,17 +781,13 @@ mod tests {
         ));
         assert!(!h.is_halted(), "wins/unwinds must never halt");
 
-        // A Timeout (unwind_time force-exit) is excluded from the halt loss-streak
-        // regardless of pnl sign — matches the backtest's "cum_losses NOT
-        // incremented" TIMEOUT semantics. Try both a losing and a winning-pnl
-        // timeout record to confirm the exclusion isn't accidentally pnl-gated.
-        let mut losing_timeout = halt_test_record("reversal", crate::types::Outcome::Timeout);
-        losing_timeout.pnl = -0.5;
-        assert!(!h.record_trade(&losing_timeout, "reversal"));
+        // A winning Timeout (unwind_time force-exit that happened to land at a
+        // profit) is excluded from the halt loss-streak, same as Win/Unwind —
+        // see the dedicated losing-timeout test below for the pnl-gated case.
         let mut winning_timeout = halt_test_record("reversal", crate::types::Outcome::Timeout);
         winning_timeout.pnl = 0.5;
         assert!(!h.record_trade(&winning_timeout, "reversal"));
-        assert!(!h.is_halted(), "timeout exits must never halt, win or lose");
+        assert!(!h.is_halted(), "a winning timeout must never halt");
 
         assert!(
             !h.record_trade(
@@ -805,6 +803,36 @@ mod tests {
             "reversal"
         ));
         assert!(h.is_halted());
+    }
+
+    /// Regression test for trader/doc/incident_eth_timeout_halt_gap_2026-07-14.md:
+    /// unlike StopLoss (always a loss) and Unwind (always a gain, directionally
+    /// fixed by construction), a TIMEOUT's pnl sign is not fixed — it's a pure
+    /// elapsed-time cap that can land on either side of zero. A run of ETH
+    /// TIMEOUT exits overnight lost real money without ever tripping the
+    /// per-strategy loss-streak halt, because TIMEOUT was blanket-excluded
+    /// regardless of pnl. It must now count toward the streak exactly when it
+    /// actually lost money — same as Loss/StopLoss — and still be excluded
+    /// when it didn't.
+    #[test]
+    fn halt_tracker_record_trade_counts_losing_timeout_only() {
+        let mut h = HaltTracker::new(1, 2); // max=1: a single qualifying loss halts immediately
+
+        let mut winning_timeout = halt_test_record("reversal", crate::types::Outcome::Timeout);
+        winning_timeout.pnl = 0.5;
+        assert!(!h.record_trade(&winning_timeout, "reversal"));
+        assert!(!h.is_halted(), "a winning timeout must never halt");
+
+        let mut losing_timeout = halt_test_record("reversal", crate::types::Outcome::Timeout);
+        losing_timeout.pnl = -0.5;
+        assert!(
+            h.record_trade(&losing_timeout, "reversal"),
+            "a losing timeout must count toward the halt streak, same as Loss/StopLoss"
+        );
+        assert!(
+            h.is_halted(),
+            "a losing timeout must be able to trip the halt"
+        );
     }
 
     /// `reset_if_new_session` must only report `true` when it actually clears
@@ -850,8 +878,9 @@ mod tests {
         assert!(!h.record_trade(&loss, "high_prob")); // losses: 0 -> 1
 
         // Loss -> Win: undoes the phantom count, no threshold crossed either way.
+        // pnl is irrelevant to Loss/Win's own loss-ness, so 0.0 throughout here.
         assert_eq!(
-            h.correct_trade(Outcome::Loss, Outcome::Win),
+            h.correct_trade(Outcome::Loss, 0.0, Outcome::Win, 0.0),
             HaltCorrection::Unchanged
         );
         assert_eq!(h.losses(), 0);
@@ -859,7 +888,7 @@ mod tests {
 
         // Same-loss-ness corrections must never touch the counter.
         assert_eq!(
-            h.correct_trade(Outcome::Win, Outcome::Win),
+            h.correct_trade(Outcome::Win, 0.0, Outcome::Win, 0.0),
             HaltCorrection::Unchanged
         );
         assert_eq!(h.losses(), 0);
@@ -867,13 +896,13 @@ mod tests {
         // Win -> Loss: counts a loss that record_trade never saw. Two of these
         // in a row crosses halt_max=2 on the second.
         assert_eq!(
-            h.correct_trade(Outcome::Win, Outcome::Loss),
+            h.correct_trade(Outcome::Win, 0.0, Outcome::Loss, 0.0),
             HaltCorrection::Unchanged
         );
         assert_eq!(h.losses(), 1);
         assert!(!h.is_halted());
         assert_eq!(
-            h.correct_trade(Outcome::Win, Outcome::Loss),
+            h.correct_trade(Outcome::Win, 0.0, Outcome::Loss, 0.0),
             HaltCorrection::Engaged
         );
         assert_eq!(h.losses(), 2);
@@ -881,10 +910,33 @@ mod tests {
 
         // Correcting one of those back to a Win clears the halt it just tripped.
         assert_eq!(
-            h.correct_trade(Outcome::Loss, Outcome::Win),
+            h.correct_trade(Outcome::Loss, 0.0, Outcome::Win, 0.0),
             HaltCorrection::Cleared
         );
         assert_eq!(h.losses(), 1);
+        assert!(!h.is_halted());
+    }
+
+    /// `correct_trade` must gate a `Timeout` correction by pnl exactly like
+    /// `record_trade` does — a provisional losing TIMEOUT later re-priced to a
+    /// winning one (or vice versa) must apply the same delta a fresh
+    /// `is_loss_for_halt` comparison would.
+    #[test]
+    fn halt_tracker_correct_trade_gates_timeout_by_pnl() {
+        use crate::types::Outcome;
+
+        let mut h = HaltTracker::new(1, 2);
+        let mut losing_timeout = halt_test_record("reversal", Outcome::Timeout);
+        losing_timeout.pnl = -0.5;
+        assert!(h.record_trade(&losing_timeout, "reversal"));
+        assert!(h.is_halted());
+
+        // Re-pricing that same TIMEOUT to a winning pnl must clear the halt it tripped.
+        assert_eq!(
+            h.correct_trade(Outcome::Timeout, -0.5, Outcome::Timeout, 0.5),
+            HaltCorrection::Cleared
+        );
+        assert_eq!(h.losses(), 0);
         assert!(!h.is_halted());
     }
 

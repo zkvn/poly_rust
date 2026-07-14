@@ -1324,7 +1324,12 @@ impl Worker {
                 // time — undo/apply the delta now that Gamma has overruled it, or a
                 // provisional LOSS later confirmed as a WIN overcounts the loss streak
                 // forever (trader/doc/incident_halt_double_count_2026-07-10.md).
-                let correction = self.halt.correct_trade(previous_outcome, record.outcome);
+                let correction = self.halt.correct_trade(
+                    previous_outcome,
+                    previous_pnl,
+                    record.outcome,
+                    record.pnl,
+                );
                 let mut actions = vec![
                     Action::LogTradeCorrection {
                         previous_outcome,

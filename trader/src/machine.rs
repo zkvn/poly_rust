@@ -272,9 +272,9 @@ impl Machine {
     /// elapsed-time cap, not a PnL-based decision. `exit_price` is the
     /// caller's freshest known price for the held side (the current poly
     /// tick's own price from `on_poly`, or the last cached poly reading from
-    /// `on_binance`). Excluded from `HaltTracker`'s loss-streak count by
-    /// construction — `Outcome::is_loss_for_halt()` only matches `Loss |
-    /// StopLoss` — same as worker.rs's live behavior.
+    /// `on_binance`). Counted toward `HaltTracker`'s loss-streak only when
+    /// `pnl` lands negative — `Outcome::is_loss_for_halt(pnl)` — same as
+    /// worker.rs's live behavior.
     fn check_timeout(&mut self, h: &HoldingData, now: f64, exit_price: f64) -> Option<TradeRecord> {
         if self.unwind_time <= 0.0 || (now - h.entry_ts) < self.unwind_time {
             return None;

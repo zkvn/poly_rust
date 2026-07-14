@@ -93,12 +93,21 @@ impl Outcome {
         }
     }
 
-    /// `Timeout` is deliberately excluded (matches the backtest's "cum_losses
-    /// NOT incremented" TIMEOUT comment) — a max-holding-time exit isn't a
-    /// signal quality failure the way a real stop-loss/loss is, so it
-    /// shouldn't feed the halt loss-streak either way.
-    pub fn is_loss_for_halt(self) -> bool {
-        matches!(self, Outcome::Loss | Outcome::StopLoss)
+    /// `Loss`/`StopLoss` always count. `Unwind` never counts — a take-profit
+    /// exit is directionally fixed to a gain by construction (the 2026-07-06
+    /// SOL incident's price-floor fix keeps a real fill from landing below
+    /// `tp_price`). `Timeout` is the one outcome that isn't fixed either way
+    /// (a pure elapsed-time cap — see its own doc comment) — it counts only
+    /// when `pnl` actually landed negative. Previously `Timeout` was excluded
+    /// unconditionally, which let a run of losing ETH TIMEOUT exits overnight
+    /// go uncaught by the loss-streak halt; see
+    /// `trader/doc/incident_eth_timeout_halt_gap_2026-07-14.md`.
+    pub fn is_loss_for_halt(self, pnl: f64) -> bool {
+        match self {
+            Outcome::Loss | Outcome::StopLoss => true,
+            Outcome::Timeout => pnl < 0.0,
+            Outcome::Unwind | Outcome::Win => false,
+        }
     }
 }
 

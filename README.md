@@ -151,6 +151,24 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`../btc_5mins/bot/backtest.py`'s `_replay_all` has the identical TIMEOUT/halt gap this repo
+  just fixed — found and checked 2026-07-14, not fixed (explicitly out of scope for `poly_rust`).**
+  Line ~1490 only counts `LOSS`/`STOPLOSS` toward `losses_rev`/`losses_hp`, same as the Rust bug
+  fixed in `trader/doc/incident_eth_timeout_halt_gap_2026-07-14.md` — a losing `TIMEOUT` in a
+  `bt2.py` sweep never trips the halt there either. Flagging for the user's own attention on that
+  project; not touched here per direction to only check, not fix, the sibling.
+
+- **`trader/src/config.rs`/`config_log.rs` have 4 pre-existing test failures from config drift —
+  found 2026-07-14 while verifying an unrelated halt fix, not fixed.** `load_and_resolve_btc`,
+  `default_fallback`, `unwind_time_falls_back_to_default_and_resolves_asset_override`
+  (`config.rs`), and `write_and_read_roundtrip` (`config_log.rs`) all assert hardcoded parameter
+  values (`delta_pct_rev`, `halt_rev`, `unwind_time_rev`, ...) that predate `strategy_20260713.toml`
+  and no longer match what `config::load_latest` actually resolves today — the same "test drift"
+  pattern the `load_and_resolve_btc` test's own comment says was already fixed once, on
+  2026-07-09, after `strategy_20260708.toml` landed. Confirmed pre-existing on `main` before the
+  halt fix (reproduces via `git stash`), not caused by it. Needs the hardcoded expectations
+  refreshed against the current config, same as the 2026-07-09 fix did.
+
 - **Live trader's heartbeat cadence (30s) is too coarse to forensically resolve a `SawLowSignal`
   sub-threshold dip — found 2026-07-12, not fixed.** While auditing whether Rust's DOGE
   `reversal` engine should have caught a 09:33:40 entry the Python bot (`btc_5mins`) took
@@ -815,6 +833,19 @@ code). Summary:
 
 ## Trading engine — known incidents
 
+### ETH TIMEOUT losses ran overnight without ever tripping the loss-streak halt (2026-07-14, fixed)
+
+`Outcome::is_loss_for_halt()` blanket-excluded `Timeout` (the `unwind_time_rev`/`unwind_time_hp`
+max-holding-time force-close) from the halt loss-streak regardless of `pnl` sign — correct for
+`Unwind` (directionally fixed to a gain by construction) but wrong for `Timeout`, which can land on
+either side of zero. Five losing ETH `reversal` `TIMEOUT` exits between the 02:00 HKT halt reset
+and 08:09 HKT (-$1.075 total) never incremented `halt_losses`, so `halt_rev=1` never re-engaged.
+Fixed: `is_loss_for_halt(self, pnl: f64)` now gates `Timeout` on `pnl < 0.0`; `HaltTracker::record_trade`/
+`correct_trade` (shared by both the live trader and the Rust backtest, so both were affected and
+both are fixed by the same change) thread `pnl` through accordingly. Checked the sibling
+`../btc_5mins/bot/backtest.py` — same gap there, not fixed (out of scope, flagged for the user).
+Full writeup: `trader/doc/incident_eth_timeout_halt_gap_2026-07-14.md`.
+
 ### `price_feed` collector crash-loop destroying its own recoverable data (2026-07-12, fixed)
 
 Full root-cause: `price_feed/doc/incident_collector_data_loss_2026-07-12.md`. Plan:
@@ -1031,10 +1062,12 @@ exit condition that doesn't depend on price ever crossing anything.
 Implementation: new `WorkerState::TimingOut`/`Outcome::Timeout`/`CloseReason::Timeout`, mirroring
 `StopExiting`/`Outcome::StopLoss` exactly (same unbounded-FAK mechanics, same "re-fires every
 PolyTick until cleared" retry behavior), kept as a distinct variant rather than folded into
-`StopExiting` so the outcome and Telegram copy ("⏱️ TIME LIMIT triggered") can differ. Excluded from
-the halt loss-streak by construction (`Outcome::is_loss_for_halt` only matches `Loss`/`StopLoss`) —
-matches the backtest's "cum_losses NOT incremented for TIMEOUT" semantics, since a time-cap exit
-isn't a signal-quality failure the way a real stop-loss is. Visible in Telegram `/status` alongside
+`StopExiting` so the outcome and Telegram copy ("⏱️ TIME LIMIT triggered") can differ. Originally
+excluded from the halt loss-streak unconditionally (`Outcome::is_loss_for_halt` only matched
+`Loss`/`StopLoss`), on the reasoning that a time-cap exit isn't a signal-quality failure the way a
+real stop-loss is — **superseded 2026-07-14**: that blanket exclusion let real TIMEOUT losses run
+uncounted; it now counts toward the halt exactly when `pnl < 0.0`, see the "ETH TIMEOUT losses ran
+overnight" incident entry below. Visible in Telegram `/status` alongside
 `unwind_pnl`/`sl_pnl` (this is the exact visibility gap that let the `sl_pnl` stale-config incident
 above go unnoticed for a full deploy cycle).
 
