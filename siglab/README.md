@@ -5,7 +5,9 @@ ticks across a large, rotating set of markets — crypto (5m/15m/4h/hourly-ET, a
 across BTC/ETH/SOL/BNB/XRP/DOGE), weather (51 cities' daily temperature-bucket events), and
 FIFA World Cup markets (62 events: outright winner, award winners, player props) — without
 placing real orders and without recording raw tick data. Paper trade outcomes are logged to
-JSONL; an hourly Markdown report summarizes signal activity, market state, and resource usage.
+JSONL; a Markdown report — written every `--report-interval-secs` (900s/15 min in
+production, see `docker-compose.yml`) — summarizes signal activity, market state, and
+resource usage.
 
 **Fully standalone from `../trader` and `../price_feed`.** Own config, own Dockerfile, own
 `docker-compose.yml`, own systemd units, own `.gitignore`. It depends on `../trader` as a
@@ -81,16 +83,27 @@ Editing any of these has zero effect on `../trader`'s live config, and vice vers
 </details>
 
 <details>
-<summary><strong>Autonomous hourly report + push</strong></summary>
+<summary><strong>Autonomous report + push</strong></summary>
 
-## Autonomous hourly report + push
+## Autonomous report + push
 
 The container writes `doc/report/signal_report_{YYYY-MM-DD}.md` (HKT date, new file per
-day) every hour, with newest-hour-first collapsible `<details>` sections: crypto trades,
-crypto+weather+worldcup market state, staleness health, CPU/memory for the past hour.
+day). Each real HKT hour is one collapsible top-level `<details>` section, newest hour
+first; every report-writer run that lands within that hour (production writes every 15 min
+— `--report-interval-secs 900`, see `docker-compose.yml`) nests inside it as its own
+collapsible run sub-section, newest run first, rather than starting a new top-level section
+per run. Each run's trades are broken out into a market/strategy PnL summary table plus one
+collapsible table per market (instead of one flat table), so a run touching many quiet
+weather/World Cup buckets doesn't force-render dozens of rows at once. Besides trades, each
+run also carries crypto+weather+worldcup market state, staleness health, and CPU/memory for
+that run's own window. Hour/run boundaries are tracked with plain HTML comment markers
+(`<!-- siglab-hour:... -->` etc. — see `src/report.rs`'s module doc comment) rather than by
+parsing the `<details>` tree. Pre-2026-07-14 reports were migrated in place to this format
+by the one-off `scripts/regenerate_reports.py`; new runs extend the same files going forward
+directly from `src/report.rs`.
 
 A **separate host-side** systemd `--user` timer — not the container itself, which never
-gets git/SSH credentials — commits and pushes that file hourly:
+gets git/SSH credentials — commits and pushes that file every 15 minutes:
 
 ```bash
 bash siglab/scripts/install_timer.sh   # one-time setup: installs + enables the timer
@@ -99,9 +112,10 @@ journalctl --user -u siglab-report-push.service   # check recent runs
 ```
 
 `install_timer.sh` also enables user lingering (`loginctl enable-linger`) so the timer keeps
-firing even when you're logged out. Report writing (in-container, hourly on the hour) and
-report pushing (host-side, hourly at :05) are independent — the push script only acts if a
-report file actually exists and has unstaged changes; see `scripts/push_report.sh`.
+firing even when you're logged out. Report writing (in-container, every 15 min) and report
+pushing (host-side, every 15 min, `OnCalendar=*-*-* *:00/15:00`) are independent — the push
+script only acts if a report file actually exists and has unstaged changes; see
+`scripts/push_report.sh`.
 
 **If pushes silently stop working, see "SSH agent subtleties" below before anything else** —
 that's the failure mode this has already hit once.
@@ -265,7 +279,8 @@ siglab/
   Dockerfile                # context must be repo root — see comment inside
   docker-compose.yml        # standalone, not part of ../docker-compose.yml
   config/                   # markets.toml, weather_cities.toml, worldcup_events.toml
-  scripts/                  # push_report.sh, install_timer.sh
+  scripts/                  # push_report.sh, install_timer.sh, regenerate_reports.py (one-off
+                             #   migration of old flat reports to the nested hour/run format)
   systemd/                  # siglab-report-push.{service,timer}
   src/
     main.rs                 # CLI + task orchestration
