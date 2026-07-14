@@ -183,7 +183,7 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 <!-- siglab-hour-body-start -->
 <!-- siglab-hour-trades-start -->
 <details>
-<summary>Trades this hour: 866 trade(s)</summary>
+<summary>Trades this hour: 869 trade(s)</summary>
 
 #### Summary: PnL by market and strategy
 
@@ -205,7 +205,7 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 | SOL-5m | reversal | 81 | 6 | 51 | 24 | 3.0699 |
 | SOL-hourly-et | reversal | 11 | 0 | 9 | 2 | -1.2025 |
 | XRP-15m | reversal | 30 | 0 | 27 | 3 | -0.3128 |
-| XRP-5m | reversal | 85 | 8 | 51 | 26 | 2.2884 |
+| XRP-5m | reversal | 88 | 8 | 54 | 26 | 1.6773 |
 | XRP-hourly-et | reversal | 14 | 2 | 12 | 0 | -2.3209 |
 | weather:helsinki:23°C | reversal | 3 | 0 | 3 | 0 | -0.9438 |
 | weather:london:28°C | reversal | 6 | 0 | 6 | 0 | -0.0866 |
@@ -215,7 +215,7 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 | weather:paris:34°C | reversal | 12 | 0 | 12 | 0 | -0.3627 |
 | weather:paris:35°C | reversal | 6 | 0 | 6 | 0 | 0.2058 |
 
-**Total pnl: -23.4423**
+**Total pnl: -24.0534**
 
 #### Summary: PnL by market and variant
 
@@ -464,19 +464,19 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 | XRP-5m | reversal_0.2_0.65 | 4 | 0 | 3 | 1 | 0.2310 |
 | XRP-5m | reversal_0.2_0.7 | 5 | 0 | 4 | 1 | 0.0523 |
 | XRP-5m | reversal_0.2_0.75 | 3 | 0 | 3 | 0 | -0.2500 |
-| XRP-5m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.0116 |
+| XRP-5m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | -0.2153 |
 | XRP-5m | reversal_0.3_0.55 | 6 | 1 | 2 | 3 | 0.4793 |
 | XRP-5m | reversal_0.3_0.6 | 6 | 1 | 2 | 3 | 0.4436 |
 | XRP-5m | reversal_0.3_0.65 | 6 | 1 | 3 | 2 | 0.0345 |
 | XRP-5m | reversal_0.3_0.7 | 7 | 1 | 5 | 1 | -0.3023 |
 | XRP-5m | reversal_0.3_0.75 | 5 | 0 | 4 | 1 | -0.0526 |
-| XRP-5m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.1004 |
+| XRP-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | -0.3041 |
 | XRP-5m | reversal_0.4_0.55 | 6 | 1 | 2 | 3 | 0.4793 |
 | XRP-5m | reversal_0.4_0.6 | 6 | 1 | 2 | 3 | 0.4436 |
 | XRP-5m | reversal_0.4_0.65 | 6 | 1 | 3 | 2 | 0.0345 |
 | XRP-5m | reversal_0.4_0.7 | 7 | 1 | 5 | 1 | -0.3023 |
 | XRP-5m | reversal_0.4_0.75 | 5 | 0 | 4 | 1 | -0.0526 |
-| XRP-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.1004 |
+| XRP-5m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.3041 |
 | XRP-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0000 |
 | XRP-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0083 |
 | XRP-hourly-et | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | -0.3419 |
@@ -532,7 +532,32 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 | weather:paris:35°C | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0343 |
 | weather:paris:35°C | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0343 |
 
-**Total pnl: -23.4423**
+**Total pnl: -24.0534**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 52 | 5 | 32 | 15 | 0.7390 |
+| reversal_0.2_0.6 | 42 | 4 | 24 | 14 | 0.3462 |
+| reversal_0.2_0.65 | 38 | 7 | 24 | 7 | -1.8690 |
+| reversal_0.2_0.7 | 35 | 4 | 25 | 6 | -1.9197 |
+| reversal_0.2_0.75 | 30 | 3 | 25 | 2 | -1.6117 |
+| reversal_0.2_0.8 | 22 | 2 | 19 | 1 | -1.6286 |
+| reversal_0.3_0.55 | 60 | 6 | 36 | 18 | 0.2345 |
+| reversal_0.3_0.6 | 50 | 7 | 26 | 17 | -0.4015 |
+| reversal_0.3_0.65 | 47 | 9 | 28 | 10 | -2.4206 |
+| reversal_0.3_0.7 | 42 | 5 | 29 | 8 | -2.3440 |
+| reversal_0.3_0.75 | 40 | 5 | 31 | 4 | -2.1537 |
+| reversal_0.3_0.8 | 33 | 3 | 27 | 3 | -2.2651 |
+| reversal_0.4_0.55 | 78 | 7 | 48 | 23 | 1.0903 |
+| reversal_0.4_0.6 | 68 | 7 | 40 | 21 | 0.2575 |
+| reversal_0.4_0.65 | 64 | 7 | 45 | 12 | -1.7430 |
+| reversal_0.4_0.7 | 61 | 5 | 45 | 11 | -2.1693 |
+| reversal_0.4_0.75 | 56 | 5 | 45 | 6 | -2.7768 |
+| reversal_0.4_0.8 | 51 | 5 | 41 | 5 | -3.4179 |
+
+**Total pnl: -24.0534**
 
 <details>
 <summary>BNB-15m — 20 trade(s), total pnl 0.3981</summary>
@@ -1378,7 +1403,7 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 </details>
 
 <details>
-<summary>XRP-5m — 85 trade(s), total pnl 2.2884</summary>
+<summary>XRP-5m — 88 trade(s), total pnl 1.6773</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -1467,6 +1492,9 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 | 2026-07-14 22:43:35.922 | 2026-07-14 22:44:00.930 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | -0.0530 |
 | 2026-07-14 22:43:35.922 | 2026-07-14 22:44:00.930 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | -0.0530 |
 | 2026-07-14 22:43:35.922 | 2026-07-14 22:44:00.930 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0530 |
+| 2026-07-14 22:44:02.621 | 2026-07-14 22:44:27.734 | 25.1 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.2037 |
+| 2026-07-14 22:44:02.621 | 2026-07-14 22:44:27.734 | 25.1 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.2037 |
+| 2026-07-14 22:44:02.621 | 2026-07-14 22:44:27.734 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.2037 |
 
 </details>
 
@@ -2737,29 +2765,29 @@ _... and 4800 more._
 <!-- siglab-hour-body-start -->
 <!-- siglab-hour-trades-start -->
 <details>
-<summary>Trades this hour: 999 trade(s)</summary>
+<summary>Trades this hour: 1081 trade(s)</summary>
 
 #### Summary: PnL by market and strategy
 
 | market | strategy | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
 | BNB-15m | reversal | 39 | 0 | 39 | 0 | -1.5354 |
-| BNB-5m | reversal | 79 | 1 | 50 | 28 | 7.5881 |
+| BNB-5m | reversal | 85 | 1 | 55 | 29 | 8.0378 |
 | BNB-hourly-et | reversal | 6 | 6 | 0 | 0 | -2.5158 |
 | BTC-15m | reversal | 32 | 0 | 29 | 3 | 1.5287 |
-| BTC-5m | reversal | 107 | 9 | 46 | 52 | 6.8809 |
+| BTC-5m | reversal | 125 | 9 | 58 | 58 | 7.1050 |
 | BTC-hourly-et | reversal | 9 | 0 | 9 | 0 | 0.3570 |
-| DOGE-15m | reversal | 53 | 0 | 53 | 0 | -3.1200 |
-| DOGE-5m | reversal | 125 | 6 | 87 | 32 | 4.7626 |
+| DOGE-15m | reversal | 55 | 2 | 53 | 0 | -3.8798 |
+| DOGE-5m | reversal | 143 | 6 | 102 | 35 | 5.6392 |
 | DOGE-hourly-et | reversal | 12 | 0 | 12 | 0 | -1.4400 |
-| ETH-15m | reversal | 37 | 0 | 37 | 0 | 0.8017 |
-| ETH-5m | reversal | 141 | 18 | 69 | 54 | 5.3956 |
+| ETH-15m | reversal | 45 | 0 | 37 | 8 | 2.2055 |
+| ETH-5m | reversal | 147 | 18 | 73 | 56 | 5.5181 |
 | ETH-hourly-et | reversal | 5 | 0 | 5 | 0 | 0.1993 |
 | SOL-15m | reversal | 31 | 0 | 28 | 3 | 1.6463 |
-| SOL-5m | reversal | 102 | 8 | 53 | 41 | 5.2761 |
+| SOL-5m | reversal | 108 | 8 | 56 | 44 | 5.7533 |
 | SOL-hourly-et | reversal | 6 | 0 | 6 | 0 | 0.3054 |
 | XRP-15m | reversal | 27 | 0 | 27 | 0 | 0.1742 |
-| XRP-5m | reversal | 119 | 2 | 71 | 46 | 9.2824 |
+| XRP-5m | reversal | 137 | 2 | 83 | 52 | 11.7310 |
 | XRP-hourly-et | reversal | 17 | 0 | 14 | 3 | -1.1320 |
 | weather:amsterdam:28°C | reversal | 1 | 0 | 1 | 0 | 0.0000 |
 | weather:ankara:28°C | reversal | 18 | 0 | 18 | 0 | 0.0270 |
@@ -2767,7 +2795,7 @@ _... and 4800 more._
 | weather:helsinki:23°C | reversal | 1 | 0 | 1 | 0 | 0.0000 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal | 14 | 0 | 14 | 0 | -0.8810 |
 
-**Total pnl: 36.3179**
+**Total pnl: 41.5606**
 
 #### Summary: PnL by market and variant
 
@@ -2803,12 +2831,12 @@ _... and 4800 more._
 | BNB-5m | reversal_0.3_0.7 | 4 | 0 | 3 | 1 | 0.5910 |
 | BNB-5m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.2828 |
 | BNB-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.2511 |
-| BNB-5m | reversal_0.4_0.55 | 9 | 1 | 4 | 4 | 0.3058 |
-| BNB-5m | reversal_0.4_0.6 | 5 | 0 | 3 | 2 | 0.1839 |
-| BNB-5m | reversal_0.4_0.65 | 8 | 0 | 6 | 2 | 0.5228 |
-| BNB-5m | reversal_0.4_0.7 | 8 | 0 | 7 | 1 | -0.1691 |
-| BNB-5m | reversal_0.4_0.75 | 6 | 0 | 5 | 1 | -0.0537 |
-| BNB-5m | reversal_0.4_0.8 | 6 | 0 | 5 | 1 | 0.3747 |
+| BNB-5m | reversal_0.4_0.55 | 10 | 1 | 5 | 4 | 0.4152 |
+| BNB-5m | reversal_0.4_0.6 | 6 | 0 | 4 | 2 | 0.2933 |
+| BNB-5m | reversal_0.4_0.65 | 9 | 0 | 7 | 2 | 0.6068 |
+| BNB-5m | reversal_0.4_0.7 | 9 | 0 | 8 | 1 | -0.1478 |
+| BNB-5m | reversal_0.4_0.75 | 7 | 0 | 6 | 1 | -0.1133 |
+| BNB-5m | reversal_0.4_0.8 | 7 | 0 | 5 | 2 | 0.5599 |
 | BNB-hourly-et | reversal_0.2_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
 | BNB-hourly-et | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3974 |
 | BNB-hourly-et | reversal_0.4_0.55 | 1 | 1 | 0 | 0 | -0.4412 |
@@ -2832,24 +2860,24 @@ _... and 4800 more._
 | BTC-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | -0.0710 |
 | BTC-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | 0.0662 |
 | BTC-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.0578 |
-| BTC-5m | reversal_0.2_0.55 | 5 | 0 | 2 | 3 | 0.7167 |
-| BTC-5m | reversal_0.2_0.6 | 5 | 0 | 2 | 3 | 0.6280 |
-| BTC-5m | reversal_0.2_0.65 | 5 | 0 | 0 | 5 | 1.1315 |
-| BTC-5m | reversal_0.2_0.7 | 5 | 0 | 3 | 2 | 0.4469 |
-| BTC-5m | reversal_0.2_0.75 | 5 | 1 | 3 | 1 | -0.0747 |
-| BTC-5m | reversal_0.2_0.8 | 2 | 1 | 1 | 0 | -0.3433 |
-| BTC-5m | reversal_0.3_0.55 | 7 | 0 | 3 | 4 | 0.6106 |
-| BTC-5m | reversal_0.3_0.6 | 7 | 1 | 2 | 4 | 0.3800 |
-| BTC-5m | reversal_0.3_0.65 | 7 | 0 | 1 | 6 | 1.1843 |
-| BTC-5m | reversal_0.3_0.7 | 7 | 0 | 4 | 3 | 0.3403 |
-| BTC-5m | reversal_0.3_0.75 | 6 | 1 | 3 | 2 | 0.1240 |
-| BTC-5m | reversal_0.3_0.8 | 3 | 1 | 1 | 1 | -0.1570 |
-| BTC-5m | reversal_0.4_0.55 | 8 | 0 | 4 | 4 | 0.5889 |
-| BTC-5m | reversal_0.4_0.6 | 8 | 1 | 3 | 4 | 0.2960 |
-| BTC-5m | reversal_0.4_0.65 | 7 | 1 | 1 | 5 | 0.8262 |
-| BTC-5m | reversal_0.4_0.7 | 8 | 0 | 5 | 3 | 0.6029 |
-| BTC-5m | reversal_0.4_0.75 | 8 | 1 | 6 | 1 | -0.3255 |
-| BTC-5m | reversal_0.4_0.8 | 4 | 1 | 2 | 1 | -0.0949 |
+| BTC-5m | reversal_0.2_0.55 | 6 | 0 | 3 | 3 | 0.6702 |
+| BTC-5m | reversal_0.2_0.6 | 6 | 0 | 3 | 3 | 0.5815 |
+| BTC-5m | reversal_0.2_0.65 | 6 | 0 | 1 | 5 | 1.0494 |
+| BTC-5m | reversal_0.2_0.7 | 6 | 0 | 4 | 2 | 0.3192 |
+| BTC-5m | reversal_0.2_0.75 | 6 | 1 | 3 | 2 | 0.1188 |
+| BTC-5m | reversal_0.2_0.8 | 3 | 1 | 1 | 1 | -0.1593 |
+| BTC-5m | reversal_0.3_0.55 | 8 | 0 | 4 | 4 | 0.5641 |
+| BTC-5m | reversal_0.3_0.6 | 8 | 1 | 3 | 4 | 0.3335 |
+| BTC-5m | reversal_0.3_0.65 | 8 | 0 | 2 | 6 | 1.1022 |
+| BTC-5m | reversal_0.3_0.7 | 8 | 0 | 5 | 3 | 0.2126 |
+| BTC-5m | reversal_0.3_0.75 | 7 | 1 | 3 | 3 | 0.3175 |
+| BTC-5m | reversal_0.3_0.8 | 4 | 1 | 1 | 2 | 0.0270 |
+| BTC-5m | reversal_0.4_0.55 | 9 | 0 | 5 | 4 | 0.5424 |
+| BTC-5m | reversal_0.4_0.6 | 9 | 1 | 4 | 4 | 0.2495 |
+| BTC-5m | reversal_0.4_0.65 | 8 | 1 | 2 | 5 | 0.7441 |
+| BTC-5m | reversal_0.4_0.7 | 9 | 0 | 6 | 3 | 0.4752 |
+| BTC-5m | reversal_0.4_0.75 | 9 | 1 | 6 | 2 | -0.1320 |
+| BTC-5m | reversal_0.4_0.8 | 5 | 1 | 2 | 2 | 0.0891 |
 | BTC-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0246 |
 | BTC-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0142 |
 | BTC-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0802 |
@@ -2863,8 +2891,8 @@ _... and 4800 more._
 | DOGE-15m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | -0.0149 |
 | DOGE-15m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | -0.1169 |
 | DOGE-15m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | -0.5083 |
-| DOGE-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | -0.1391 |
-| DOGE-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0124 |
+| DOGE-15m | reversal_0.2_0.75 | 3 | 1 | 2 | 0 | -0.5262 |
+| DOGE-15m | reversal_0.2_0.8 | 2 | 1 | 1 | 0 | -0.3603 |
 | DOGE-15m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | 0.0640 |
 | DOGE-15m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | -0.0149 |
 | DOGE-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | -0.1169 |
@@ -2877,24 +2905,24 @@ _... and 4800 more._
 | DOGE-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | -0.5083 |
 | DOGE-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.2186 |
 | DOGE-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | 0.0238 |
-| DOGE-5m | reversal_0.2_0.55 | 5 | 1 | 1 | 3 | 0.3176 |
-| DOGE-5m | reversal_0.2_0.6 | 5 | 1 | 3 | 1 | -0.0208 |
-| DOGE-5m | reversal_0.2_0.65 | 4 | 0 | 2 | 2 | 0.5412 |
-| DOGE-5m | reversal_0.2_0.7 | 5 | 0 | 4 | 1 | 0.4788 |
-| DOGE-5m | reversal_0.2_0.75 | 5 | 0 | 5 | 0 | 0.1793 |
-| DOGE-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | -0.0939 |
-| DOGE-5m | reversal_0.3_0.55 | 8 | 1 | 3 | 4 | 0.5674 |
-| DOGE-5m | reversal_0.3_0.6 | 8 | 1 | 5 | 2 | 0.0926 |
-| DOGE-5m | reversal_0.3_0.65 | 6 | 0 | 2 | 4 | 0.9890 |
-| DOGE-5m | reversal_0.3_0.7 | 7 | 0 | 5 | 2 | 0.8973 |
-| DOGE-5m | reversal_0.3_0.75 | 7 | 0 | 6 | 1 | 0.4972 |
-| DOGE-5m | reversal_0.3_0.8 | 6 | 0 | 5 | 1 | -0.0070 |
-| DOGE-5m | reversal_0.4_0.55 | 9 | 1 | 6 | 2 | -0.1113 |
-| DOGE-5m | reversal_0.4_0.6 | 10 | 1 | 8 | 1 | -0.3906 |
-| DOGE-5m | reversal_0.4_0.65 | 7 | 0 | 4 | 3 | 0.5540 |
-| DOGE-5m | reversal_0.4_0.7 | 10 | 0 | 8 | 2 | 0.5222 |
-| DOGE-5m | reversal_0.4_0.75 | 10 | 0 | 9 | 1 | -0.0978 |
-| DOGE-5m | reversal_0.4_0.8 | 9 | 0 | 7 | 2 | -0.1526 |
+| DOGE-5m | reversal_0.2_0.55 | 6 | 1 | 2 | 3 | 0.3801 |
+| DOGE-5m | reversal_0.2_0.6 | 6 | 1 | 4 | 1 | 0.0417 |
+| DOGE-5m | reversal_0.2_0.65 | 5 | 0 | 3 | 2 | 0.5794 |
+| DOGE-5m | reversal_0.2_0.7 | 6 | 0 | 5 | 1 | 0.2675 |
+| DOGE-5m | reversal_0.2_0.75 | 6 | 0 | 5 | 1 | 0.3741 |
+| DOGE-5m | reversal_0.2_0.8 | 5 | 0 | 5 | 0 | 0.0516 |
+| DOGE-5m | reversal_0.3_0.55 | 9 | 1 | 4 | 4 | 0.6299 |
+| DOGE-5m | reversal_0.3_0.6 | 9 | 1 | 6 | 2 | 0.1551 |
+| DOGE-5m | reversal_0.3_0.65 | 7 | 0 | 3 | 4 | 1.0272 |
+| DOGE-5m | reversal_0.3_0.7 | 8 | 0 | 6 | 2 | 0.6860 |
+| DOGE-5m | reversal_0.3_0.75 | 8 | 0 | 6 | 2 | 0.6920 |
+| DOGE-5m | reversal_0.3_0.8 | 7 | 0 | 6 | 1 | 0.1385 |
+| DOGE-5m | reversal_0.4_0.55 | 10 | 1 | 7 | 2 | -0.0488 |
+| DOGE-5m | reversal_0.4_0.6 | 11 | 1 | 9 | 1 | -0.3281 |
+| DOGE-5m | reversal_0.4_0.65 | 8 | 0 | 5 | 3 | 0.5922 |
+| DOGE-5m | reversal_0.4_0.7 | 11 | 0 | 9 | 2 | 0.3109 |
+| DOGE-5m | reversal_0.4_0.75 | 11 | 0 | 9 | 2 | 0.0970 |
+| DOGE-5m | reversal_0.4_0.8 | 10 | 0 | 8 | 2 | -0.0071 |
 | DOGE-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.0252 |
 | DOGE-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.1077 |
 | DOGE-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.2353 |
@@ -2910,21 +2938,21 @@ _... and 4800 more._
 | ETH-15m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | 0.0984 |
 | ETH-15m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | 0.0248 |
 | ETH-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.0916 |
-| ETH-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | -0.0142 |
-| ETH-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.1457 |
-| ETH-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | 0.0994 |
+| ETH-15m | reversal_0.2_0.7 | 3 | 0 | 2 | 1 | 0.1819 |
+| ETH-15m | reversal_0.2_0.75 | 2 | 0 | 1 | 1 | 0.3418 |
+| ETH-15m | reversal_0.2_0.8 | 3 | 0 | 2 | 1 | 0.2405 |
 | ETH-15m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | 0.0984 |
 | ETH-15m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | 0.0248 |
 | ETH-15m | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.0916 |
-| ETH-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | -0.0142 |
-| ETH-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.1457 |
-| ETH-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | 0.0994 |
+| ETH-15m | reversal_0.3_0.7 | 3 | 0 | 2 | 1 | 0.1819 |
+| ETH-15m | reversal_0.3_0.75 | 2 | 0 | 1 | 1 | 0.3418 |
+| ETH-15m | reversal_0.3_0.8 | 3 | 0 | 2 | 1 | 0.2405 |
 | ETH-15m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | 0.0984 |
 | ETH-15m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | 0.0248 |
 | ETH-15m | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0916 |
 | ETH-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | -0.0000 |
-| ETH-15m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.1457 |
-| ETH-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.0994 |
+| ETH-15m | reversal_0.4_0.75 | 2 | 0 | 1 | 1 | 0.3418 |
+| ETH-15m | reversal_0.4_0.8 | 3 | 0 | 2 | 1 | 0.2405 |
 | ETH-5m | reversal_0.2_0.55 | 10 | 1 | 3 | 6 | 1.0466 |
 | ETH-5m | reversal_0.2_0.6 | 7 | 1 | 3 | 3 | 0.3389 |
 | ETH-5m | reversal_0.2_0.65 | 8 | 1 | 4 | 3 | -0.1950 |
@@ -2937,12 +2965,12 @@ _... and 4800 more._
 | ETH-5m | reversal_0.3_0.7 | 7 | 2 | 4 | 1 | -0.3387 |
 | ETH-5m | reversal_0.3_0.75 | 6 | 1 | 3 | 2 | 0.4342 |
 | ETH-5m | reversal_0.3_0.8 | 7 | 1 | 4 | 2 | 0.0621 |
-| ETH-5m | reversal_0.4_0.55 | 10 | 0 | 4 | 6 | 1.5011 |
-| ETH-5m | reversal_0.4_0.6 | 7 | 0 | 4 | 3 | 0.8430 |
-| ETH-5m | reversal_0.4_0.65 | 8 | 0 | 5 | 3 | 0.2137 |
-| ETH-5m | reversal_0.4_0.7 | 9 | 1 | 6 | 2 | 0.0301 |
-| ETH-5m | reversal_0.4_0.75 | 8 | 1 | 4 | 3 | 0.3467 |
-| ETH-5m | reversal_0.4_0.8 | 9 | 2 | 4 | 3 | -0.1220 |
+| ETH-5m | reversal_0.4_0.55 | 11 | 0 | 5 | 6 | 1.3131 |
+| ETH-5m | reversal_0.4_0.6 | 8 | 0 | 5 | 3 | 0.8099 |
+| ETH-5m | reversal_0.4_0.65 | 9 | 0 | 6 | 3 | 0.2290 |
+| ETH-5m | reversal_0.4_0.7 | 10 | 1 | 7 | 2 | -0.0266 |
+| ETH-5m | reversal_0.4_0.75 | 9 | 1 | 4 | 4 | 0.5454 |
+| ETH-5m | reversal_0.4_0.8 | 10 | 2 | 4 | 4 | 0.0643 |
 | ETH-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0661 |
 | ETH-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0661 |
 | ETH-hourly-et | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0661 |
@@ -2978,12 +3006,12 @@ _... and 4800 more._
 | SOL-5m | reversal_0.3_0.7 | 6 | 0 | 5 | 1 | -0.3696 |
 | SOL-5m | reversal_0.3_0.75 | 5 | 1 | 2 | 2 | 0.0331 |
 | SOL-5m | reversal_0.3_0.8 | 6 | 0 | 4 | 2 | 0.7307 |
-| SOL-5m | reversal_0.4_0.55 | 9 | 0 | 5 | 4 | 1.3452 |
-| SOL-5m | reversal_0.4_0.6 | 6 | 1 | 2 | 3 | 0.3814 |
-| SOL-5m | reversal_0.4_0.65 | 8 | 0 | 3 | 5 | 0.7162 |
-| SOL-5m | reversal_0.4_0.7 | 10 | 0 | 6 | 4 | 0.4768 |
-| SOL-5m | reversal_0.4_0.75 | 7 | 2 | 3 | 2 | -0.4003 |
-| SOL-5m | reversal_0.4_0.8 | 8 | 0 | 5 | 3 | 1.0704 |
+| SOL-5m | reversal_0.4_0.55 | 10 | 0 | 5 | 5 | 1.6016 |
+| SOL-5m | reversal_0.4_0.6 | 7 | 1 | 3 | 3 | 0.5467 |
+| SOL-5m | reversal_0.4_0.65 | 9 | 0 | 4 | 5 | 0.7764 |
+| SOL-5m | reversal_0.4_0.7 | 11 | 0 | 7 | 4 | 0.0895 |
+| SOL-5m | reversal_0.4_0.75 | 8 | 2 | 3 | 3 | -0.2029 |
+| SOL-5m | reversal_0.4_0.8 | 9 | 0 | 5 | 4 | 1.2556 |
 | SOL-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0789 |
 | SOL-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0229 |
 | SOL-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.0789 |
@@ -3008,24 +3036,24 @@ _... and 4800 more._
 | XRP-15m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | -0.0283 |
 | XRP-15m | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.2185 |
 | XRP-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.2236 |
-| XRP-5m | reversal_0.2_0.55 | 7 | 0 | 2 | 5 | 1.3081 |
-| XRP-5m | reversal_0.2_0.6 | 7 | 0 | 3 | 4 | 1.2199 |
-| XRP-5m | reversal_0.2_0.65 | 5 | 0 | 2 | 3 | 0.7203 |
-| XRP-5m | reversal_0.2_0.7 | 6 | 0 | 4 | 2 | 0.3960 |
-| XRP-5m | reversal_0.2_0.75 | 6 | 0 | 5 | 1 | 0.0437 |
-| XRP-5m | reversal_0.2_0.8 | 5 | 0 | 4 | 1 | -0.0149 |
-| XRP-5m | reversal_0.3_0.55 | 8 | 0 | 2 | 6 | 1.5916 |
-| XRP-5m | reversal_0.3_0.6 | 8 | 0 | 3 | 5 | 1.4904 |
-| XRP-5m | reversal_0.3_0.65 | 6 | 0 | 3 | 3 | 0.8846 |
-| XRP-5m | reversal_0.3_0.7 | 7 | 0 | 4 | 3 | 0.6227 |
-| XRP-5m | reversal_0.3_0.75 | 7 | 0 | 6 | 1 | 0.1497 |
-| XRP-5m | reversal_0.3_0.8 | 5 | 0 | 5 | 0 | -0.1116 |
-| XRP-5m | reversal_0.4_0.55 | 8 | 0 | 4 | 4 | 0.8082 |
-| XRP-5m | reversal_0.4_0.6 | 8 | 1 | 4 | 3 | 0.5428 |
-| XRP-5m | reversal_0.4_0.65 | 6 | 0 | 4 | 2 | 0.3922 |
-| XRP-5m | reversal_0.4_0.7 | 7 | 0 | 5 | 2 | 0.0358 |
-| XRP-5m | reversal_0.4_0.75 | 7 | 0 | 6 | 1 | -0.3128 |
-| XRP-5m | reversal_0.4_0.8 | 6 | 1 | 5 | 0 | -0.4843 |
+| XRP-5m | reversal_0.2_0.55 | 8 | 0 | 2 | 6 | 1.5481 |
+| XRP-5m | reversal_0.2_0.6 | 8 | 0 | 3 | 5 | 1.4599 |
+| XRP-5m | reversal_0.2_0.65 | 6 | 0 | 3 | 3 | 0.8730 |
+| XRP-5m | reversal_0.2_0.7 | 7 | 0 | 5 | 2 | 0.4811 |
+| XRP-5m | reversal_0.2_0.75 | 7 | 0 | 6 | 1 | -0.0225 |
+| XRP-5m | reversal_0.2_0.8 | 6 | 0 | 5 | 1 | 0.1497 |
+| XRP-5m | reversal_0.3_0.55 | 9 | 0 | 2 | 7 | 1.8316 |
+| XRP-5m | reversal_0.3_0.6 | 9 | 0 | 3 | 6 | 1.7304 |
+| XRP-5m | reversal_0.3_0.65 | 7 | 0 | 4 | 3 | 1.0373 |
+| XRP-5m | reversal_0.3_0.7 | 8 | 0 | 5 | 3 | 0.7078 |
+| XRP-5m | reversal_0.3_0.75 | 8 | 0 | 7 | 1 | 0.0835 |
+| XRP-5m | reversal_0.3_0.8 | 6 | 0 | 6 | 0 | 0.0530 |
+| XRP-5m | reversal_0.4_0.55 | 9 | 0 | 4 | 5 | 1.0482 |
+| XRP-5m | reversal_0.4_0.6 | 9 | 1 | 4 | 4 | 0.7828 |
+| XRP-5m | reversal_0.4_0.65 | 7 | 0 | 5 | 2 | 0.5449 |
+| XRP-5m | reversal_0.4_0.7 | 8 | 0 | 6 | 2 | 0.1209 |
+| XRP-5m | reversal_0.4_0.75 | 8 | 0 | 7 | 1 | -0.3790 |
+| XRP-5m | reversal_0.4_0.8 | 7 | 1 | 6 | 0 | -0.3197 |
 | XRP-hourly-et | reversal_0.2_0.55 | 1 | 0 | 0 | 1 | 0.2609 |
 | XRP-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.1986 |
 | XRP-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.1986 |
@@ -3085,7 +3113,32 @@ _... and 4800 more._
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.6 | 4 | 0 | 4 | 0 | -0.0941 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0458 |
 
-**Total pnl: 36.3179**
+**Total pnl: 41.5606**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 55 | 3 | 26 | 26 | 5.6323 |
+| reversal_0.2_0.6 | 49 | 3 | 29 | 17 | 3.1183 |
+| reversal_0.2_0.65 | 48 | 1 | 30 | 17 | 2.8103 |
+| reversal_0.2_0.7 | 48 | 2 | 38 | 8 | 0.3570 |
+| reversal_0.2_0.75 | 46 | 4 | 34 | 8 | 0.1986 |
+| reversal_0.2_0.8 | 40 | 3 | 32 | 5 | 0.6624 |
+| reversal_0.3_0.55 | 66 | 3 | 31 | 32 | 7.0305 |
+| reversal_0.3_0.6 | 58 | 4 | 32 | 22 | 3.7441 |
+| reversal_0.3_0.65 | 58 | 1 | 35 | 22 | 3.6985 |
+| reversal_0.3_0.7 | 57 | 2 | 43 | 12 | 0.8017 |
+| reversal_0.3_0.75 | 54 | 4 | 39 | 11 | 1.1015 |
+| reversal_0.3_0.8 | 49 | 2 | 39 | 8 | 1.7587 |
+| reversal_0.4_0.55 | 90 | 3 | 57 | 30 | 4.6759 |
+| reversal_0.4_0.6 | 75 | 5 | 52 | 18 | 2.0469 |
+| reversal_0.4_0.65 | 73 | 2 | 50 | 21 | 2.7487 |
+| reversal_0.4_0.7 | 77 | 1 | 62 | 14 | -0.0046 |
+| reversal_0.4_0.75 | 71 | 5 | 52 | 14 | -0.8874 |
+| reversal_0.4_0.8 | 67 | 4 | 48 | 15 | 2.0672 |
+
+**Total pnl: 41.5606**
 
 <details>
 <summary>BNB-15m — 39 trade(s), total pnl -1.5354</summary>
@@ -3135,7 +3188,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>BNB-5m — 79 trade(s), total pnl 7.5881</summary>
+<summary>BNB-5m — 85 trade(s), total pnl 8.0378</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3218,6 +3271,12 @@ _... and 4800 more._
 | 2026-07-14 21:52:05.084 | 2026-07-14 21:52:30.136 | 25.1 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 21:52:07.730 | 2026-07-14 21:52:32.733 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0662 |
 | 2026-07-14 21:52:37.558 | 2026-07-14 21:53:02.622 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.1491 |
+| 2026-07-14 21:56:40.292 | 2026-07-14 21:57:05.294 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.1094 |
+| 2026-07-14 21:56:40.292 | 2026-07-14 21:57:05.294 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.1094 |
+| 2026-07-14 21:56:40.296 | 2026-07-14 21:57:05.318 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0840 |
+| 2026-07-14 21:56:42.287 | 2026-07-14 21:57:07.451 | 25.2 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0213 |
+| 2026-07-14 21:56:45.607 | 2026-07-14 21:57:10.642 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0596 |
+| 2026-07-14 21:58:43.368 | 2026-07-14 21:59:08.011 | 24.6 | reversal_0.4_0.8 | DOWN | UNWIND | 0.1852 |
 
 </details>
 
@@ -3276,7 +3335,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>BTC-5m — 107 trade(s), total pnl 6.8809</summary>
+<summary>BTC-5m — 125 trade(s), total pnl 7.1050</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3387,6 +3446,24 @@ _... and 4800 more._
 | 2026-07-14 21:52:58.223 | 2026-07-14 21:53:13.966 | 15.7 | reversal_0.3_0.8 | DOWN | STOPLOSS | -0.3681 |
 | 2026-07-14 21:52:58.223 | 2026-07-14 21:53:13.966 | 15.7 | reversal_0.4_0.75 | DOWN | STOPLOSS | -0.3681 |
 | 2026-07-14 21:52:58.223 | 2026-07-14 21:53:13.966 | 15.7 | reversal_0.4_0.8 | DOWN | STOPLOSS | -0.3681 |
+| 2026-07-14 21:58:05.864 | 2026-07-14 21:58:30.865 | 25.0 | reversal_0.2_0.55 | UP | TIMEOUT | -0.0465 |
+| 2026-07-14 21:58:05.864 | 2026-07-14 21:58:30.865 | 25.0 | reversal_0.2_0.6 | UP | TIMEOUT | -0.0465 |
+| 2026-07-14 21:58:05.864 | 2026-07-14 21:58:30.865 | 25.0 | reversal_0.3_0.55 | UP | TIMEOUT | -0.0465 |
+| 2026-07-14 21:58:05.864 | 2026-07-14 21:58:30.865 | 25.0 | reversal_0.3_0.6 | UP | TIMEOUT | -0.0465 |
+| 2026-07-14 21:58:05.864 | 2026-07-14 21:58:30.865 | 25.0 | reversal_0.4_0.55 | UP | TIMEOUT | -0.0465 |
+| 2026-07-14 21:58:05.864 | 2026-07-14 21:58:30.865 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | -0.0465 |
+| 2026-07-14 21:58:05.976 | 2026-07-14 21:58:30.979 | 25.0 | reversal_0.2_0.65 | UP | TIMEOUT | -0.0821 |
+| 2026-07-14 21:58:05.976 | 2026-07-14 21:58:30.979 | 25.0 | reversal_0.3_0.65 | UP | TIMEOUT | -0.0821 |
+| 2026-07-14 21:58:05.976 | 2026-07-14 21:58:30.979 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | -0.0821 |
+| 2026-07-14 21:58:06.220 | 2026-07-14 21:58:31.226 | 25.0 | reversal_0.2_0.7 | UP | TIMEOUT | -0.1277 |
+| 2026-07-14 21:58:06.220 | 2026-07-14 21:58:31.226 | 25.0 | reversal_0.3_0.7 | UP | TIMEOUT | -0.1277 |
+| 2026-07-14 21:58:06.220 | 2026-07-14 21:58:31.226 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | -0.1277 |
+| 2026-07-14 21:59:27.525 | 2026-07-14 21:59:38.804 | 11.3 | reversal_0.2_0.75 | UP | UNWIND | 0.1935 |
+| 2026-07-14 21:59:27.525 | 2026-07-14 21:59:38.804 | 11.3 | reversal_0.3_0.75 | UP | UNWIND | 0.1935 |
+| 2026-07-14 21:59:27.525 | 2026-07-14 21:59:38.804 | 11.3 | reversal_0.4_0.75 | UP | UNWIND | 0.1935 |
+| 2026-07-14 21:59:27.589 | 2026-07-14 21:59:49.467 | 21.9 | reversal_0.2_0.8 | UP | UNWIND | 0.1840 |
+| 2026-07-14 21:59:27.589 | 2026-07-14 21:59:49.467 | 21.9 | reversal_0.3_0.8 | UP | UNWIND | 0.1840 |
+| 2026-07-14 21:59:27.589 | 2026-07-14 21:59:49.467 | 21.9 | reversal_0.4_0.8 | UP | UNWIND | 0.1840 |
 
 </details>
 
@@ -3408,7 +3485,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>DOGE-15m — 53 trade(s), total pnl -3.1200</summary>
+<summary>DOGE-15m — 55 trade(s), total pnl -3.8798</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3465,11 +3542,13 @@ _... and 4800 more._
 | 2026-07-14 21:47:24.834 | 2026-07-14 21:47:49.866 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0795 |
 | 2026-07-14 21:48:16.167 | 2026-07-14 21:48:41.180 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.0124 |
 | 2026-07-14 21:48:16.167 | 2026-07-14 21:48:41.180 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.0124 |
+| 2026-07-14 21:58:28.174 | 2026-07-14 21:58:48.289 | 20.1 | reversal_0.2_0.75 | UP | STOPLOSS | -0.3871 |
+| 2026-07-14 21:58:37.094 | 2026-07-14 21:58:48.287 | 11.2 | reversal_0.2_0.8 | UP | STOPLOSS | -0.3727 |
 
 </details>
 
 <details>
-<summary>DOGE-5m — 125 trade(s), total pnl 4.7626</summary>
+<summary>DOGE-5m — 143 trade(s), total pnl 5.6392</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3598,6 +3677,24 @@ _... and 4800 more._
 | 2026-07-14 21:53:46.610 | 2026-07-14 21:54:11.611 | 25.0 | reversal_0.3_0.75 | UP | TIMEOUT | 0.0397 |
 | 2026-07-14 21:54:11.340 | 2026-07-14 21:54:36.358 | 25.0 | reversal_0.2_0.8 | UP | TIMEOUT | 0.1056 |
 | 2026-07-14 21:54:11.340 | 2026-07-14 21:54:36.358 | 25.0 | reversal_0.3_0.8 | UP | TIMEOUT | 0.1056 |
+| 2026-07-14 21:57:13.739 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.2_0.55 | UP | TIMEOUT | 0.0625 |
+| 2026-07-14 21:57:13.739 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.2_0.6 | UP | TIMEOUT | 0.0625 |
+| 2026-07-14 21:57:13.739 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.3_0.55 | UP | TIMEOUT | 0.0625 |
+| 2026-07-14 21:57:13.739 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.3_0.6 | UP | TIMEOUT | 0.0625 |
+| 2026-07-14 21:57:13.739 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.4_0.55 | UP | TIMEOUT | 0.0625 |
+| 2026-07-14 21:57:13.739 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.4_0.6 | UP | TIMEOUT | 0.0625 |
+| 2026-07-14 21:57:13.807 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.2_0.65 | UP | TIMEOUT | 0.0382 |
+| 2026-07-14 21:57:13.807 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.3_0.65 | UP | TIMEOUT | 0.0382 |
+| 2026-07-14 21:57:13.807 | 2026-07-14 21:57:38.866 | 25.1 | reversal_0.4_0.65 | UP | TIMEOUT | 0.0382 |
+| 2026-07-14 21:57:20.100 | 2026-07-14 21:57:45.111 | 25.0 | reversal_0.2_0.7 | UP | TIMEOUT | -0.2113 |
+| 2026-07-14 21:57:20.100 | 2026-07-14 21:57:45.111 | 25.0 | reversal_0.3_0.7 | UP | TIMEOUT | -0.2113 |
+| 2026-07-14 21:57:20.100 | 2026-07-14 21:57:45.111 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | -0.2113 |
+| 2026-07-14 21:58:02.398 | 2026-07-14 21:58:20.649 | 18.3 | reversal_0.2_0.75 | UP | UNWIND | 0.1948 |
+| 2026-07-14 21:58:02.398 | 2026-07-14 21:58:20.649 | 18.3 | reversal_0.3_0.75 | UP | UNWIND | 0.1948 |
+| 2026-07-14 21:58:02.398 | 2026-07-14 21:58:20.649 | 18.3 | reversal_0.4_0.75 | UP | UNWIND | 0.1948 |
+| 2026-07-14 21:58:02.533 | 2026-07-14 21:58:27.594 | 25.1 | reversal_0.2_0.8 | UP | TIMEOUT | 0.1455 |
+| 2026-07-14 21:58:02.533 | 2026-07-14 21:58:27.594 | 25.1 | reversal_0.3_0.8 | UP | TIMEOUT | 0.1455 |
+| 2026-07-14 21:58:02.533 | 2026-07-14 21:58:27.594 | 25.1 | reversal_0.4_0.8 | UP | TIMEOUT | 0.1455 |
 
 </details>
 
@@ -3622,7 +3719,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>ETH-15m — 37 trade(s), total pnl 0.8017</summary>
+<summary>ETH-15m — 45 trade(s), total pnl 2.2055</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3663,11 +3760,19 @@ _... and 4800 more._
 | 2026-07-14 21:45:53.703 | 2026-07-14 21:46:18.704 | 25.0 | reversal_0.3_0.6 | UP | TIMEOUT | 0.0661 |
 | 2026-07-14 21:45:53.703 | 2026-07-14 21:46:18.704 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | 0.0661 |
 | 2026-07-14 21:48:16.529 | 2026-07-14 21:48:41.530 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0142 |
+| 2026-07-14 21:59:27.389 | 2026-07-14 21:59:34.452 | 7.1 | reversal_0.2_0.7 | UP | UNWIND | 0.1961 |
+| 2026-07-14 21:59:27.389 | 2026-07-14 21:59:34.452 | 7.1 | reversal_0.2_0.75 | UP | UNWIND | 0.1961 |
+| 2026-07-14 21:59:27.389 | 2026-07-14 21:59:34.452 | 7.1 | reversal_0.3_0.7 | UP | UNWIND | 0.1961 |
+| 2026-07-14 21:59:27.389 | 2026-07-14 21:59:34.452 | 7.1 | reversal_0.3_0.75 | UP | UNWIND | 0.1961 |
+| 2026-07-14 21:59:27.389 | 2026-07-14 21:59:34.452 | 7.1 | reversal_0.4_0.75 | UP | UNWIND | 0.1961 |
+| 2026-07-14 21:59:27.481 | 2026-07-14 21:59:50.031 | 22.5 | reversal_0.2_0.8 | UP | UNWIND | 0.1411 |
+| 2026-07-14 21:59:27.481 | 2026-07-14 21:59:50.031 | 22.5 | reversal_0.3_0.8 | UP | UNWIND | 0.1411 |
+| 2026-07-14 21:59:27.481 | 2026-07-14 21:59:50.031 | 22.5 | reversal_0.4_0.8 | UP | UNWIND | 0.1411 |
 
 </details>
 
 <details>
-<summary>ETH-5m — 141 trade(s), total pnl 5.3956</summary>
+<summary>ETH-5m — 147 trade(s), total pnl 5.5181</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3812,6 +3917,12 @@ _... and 4800 more._
 | 2026-07-14 21:52:39.054 | 2026-07-14 21:53:04.116 | 25.1 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 21:52:39.054 | 2026-07-14 21:53:04.116 | 25.1 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 21:52:39.054 | 2026-07-14 21:53:04.116 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 21:56:14.884 | 2026-07-14 21:56:39.907 | 25.0 | reversal_0.4_0.55 | UP | TIMEOUT | -0.1880 |
+| 2026-07-14 21:57:21.923 | 2026-07-14 21:57:46.927 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | -0.0331 |
+| 2026-07-14 21:58:03.806 | 2026-07-14 21:58:28.813 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | 0.0153 |
+| 2026-07-14 21:58:05.897 | 2026-07-14 21:58:30.911 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | -0.0567 |
+| 2026-07-14 21:59:16.718 | 2026-07-14 21:59:27.377 | 10.7 | reversal_0.4_0.75 | UP | UNWIND | 0.1987 |
+| 2026-07-14 21:59:23.202 | 2026-07-14 21:59:33.899 | 10.7 | reversal_0.4_0.8 | UP | UNWIND | 0.1863 |
 
 </details>
 
@@ -3868,7 +3979,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>SOL-5m — 102 trade(s), total pnl 5.2761</summary>
+<summary>SOL-5m — 108 trade(s), total pnl 5.7533</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -3974,6 +4085,12 @@ _... and 4800 more._
 | 2026-07-14 21:54:24.400 | 2026-07-14 21:54:33.407 | 9.0 | reversal_0.4_0.6 | UP | STOPLOSS | -0.4839 |
 | 2026-07-14 21:54:36.752 | 2026-07-14 21:54:44.592 | 7.8 | reversal_0.4_0.65 | DOWN | UNWIND | 0.2174 |
 | 2026-07-14 21:54:36.818 | 2026-07-14 21:54:44.592 | 7.8 | reversal_0.4_0.7 | DOWN | UNWIND | 0.2098 |
+| 2026-07-14 21:58:05.556 | 2026-07-14 21:58:27.905 | 22.3 | reversal_0.4_0.55 | UP | UNWIND | 0.2564 |
+| 2026-07-14 21:58:05.736 | 2026-07-14 21:58:30.744 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | 0.1653 |
+| 2026-07-14 21:58:05.966 | 2026-07-14 21:58:30.969 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | 0.0602 |
+| 2026-07-14 21:58:27.878 | 2026-07-14 21:58:52.879 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | -0.3873 |
+| 2026-07-14 21:59:16.680 | 2026-07-14 21:59:26.473 | 9.8 | reversal_0.4_0.75 | UP | UNWIND | 0.1974 |
+| 2026-07-14 21:59:16.870 | 2026-07-14 21:59:29.408 | 12.5 | reversal_0.4_0.8 | UP | UNWIND | 0.1852 |
 
 </details>
 
@@ -4027,7 +4144,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>XRP-5m — 119 trade(s), total pnl 9.2824</summary>
+<summary>XRP-5m — 137 trade(s), total pnl 11.7310</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -4150,6 +4267,24 @@ _... and 4800 more._
 | 2026-07-14 21:49:37.968 | 2026-07-14 21:49:42.148 | 4.2 | reversal_0.2_0.7 | UP | UNWIND | 0.1974 |
 | 2026-07-14 21:49:37.968 | 2026-07-14 21:49:42.148 | 4.2 | reversal_0.2_0.75 | UP | UNWIND | 0.1974 |
 | 2026-07-14 21:49:45.315 | 2026-07-14 21:49:50.002 | 4.7 | reversal_0.2_0.8 | UP | UNWIND | 0.0722 |
+| 2026-07-14 21:56:35.094 | 2026-07-14 21:56:58.634 | 23.5 | reversal_0.2_0.55 | DOWN | UNWIND | 0.2400 |
+| 2026-07-14 21:56:35.094 | 2026-07-14 21:56:58.634 | 23.5 | reversal_0.2_0.6 | DOWN | UNWIND | 0.2400 |
+| 2026-07-14 21:56:35.094 | 2026-07-14 21:56:58.634 | 23.5 | reversal_0.3_0.55 | DOWN | UNWIND | 0.2400 |
+| 2026-07-14 21:56:35.094 | 2026-07-14 21:56:58.634 | 23.5 | reversal_0.3_0.6 | DOWN | UNWIND | 0.2400 |
+| 2026-07-14 21:56:35.094 | 2026-07-14 21:56:58.634 | 23.5 | reversal_0.4_0.55 | DOWN | UNWIND | 0.2400 |
+| 2026-07-14 21:56:35.094 | 2026-07-14 21:56:58.634 | 23.5 | reversal_0.4_0.6 | DOWN | UNWIND | 0.2400 |
+| 2026-07-14 21:56:40.223 | 2026-07-14 21:57:05.246 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.1527 |
+| 2026-07-14 21:56:40.223 | 2026-07-14 21:57:05.246 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.1527 |
+| 2026-07-14 21:56:40.223 | 2026-07-14 21:57:05.246 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.1527 |
+| 2026-07-14 21:56:42.696 | 2026-07-14 21:57:07.699 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0851 |
+| 2026-07-14 21:56:42.696 | 2026-07-14 21:57:07.699 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0851 |
+| 2026-07-14 21:56:42.696 | 2026-07-14 21:57:07.699 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0851 |
+| 2026-07-14 21:56:52.884 | 2026-07-14 21:57:17.907 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | -0.0662 |
+| 2026-07-14 21:56:52.884 | 2026-07-14 21:57:17.907 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | -0.0662 |
+| 2026-07-14 21:56:52.884 | 2026-07-14 21:57:17.907 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0662 |
+| 2026-07-14 21:58:43.122 | 2026-07-14 21:59:08.204 | 25.1 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.1646 |
+| 2026-07-14 21:58:43.122 | 2026-07-14 21:59:08.204 | 25.1 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.1646 |
+| 2026-07-14 21:58:43.122 | 2026-07-14 21:59:08.204 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.1646 |
 
 </details>
 
@@ -5785,7 +5920,7 @@ _... and 4800 more._
 <!-- siglab-hour-body-start -->
 <!-- siglab-hour-trades-start -->
 <details>
-<summary>Trades this hour: 819 trade(s)</summary>
+<summary>Trades this hour: 831 trade(s)</summary>
 
 #### Summary: PnL by market and strategy
 
@@ -5805,7 +5940,7 @@ _... and 4800 more._
 | DOGE-hourly-et | reversal | 15 | 0 | 15 | 0 | -2.4297 |
 | ETH-15m | reversal | 4 | 0 | 4 | 0 | 0.1048 |
 | ETH-4h | reversal | 2 | 0 | 2 | 0 | -0.1790 |
-| ETH-5m | reversal | 77 | 1 | 45 | 31 | 6.3673 |
+| ETH-5m | reversal | 83 | 4 | 46 | 33 | 5.4016 |
 | ETH-hourly-et | reversal | 6 | 0 | 6 | 0 | 0.1034 |
 | SOL-15m | reversal | 30 | 9 | 14 | 7 | -2.0760 |
 | SOL-4h | reversal | 2 | 0 | 2 | 0 | 0.0788 |
@@ -5817,13 +5952,13 @@ _... and 4800 more._
 | XRP-hourly-et | reversal | 12 | 0 | 12 | 0 | 0.0063 |
 | weather:amsterdam:28°C | reversal | 4 | 0 | 4 | 0 | -1.4884 |
 | weather:cape-town:15°C | reversal | 12 | 0 | 6 | 6 | -0.0024 |
-| weather:cape-town:16°C | reversal | 9 | 0 | 9 | 0 | -0.3226 |
+| weather:cape-town:16°C | reversal | 15 | 0 | 11 | 4 | 0.2610 |
 | weather:jeddah:36°C | reversal | 18 | 12 | 6 | 0 | -3.5607 |
 | weather:jeddah:37°C | reversal | 6 | 0 | 4 | 2 | 0.5878 |
 | weather:warsaw:27°C | reversal | 3 | 0 | 3 | 0 | 0.0605 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal | 4 | 0 | 4 | 0 | 0.0298 |
 
-**Total pnl: 17.8605**
+**Total pnl: 17.4784**
 
 #### Summary: PnL by market and variant
 
@@ -5955,23 +6090,23 @@ _... and 4800 more._
 | ETH-4h | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0593 |
 | ETH-4h | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1197 |
 | ETH-5m | reversal_0.2_0.55 | 5 | 0 | 2 | 3 | 0.6021 |
-| ETH-5m | reversal_0.2_0.6 | 5 | 0 | 2 | 3 | 0.6309 |
+| ETH-5m | reversal_0.2_0.6 | 6 | 1 | 2 | 3 | 0.1350 |
 | ETH-5m | reversal_0.2_0.65 | 4 | 0 | 2 | 2 | 0.2776 |
 | ETH-5m | reversal_0.2_0.7 | 2 | 0 | 0 | 2 | 0.3081 |
 | ETH-5m | reversal_0.2_0.75 | 3 | 0 | 1 | 2 | 0.3500 |
 | ETH-5m | reversal_0.2_0.8 | 3 | 0 | 2 | 1 | -0.0210 |
 | ETH-5m | reversal_0.3_0.55 | 5 | 0 | 2 | 3 | 0.7107 |
-| ETH-5m | reversal_0.3_0.6 | 5 | 0 | 2 | 3 | 0.7395 |
+| ETH-5m | reversal_0.3_0.6 | 6 | 1 | 2 | 3 | 0.2436 |
 | ETH-5m | reversal_0.3_0.65 | 4 | 0 | 2 | 2 | 0.3862 |
 | ETH-5m | reversal_0.3_0.7 | 2 | 0 | 0 | 2 | 0.4167 |
 | ETH-5m | reversal_0.3_0.75 | 2 | 0 | 1 | 1 | 0.2517 |
 | ETH-5m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.1193 |
 | ETH-5m | reversal_0.4_0.55 | 7 | 0 | 5 | 2 | 0.7709 |
-| ETH-5m | reversal_0.4_0.6 | 7 | 0 | 5 | 2 | 0.7704 |
-| ETH-5m | reversal_0.4_0.65 | 5 | 0 | 5 | 0 | -0.0144 |
-| ETH-5m | reversal_0.4_0.7 | 4 | 0 | 2 | 2 | 0.4508 |
+| ETH-5m | reversal_0.4_0.6 | 8 | 1 | 5 | 2 | 0.2745 |
+| ETH-5m | reversal_0.4_0.65 | 6 | 0 | 5 | 1 | 0.2146 |
+| ETH-5m | reversal_0.4_0.7 | 5 | 0 | 2 | 3 | 0.6636 |
 | ETH-5m | reversal_0.4_0.75 | 6 | 1 | 4 | 1 | -0.1366 |
-| ETH-5m | reversal_0.4_0.8 | 6 | 0 | 6 | 0 | -0.0070 |
+| ETH-5m | reversal_0.4_0.8 | 7 | 0 | 7 | 0 | 0.0732 |
 | ETH-hourly-et | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0488 |
 | ETH-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0426 |
 | ETH-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.0397 |
@@ -6101,9 +6236,15 @@ _... and 4800 more._
 | weather:cape-town:16°C | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.1638 |
 | weather:cape-town:16°C | reversal_0.3_0.6 | 1 | 0 | 1 | 0 | 0.0075 |
 | weather:cape-town:16°C | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | 0.0075 |
+| weather:cape-town:16°C | reversal_0.3_0.7 | 1 | 0 | 0 | 1 | 0.1987 |
+| weather:cape-town:16°C | reversal_0.3_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+| weather:cape-town:16°C | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.1056 |
 | weather:cape-town:16°C | reversal_0.4_0.55 | 4 | 0 | 4 | 0 | -0.5164 |
 | weather:cape-town:16°C | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0075 |
 | weather:cape-town:16°C | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0075 |
+| weather:cape-town:16°C | reversal_0.4_0.7 | 1 | 0 | 0 | 1 | 0.1987 |
+| weather:cape-town:16°C | reversal_0.4_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
+| weather:cape-town:16°C | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.1056 |
 | weather:jeddah:36°C | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.1890 |
 | weather:jeddah:36°C | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.1890 |
 | weather:jeddah:36°C | reversal_0.2_0.65 | 1 | 1 | 0 | 0 | -0.3974 |
@@ -6134,7 +6275,32 @@ _... and 4800 more._
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0136 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0162 |
 
-**Total pnl: 17.8605**
+**Total pnl: 17.4784**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 39 | 3 | 20 | 16 | 3.1234 |
+| reversal_0.2_0.6 | 37 | 4 | 20 | 13 | 1.4231 |
+| reversal_0.2_0.65 | 32 | 4 | 20 | 8 | -0.2388 |
+| reversal_0.2_0.7 | 29 | 3 | 19 | 7 | -0.9699 |
+| reversal_0.2_0.75 | 24 | 4 | 14 | 6 | -0.7476 |
+| reversal_0.2_0.8 | 24 | 4 | 14 | 6 | -1.1824 |
+| reversal_0.3_0.55 | 48 | 2 | 26 | 20 | 4.0938 |
+| reversal_0.3_0.6 | 46 | 3 | 27 | 16 | 1.9762 |
+| reversal_0.3_0.65 | 39 | 3 | 26 | 10 | 0.2096 |
+| reversal_0.3_0.7 | 36 | 3 | 23 | 10 | -0.4549 |
+| reversal_0.3_0.75 | 35 | 4 | 23 | 8 | -0.5320 |
+| reversal_0.3_0.8 | 36 | 3 | 27 | 6 | -1.3050 |
+| reversal_0.4_0.55 | 79 | 3 | 49 | 27 | 5.4467 |
+| reversal_0.4_0.6 | 72 | 4 | 43 | 25 | 4.4954 |
+| reversal_0.4_0.65 | 65 | 3 | 46 | 16 | 2.3701 |
+| reversal_0.4_0.7 | 64 | 3 | 43 | 18 | 1.1572 |
+| reversal_0.4_0.75 | 60 | 6 | 42 | 12 | -0.1252 |
+| reversal_0.4_0.8 | 66 | 7 | 51 | 8 | -1.2613 |
+
+**Total pnl: 17.4784**
 
 <details>
 <summary>BNB-15m — 12 trade(s), total pnl 0.8522</summary>
@@ -6582,7 +6748,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>ETH-5m — 77 trade(s), total pnl 6.3673</summary>
+<summary>ETH-5m — 83 trade(s), total pnl 5.4016</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -6663,6 +6829,12 @@ _... and 4800 more._
 | 2026-07-14 20:50:09.790 | 2026-07-14 20:50:34.795 | 25.0 | reversal_0.4_0.55 | UP | TIMEOUT | 0.0789 |
 | 2026-07-14 20:50:24.444 | 2026-07-14 20:50:49.454 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | 0.0496 |
 | 2026-07-14 20:51:56.690 | 2026-07-14 20:52:21.699 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 20:55:42.873 | 2026-07-14 20:56:01.909 | 19.0 | reversal_0.2_0.6 | DOWN | STOPLOSS | -0.4959 |
+| 2026-07-14 20:55:42.873 | 2026-07-14 20:56:01.909 | 19.0 | reversal_0.3_0.6 | DOWN | STOPLOSS | -0.4959 |
+| 2026-07-14 20:55:42.873 | 2026-07-14 20:56:01.909 | 19.0 | reversal_0.4_0.6 | DOWN | STOPLOSS | -0.4959 |
+| 2026-07-14 20:56:01.875 | 2026-07-14 20:56:16.264 | 14.4 | reversal_0.4_0.65 | UP | UNWIND | 0.2290 |
+| 2026-07-14 20:56:01.909 | 2026-07-14 20:56:16.859 | 14.9 | reversal_0.4_0.7 | UP | UNWIND | 0.2128 |
+| 2026-07-14 20:56:16.264 | 2026-07-14 20:56:41.265 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | 0.0802 |
 
 </details>
 
@@ -7124,7 +7296,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>weather:cape-town:16°C — 9 trade(s), total pnl -0.3226</summary>
+<summary>weather:cape-town:16°C — 15 trade(s), total pnl 0.2610</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -7137,6 +7309,12 @@ _... and 4800 more._
 | 2026-07-14 20:40:13.770 | 2026-07-14 20:40:43.406 | 29.6 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.2478 |
 | 2026-07-14 20:42:14.648 | 2026-07-14 20:42:41.581 | 26.9 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.2342 |
 | 2026-07-14 20:48:15.710 | 2026-07-14 20:48:40.879 | 25.2 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.1982 |
+| 2026-07-14 20:55:27.234 | 2026-07-14 20:55:48.064 | 20.8 | reversal_0.3_0.7 | UP | UNWIND | 0.1987 |
+| 2026-07-14 20:55:27.234 | 2026-07-14 20:55:48.064 | 20.8 | reversal_0.3_0.75 | UP | UNWIND | 0.1987 |
+| 2026-07-14 20:55:27.234 | 2026-07-14 20:55:48.064 | 20.8 | reversal_0.4_0.7 | UP | UNWIND | 0.1987 |
+| 2026-07-14 20:55:27.234 | 2026-07-14 20:55:48.064 | 20.8 | reversal_0.4_0.75 | UP | UNWIND | 0.1987 |
+| 2026-07-14 20:55:38.510 | 2026-07-14 20:56:03.604 | 25.1 | reversal_0.3_0.8 | UP | TIMEOUT | -0.1056 |
+| 2026-07-14 20:55:38.510 | 2026-07-14 20:56:03.604 | 25.1 | reversal_0.4_0.8 | UP | TIMEOUT | -0.1056 |
 
 </details>
 
@@ -8718,56 +8896,57 @@ _... and 4800 more._
 <!-- siglab-hour-body-start -->
 <!-- siglab-hour-trades-start -->
 <details>
-<summary>Trades this hour: 847 trade(s)</summary>
+<summary>Trades this hour: 961 trade(s)</summary>
 
 #### Summary: PnL by market and strategy
 
 | market | strategy | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
-| BNB-15m | reversal | 30 | 0 | 24 | 6 | 1.5933 |
+| BNB-15m | reversal | 48 | 0 | 24 | 24 | 1.5933 |
 | BNB-5m | reversal | 36 | 0 | 24 | 12 | 2.0908 |
-| BTC-15m | reversal | 30 | 0 | 30 | 0 | 0.2456 |
-| BTC-5m | reversal | 65 | 0 | 59 | 6 | -0.1230 |
+| BTC-15m | reversal | 44 | 0 | 44 | 0 | 0.3494 |
+| BTC-5m | reversal | 68 | 0 | 62 | 6 | 0.2124 |
 | BTC-hourly-et | reversal | 12 | 0 | 12 | 0 | 0.4509 |
-| DOGE-15m | reversal | 46 | 0 | 46 | 0 | 2.2780 |
-| DOGE-5m | reversal | 85 | 0 | 74 | 11 | 2.5695 |
+| DOGE-15m | reversal | 48 | 0 | 48 | 0 | 2.0668 |
+| DOGE-5m | reversal | 103 | 0 | 92 | 11 | 5.5482 |
 | DOGE-hourly-et | reversal | 9 | 0 | 9 | 0 | -1.5694 |
-| ETH-15m | reversal | 55 | 0 | 50 | 5 | 1.4525 |
-| ETH-5m | reversal | 117 | 9 | 87 | 21 | 2.7607 |
+| ETH-15m | reversal | 61 | 2 | 54 | 5 | 1.1141 |
+| ETH-5m | reversal | 132 | 9 | 90 | 33 | 5.7484 |
 | ETH-hourly-et | reversal | 12 | 0 | 12 | 0 | -0.1671 |
-| SOL-15m | reversal | 55 | 0 | 55 | 0 | 2.7264 |
-| SOL-5m | reversal | 128 | 30 | 63 | 35 | -3.5728 |
+| SOL-15m | reversal | 57 | 0 | 57 | 0 | 2.8134 |
+| SOL-5m | reversal | 146 | 30 | 81 | 35 | -1.9960 |
 | SOL-hourly-et | reversal | 9 | 0 | 9 | 0 | 0.2386 |
 | XRP-15m | reversal | 54 | 0 | 54 | 0 | 1.2614 |
-| XRP-5m | reversal | 87 | 0 | 84 | 3 | -0.7722 |
+| XRP-5m | reversal | 105 | 0 | 102 | 3 | 0.2196 |
 | XRP-hourly-et | reversal | 8 | 0 | 8 | 0 | 0.0781 |
 | weather:ankara:28°C | reversal | 6 | 0 | 6 | 0 | 0.1518 |
 | weather:jeddah:37°C | reversal | 1 | 0 | 1 | 0 | 0.0000 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal | 2 | 0 | 2 | 0 | -0.0856 |
 
-**Total pnl: 11.6075**
+**Total pnl: 20.1191**
 
 #### Summary: PnL by market and variant
 
 | market | variant | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
-| BNB-15m | reversal_0.2_0.55 | 2 | 0 | 2 | 0 | 0.0737 |
-| BNB-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | 0.0737 |
-| BNB-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | -0.0084 |
-| BNB-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0140 |
-| BNB-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.1235 |
-| BNB-15m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | 0.0737 |
-| BNB-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | 0.0737 |
-| BNB-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | -0.0084 |
-| BNB-15m | reversal_0.3_0.7 | 2 | 0 | 1 | 1 | 0.2015 |
-| BNB-15m | reversal_0.3_0.75 | 1 | 0 | 0 | 1 | 0.1875 |
-| BNB-15m | reversal_0.3_0.8 | 2 | 0 | 1 | 1 | 0.1304 |
-| BNB-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0737 |
-| BNB-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0737 |
-| BNB-15m | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | -0.0084 |
-| BNB-15m | reversal_0.4_0.7 | 2 | 0 | 1 | 1 | 0.2015 |
-| BNB-15m | reversal_0.4_0.75 | 1 | 0 | 0 | 1 | 0.1875 |
-| BNB-15m | reversal_0.4_0.8 | 2 | 0 | 1 | 1 | 0.1304 |
+| BNB-15m | reversal_0.2_0.55 | 3 | 0 | 2 | 1 | 0.0737 |
+| BNB-15m | reversal_0.2_0.6 | 3 | 0 | 2 | 1 | 0.0737 |
+| BNB-15m | reversal_0.2_0.65 | 3 | 0 | 2 | 1 | -0.0084 |
+| BNB-15m | reversal_0.2_0.7 | 2 | 0 | 1 | 1 | 0.0140 |
+| BNB-15m | reversal_0.2_0.75 | 1 | 0 | 0 | 1 | 0.0000 |
+| BNB-15m | reversal_0.2_0.8 | 2 | 0 | 1 | 1 | 0.1235 |
+| BNB-15m | reversal_0.3_0.55 | 3 | 0 | 2 | 1 | 0.0737 |
+| BNB-15m | reversal_0.3_0.6 | 3 | 0 | 2 | 1 | 0.0737 |
+| BNB-15m | reversal_0.3_0.65 | 3 | 0 | 2 | 1 | -0.0084 |
+| BNB-15m | reversal_0.3_0.7 | 3 | 0 | 1 | 2 | 0.2015 |
+| BNB-15m | reversal_0.3_0.75 | 2 | 0 | 0 | 2 | 0.1875 |
+| BNB-15m | reversal_0.3_0.8 | 3 | 0 | 1 | 2 | 0.1304 |
+| BNB-15m | reversal_0.4_0.55 | 3 | 0 | 2 | 1 | 0.0737 |
+| BNB-15m | reversal_0.4_0.6 | 3 | 0 | 2 | 1 | 0.0737 |
+| BNB-15m | reversal_0.4_0.65 | 3 | 0 | 2 | 1 | -0.0084 |
+| BNB-15m | reversal_0.4_0.7 | 3 | 0 | 1 | 2 | 0.2015 |
+| BNB-15m | reversal_0.4_0.75 | 2 | 0 | 0 | 2 | 0.1875 |
+| BNB-15m | reversal_0.4_0.8 | 3 | 0 | 1 | 2 | 0.1304 |
 | BNB-5m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.0073 |
 | BNB-5m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0073 |
 | BNB-5m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.0073 |
@@ -8786,42 +8965,42 @@ _... and 4800 more._
 | BNB-5m | reversal_0.4_0.7 | 3 | 0 | 2 | 1 | 0.2157 |
 | BNB-5m | reversal_0.4_0.75 | 4 | 0 | 2 | 2 | 0.3426 |
 | BNB-5m | reversal_0.4_0.8 | 4 | 0 | 2 | 2 | 0.3850 |
-| BTC-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0163 |
-| BTC-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0163 |
-| BTC-15m | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.1527 |
-| BTC-15m | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0851 |
-| BTC-15m | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0530 |
-| BTC-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.0870 |
-| BTC-15m | reversal_0.3_0.55 | 2 | 0 | 2 | 0 | 0.1265 |
-| BTC-15m | reversal_0.3_0.6 | 2 | 0 | 2 | 0 | 0.1265 |
-| BTC-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | 0.1669 |
-| BTC-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | 0.0993 |
-| BTC-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | 0.0000 |
-| BTC-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.0622 |
+| BTC-15m | reversal_0.2_0.55 | 2 | 0 | 2 | 0 | 0.0800 |
+| BTC-15m | reversal_0.2_0.6 | 2 | 0 | 2 | 0 | 0.0800 |
+| BTC-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | 0.2164 |
+| BTC-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | 0.1488 |
+| BTC-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | 0.1167 |
+| BTC-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | -0.1367 |
+| BTC-15m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | 0.1902 |
+| BTC-15m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | 0.1902 |
+| BTC-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | 0.2306 |
+| BTC-15m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.1630 |
+| BTC-15m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.0637 |
+| BTC-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | -0.1119 |
 | BTC-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0316 |
 | BTC-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0316 |
 | BTC-15m | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | 0.0000 |
 | BTC-15m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | 0.0280 |
-| BTC-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.4768 |
-| BTC-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.0622 |
+| BTC-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.6622 |
+| BTC-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.3106 |
 | BTC-5m | reversal_0.2_0.55 | 4 | 0 | 3 | 1 | 0.0978 |
 | BTC-5m | reversal_0.2_0.6 | 4 | 0 | 3 | 1 | 0.0978 |
 | BTC-5m | reversal_0.2_0.65 | 4 | 0 | 4 | 0 | 0.0448 |
 | BTC-5m | reversal_0.2_0.7 | 4 | 0 | 4 | 0 | -0.1746 |
 | BTC-5m | reversal_0.2_0.75 | 4 | 0 | 4 | 0 | -0.2251 |
-| BTC-5m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0447 |
+| BTC-5m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | 0.1565 |
 | BTC-5m | reversal_0.3_0.55 | 4 | 0 | 3 | 1 | 0.0978 |
 | BTC-5m | reversal_0.3_0.6 | 4 | 0 | 3 | 1 | 0.0978 |
 | BTC-5m | reversal_0.3_0.65 | 4 | 0 | 4 | 0 | 0.0448 |
 | BTC-5m | reversal_0.3_0.7 | 4 | 0 | 4 | 0 | -0.1746 |
 | BTC-5m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | -0.2251 |
-| BTC-5m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | 0.1551 |
+| BTC-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.2669 |
 | BTC-5m | reversal_0.4_0.55 | 4 | 0 | 3 | 1 | 0.0978 |
 | BTC-5m | reversal_0.4_0.6 | 4 | 0 | 3 | 1 | 0.0978 |
 | BTC-5m | reversal_0.4_0.65 | 4 | 0 | 4 | 0 | 0.0448 |
 | BTC-5m | reversal_0.4_0.7 | 4 | 0 | 4 | 0 | -0.1746 |
 | BTC-5m | reversal_0.4_0.75 | 4 | 0 | 4 | 0 | -0.2251 |
-| BTC-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.1551 |
+| BTC-5m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | 0.2669 |
 | BTC-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.1081 |
 | BTC-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0165 |
 | BTC-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.0076 |
@@ -8845,31 +9024,31 @@ _... and 4800 more._
 | DOGE-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | 0.2581 |
 | DOGE-15m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.1093 |
 | DOGE-15m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | 0.1239 |
-| DOGE-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.1181 |
+| DOGE-15m | reversal_0.3_0.8 | 4 | 0 | 4 | 0 | 0.0125 |
 | DOGE-15m | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0978 |
 | DOGE-15m | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | 0.0978 |
 | DOGE-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | 0.2581 |
 | DOGE-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.1093 |
 | DOGE-15m | reversal_0.4_0.75 | 4 | 0 | 4 | 0 | 0.1239 |
-| DOGE-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | 0.1181 |
-| DOGE-5m | reversal_0.2_0.55 | 4 | 0 | 3 | 1 | 0.3467 |
-| DOGE-5m | reversal_0.2_0.6 | 4 | 0 | 3 | 1 | 0.2669 |
-| DOGE-5m | reversal_0.2_0.65 | 4 | 0 | 3 | 1 | 0.3147 |
-| DOGE-5m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | -0.0163 |
-| DOGE-5m | reversal_0.2_0.75 | 3 | 0 | 3 | 0 | -0.0863 |
-| DOGE-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | -0.2788 |
-| DOGE-5m | reversal_0.3_0.55 | 4 | 0 | 3 | 1 | 0.3467 |
-| DOGE-5m | reversal_0.3_0.6 | 4 | 0 | 3 | 1 | 0.2669 |
-| DOGE-5m | reversal_0.3_0.65 | 4 | 0 | 3 | 1 | 0.3147 |
-| DOGE-5m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | -0.0163 |
-| DOGE-5m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | -0.0863 |
-| DOGE-5m | reversal_0.3_0.8 | 4 | 0 | 4 | 0 | -0.2788 |
-| DOGE-5m | reversal_0.4_0.55 | 7 | 0 | 6 | 1 | 0.5027 |
-| DOGE-5m | reversal_0.4_0.6 | 7 | 0 | 6 | 1 | 0.4229 |
-| DOGE-5m | reversal_0.4_0.65 | 7 | 0 | 6 | 1 | 0.3444 |
-| DOGE-5m | reversal_0.4_0.7 | 7 | 0 | 6 | 1 | 0.1513 |
-| DOGE-5m | reversal_0.4_0.75 | 6 | 0 | 5 | 1 | 0.1745 |
-| DOGE-5m | reversal_0.4_0.8 | 7 | 0 | 7 | 0 | -0.1201 |
+| DOGE-15m | reversal_0.4_0.8 | 4 | 0 | 4 | 0 | 0.0125 |
+| DOGE-5m | reversal_0.2_0.55 | 5 | 0 | 4 | 1 | 0.5346 |
+| DOGE-5m | reversal_0.2_0.6 | 5 | 0 | 4 | 1 | 0.4548 |
+| DOGE-5m | reversal_0.2_0.65 | 5 | 0 | 4 | 1 | 0.5026 |
+| DOGE-5m | reversal_0.2_0.7 | 4 | 0 | 4 | 0 | 0.1716 |
+| DOGE-5m | reversal_0.2_0.75 | 4 | 0 | 4 | 0 | 0.0556 |
+| DOGE-5m | reversal_0.2_0.8 | 5 | 0 | 5 | 0 | -0.1794 |
+| DOGE-5m | reversal_0.3_0.55 | 5 | 0 | 4 | 1 | 0.5346 |
+| DOGE-5m | reversal_0.3_0.6 | 5 | 0 | 4 | 1 | 0.4548 |
+| DOGE-5m | reversal_0.3_0.65 | 5 | 0 | 4 | 1 | 0.5026 |
+| DOGE-5m | reversal_0.3_0.7 | 4 | 0 | 4 | 0 | 0.1716 |
+| DOGE-5m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | 0.0556 |
+| DOGE-5m | reversal_0.3_0.8 | 5 | 0 | 5 | 0 | -0.1794 |
+| DOGE-5m | reversal_0.4_0.55 | 8 | 0 | 7 | 1 | 0.6906 |
+| DOGE-5m | reversal_0.4_0.6 | 8 | 0 | 7 | 1 | 0.6108 |
+| DOGE-5m | reversal_0.4_0.65 | 8 | 0 | 7 | 1 | 0.5323 |
+| DOGE-5m | reversal_0.4_0.7 | 8 | 0 | 7 | 1 | 0.3392 |
+| DOGE-5m | reversal_0.4_0.75 | 7 | 0 | 6 | 1 | 0.3164 |
+| DOGE-5m | reversal_0.4_0.8 | 8 | 0 | 8 | 0 | -0.0207 |
 | DOGE-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.1736 |
 | DOGE-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.2147 |
 | DOGE-hourly-et | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | -0.2147 |
@@ -8888,33 +9067,33 @@ _... and 4800 more._
 | ETH-15m | reversal_0.3_0.55 | 4 | 0 | 3 | 1 | 0.2150 |
 | ETH-15m | reversal_0.3_0.6 | 3 | 0 | 2 | 1 | 0.0203 |
 | ETH-15m | reversal_0.3_0.65 | 4 | 0 | 4 | 0 | -0.0306 |
-| ETH-15m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.1828 |
-| ETH-15m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | 0.1623 |
-| ETH-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | -0.0720 |
+| ETH-15m | reversal_0.3_0.7 | 4 | 1 | 3 | 0 | -0.2427 |
+| ETH-15m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | 0.3192 |
+| ETH-15m | reversal_0.3_0.8 | 4 | 0 | 4 | 0 | 0.0274 |
 | ETH-15m | reversal_0.4_0.55 | 4 | 0 | 3 | 1 | 0.2648 |
 | ETH-15m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | -0.1284 |
 | ETH-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | -0.1985 |
-| ETH-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | -0.1690 |
-| ETH-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | 0.1623 |
-| ETH-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.0720 |
-| ETH-5m | reversal_0.2_0.55 | 7 | 0 | 6 | 1 | 0.5653 |
-| ETH-5m | reversal_0.2_0.6 | 7 | 0 | 5 | 2 | 1.0231 |
-| ETH-5m | reversal_0.2_0.65 | 6 | 1 | 4 | 1 | 0.0592 |
-| ETH-5m | reversal_0.2_0.7 | 5 | 1 | 4 | 0 | -0.1298 |
+| ETH-15m | reversal_0.4_0.7 | 4 | 1 | 3 | 0 | -0.5945 |
+| ETH-15m | reversal_0.4_0.75 | 4 | 0 | 4 | 0 | 0.3192 |
+| ETH-15m | reversal_0.4_0.8 | 4 | 0 | 4 | 0 | 0.0274 |
+| ETH-5m | reversal_0.2_0.55 | 8 | 0 | 6 | 2 | 0.7979 |
+| ETH-5m | reversal_0.2_0.6 | 8 | 0 | 5 | 3 | 1.2557 |
+| ETH-5m | reversal_0.2_0.65 | 7 | 1 | 4 | 2 | 0.2831 |
+| ETH-5m | reversal_0.2_0.7 | 6 | 1 | 4 | 1 | 0.0800 |
 | ETH-5m | reversal_0.2_0.75 | 5 | 1 | 4 | 0 | -0.9958 |
-| ETH-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | -0.4099 |
-| ETH-5m | reversal_0.3_0.55 | 8 | 0 | 6 | 2 | 0.7751 |
-| ETH-5m | reversal_0.3_0.6 | 8 | 0 | 5 | 3 | 1.2329 |
-| ETH-5m | reversal_0.3_0.65 | 7 | 1 | 4 | 2 | 0.2690 |
-| ETH-5m | reversal_0.3_0.7 | 6 | 1 | 4 | 1 | 0.0800 |
+| ETH-5m | reversal_0.2_0.8 | 5 | 0 | 5 | 0 | -0.3129 |
+| ETH-5m | reversal_0.3_0.55 | 9 | 0 | 6 | 3 | 1.0077 |
+| ETH-5m | reversal_0.3_0.6 | 9 | 0 | 5 | 4 | 1.4655 |
+| ETH-5m | reversal_0.3_0.65 | 8 | 1 | 4 | 3 | 0.4929 |
+| ETH-5m | reversal_0.3_0.7 | 7 | 1 | 4 | 2 | 0.2898 |
 | ETH-5m | reversal_0.3_0.75 | 6 | 1 | 5 | 0 | -0.8501 |
-| ETH-5m | reversal_0.3_0.8 | 5 | 0 | 5 | 0 | -0.2523 |
-| ETH-5m | reversal_0.4_0.55 | 8 | 0 | 6 | 2 | 0.7751 |
-| ETH-5m | reversal_0.4_0.6 | 8 | 0 | 5 | 3 | 1.2329 |
-| ETH-5m | reversal_0.4_0.65 | 7 | 1 | 4 | 2 | 0.2690 |
-| ETH-5m | reversal_0.4_0.7 | 7 | 1 | 4 | 2 | 0.2883 |
+| ETH-5m | reversal_0.3_0.8 | 6 | 0 | 6 | 0 | -0.1553 |
+| ETH-5m | reversal_0.4_0.55 | 9 | 0 | 6 | 3 | 1.0077 |
+| ETH-5m | reversal_0.4_0.6 | 9 | 0 | 5 | 4 | 1.4655 |
+| ETH-5m | reversal_0.4_0.65 | 8 | 1 | 4 | 3 | 0.4929 |
+| ETH-5m | reversal_0.4_0.7 | 8 | 1 | 4 | 3 | 0.4981 |
 | ETH-5m | reversal_0.4_0.75 | 7 | 1 | 6 | 0 | -0.8693 |
-| ETH-5m | reversal_0.4_0.8 | 6 | 0 | 6 | 0 | -0.3020 |
+| ETH-5m | reversal_0.4_0.8 | 7 | 0 | 7 | 0 | -0.2050 |
 | ETH-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0305 |
 | ETH-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0000 |
 | ETH-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | 0.0132 |
@@ -8938,31 +9117,31 @@ _... and 4800 more._
 | SOL-15m | reversal_0.3_0.65 | 4 | 0 | 4 | 0 | 0.1091 |
 | SOL-15m | reversal_0.3_0.7 | 4 | 0 | 4 | 0 | -0.1135 |
 | SOL-15m | reversal_0.3_0.75 | 3 | 0 | 3 | 0 | -0.0795 |
-| SOL-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.0372 |
+| SOL-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.0063 |
 | SOL-15m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | 0.4252 |
 | SOL-15m | reversal_0.4_0.6 | 4 | 0 | 4 | 0 | 0.6257 |
 | SOL-15m | reversal_0.4_0.65 | 4 | 0 | 4 | 0 | 0.1091 |
 | SOL-15m | reversal_0.4_0.7 | 4 | 0 | 4 | 0 | -0.1135 |
 | SOL-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.0795 |
-| SOL-15m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | -0.0372 |
-| SOL-5m | reversal_0.2_0.55 | 8 | 1 | 3 | 4 | 0.2726 |
-| SOL-5m | reversal_0.2_0.6 | 8 | 1 | 3 | 4 | 0.2726 |
-| SOL-5m | reversal_0.2_0.65 | 8 | 1 | 3 | 4 | 0.2485 |
-| SOL-5m | reversal_0.2_0.7 | 7 | 1 | 3 | 3 | 0.4438 |
-| SOL-5m | reversal_0.2_0.75 | 6 | 1 | 4 | 1 | -0.0067 |
-| SOL-5m | reversal_0.2_0.8 | 5 | 1 | 3 | 1 | -0.0687 |
-| SOL-5m | reversal_0.3_0.55 | 8 | 2 | 3 | 3 | -0.2795 |
-| SOL-5m | reversal_0.3_0.6 | 8 | 2 | 3 | 3 | -0.2795 |
-| SOL-5m | reversal_0.3_0.65 | 8 | 2 | 3 | 3 | -0.3036 |
-| SOL-5m | reversal_0.3_0.7 | 7 | 2 | 3 | 2 | -0.1083 |
-| SOL-5m | reversal_0.3_0.75 | 6 | 2 | 4 | 0 | -0.5588 |
-| SOL-5m | reversal_0.3_0.8 | 5 | 2 | 3 | 0 | -0.6208 |
-| SOL-5m | reversal_0.4_0.55 | 8 | 2 | 4 | 2 | -0.4406 |
-| SOL-5m | reversal_0.4_0.6 | 8 | 2 | 4 | 2 | -0.4406 |
-| SOL-5m | reversal_0.4_0.65 | 8 | 2 | 4 | 2 | -0.4647 |
-| SOL-5m | reversal_0.4_0.7 | 7 | 2 | 4 | 1 | -0.2510 |
-| SOL-5m | reversal_0.4_0.75 | 7 | 2 | 5 | 0 | -0.4661 |
-| SOL-5m | reversal_0.4_0.8 | 6 | 2 | 4 | 0 | -0.5214 |
+| SOL-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | 0.0063 |
+| SOL-5m | reversal_0.2_0.55 | 9 | 1 | 4 | 4 | 0.3653 |
+| SOL-5m | reversal_0.2_0.6 | 9 | 1 | 4 | 4 | 0.3653 |
+| SOL-5m | reversal_0.2_0.65 | 9 | 1 | 4 | 4 | 0.3412 |
+| SOL-5m | reversal_0.2_0.7 | 8 | 1 | 4 | 3 | 0.5365 |
+| SOL-5m | reversal_0.2_0.75 | 7 | 1 | 5 | 1 | 0.0860 |
+| SOL-5m | reversal_0.2_0.8 | 6 | 1 | 4 | 1 | -0.0066 |
+| SOL-5m | reversal_0.3_0.55 | 9 | 2 | 4 | 3 | -0.1868 |
+| SOL-5m | reversal_0.3_0.6 | 9 | 2 | 4 | 3 | -0.1868 |
+| SOL-5m | reversal_0.3_0.65 | 9 | 2 | 4 | 3 | -0.2109 |
+| SOL-5m | reversal_0.3_0.7 | 8 | 2 | 4 | 2 | -0.0156 |
+| SOL-5m | reversal_0.3_0.75 | 7 | 2 | 5 | 0 | -0.4661 |
+| SOL-5m | reversal_0.3_0.8 | 6 | 2 | 4 | 0 | -0.5587 |
+| SOL-5m | reversal_0.4_0.55 | 9 | 2 | 5 | 2 | -0.3479 |
+| SOL-5m | reversal_0.4_0.6 | 9 | 2 | 5 | 2 | -0.3479 |
+| SOL-5m | reversal_0.4_0.65 | 9 | 2 | 5 | 2 | -0.3720 |
+| SOL-5m | reversal_0.4_0.7 | 8 | 2 | 5 | 1 | -0.1583 |
+| SOL-5m | reversal_0.4_0.75 | 8 | 2 | 6 | 0 | -0.3734 |
+| SOL-5m | reversal_0.4_0.8 | 7 | 2 | 5 | 0 | -0.4593 |
 | SOL-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0991 |
 | SOL-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0000 |
 | SOL-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0199 |
@@ -8990,24 +9169,24 @@ _... and 4800 more._
 | XRP-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.0568 |
 | XRP-15m | reversal_0.4_0.75 | 3 | 0 | 3 | 0 | -0.1935 |
 | XRP-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.1304 |
-| XRP-5m | reversal_0.2_0.55 | 5 | 0 | 5 | 0 | -0.2091 |
-| XRP-5m | reversal_0.2_0.6 | 5 | 0 | 5 | 0 | -0.2091 |
-| XRP-5m | reversal_0.2_0.65 | 5 | 0 | 5 | 0 | -0.2091 |
-| XRP-5m | reversal_0.2_0.7 | 4 | 0 | 4 | 0 | -0.1603 |
-| XRP-5m | reversal_0.2_0.75 | 4 | 0 | 4 | 0 | -0.2402 |
-| XRP-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | -0.3835 |
-| XRP-5m | reversal_0.3_0.55 | 5 | 0 | 5 | 0 | -0.2091 |
-| XRP-5m | reversal_0.3_0.6 | 5 | 0 | 5 | 0 | -0.2091 |
-| XRP-5m | reversal_0.3_0.65 | 5 | 0 | 5 | 0 | -0.2091 |
-| XRP-5m | reversal_0.3_0.7 | 5 | 0 | 5 | 0 | -0.0585 |
-| XRP-5m | reversal_0.3_0.75 | 5 | 0 | 5 | 0 | -0.1384 |
-| XRP-5m | reversal_0.3_0.8 | 5 | 0 | 5 | 0 | -0.2817 |
-| XRP-5m | reversal_0.4_0.55 | 5 | 0 | 4 | 1 | 0.3315 |
-| XRP-5m | reversal_0.4_0.6 | 5 | 0 | 4 | 1 | 0.3315 |
-| XRP-5m | reversal_0.4_0.65 | 5 | 0 | 4 | 1 | 0.3171 |
-| XRP-5m | reversal_0.4_0.7 | 5 | 0 | 5 | 0 | 0.4133 |
-| XRP-5m | reversal_0.4_0.75 | 5 | 0 | 5 | 0 | 0.3079 |
-| XRP-5m | reversal_0.4_0.8 | 5 | 0 | 5 | 0 | 0.0437 |
+| XRP-5m | reversal_0.2_0.55 | 6 | 0 | 6 | 0 | -0.1228 |
+| XRP-5m | reversal_0.2_0.6 | 6 | 0 | 6 | 0 | -0.1228 |
+| XRP-5m | reversal_0.2_0.65 | 6 | 0 | 6 | 0 | -0.1228 |
+| XRP-5m | reversal_0.2_0.7 | 5 | 0 | 5 | 0 | -0.0894 |
+| XRP-5m | reversal_0.2_0.75 | 5 | 0 | 5 | 0 | -0.2270 |
+| XRP-5m | reversal_0.2_0.8 | 5 | 0 | 5 | 0 | -0.3959 |
+| XRP-5m | reversal_0.3_0.55 | 6 | 0 | 6 | 0 | -0.1228 |
+| XRP-5m | reversal_0.3_0.6 | 6 | 0 | 6 | 0 | -0.1228 |
+| XRP-5m | reversal_0.3_0.65 | 6 | 0 | 6 | 0 | -0.1228 |
+| XRP-5m | reversal_0.3_0.7 | 6 | 0 | 6 | 0 | 0.0124 |
+| XRP-5m | reversal_0.3_0.75 | 6 | 0 | 6 | 0 | -0.1252 |
+| XRP-5m | reversal_0.3_0.8 | 6 | 0 | 6 | 0 | -0.2941 |
+| XRP-5m | reversal_0.4_0.55 | 6 | 0 | 5 | 1 | 0.4178 |
+| XRP-5m | reversal_0.4_0.6 | 6 | 0 | 5 | 1 | 0.4178 |
+| XRP-5m | reversal_0.4_0.65 | 6 | 0 | 5 | 1 | 0.4034 |
+| XRP-5m | reversal_0.4_0.7 | 6 | 0 | 6 | 0 | 0.4842 |
+| XRP-5m | reversal_0.4_0.75 | 6 | 0 | 6 | 0 | 0.3211 |
+| XRP-5m | reversal_0.4_0.8 | 6 | 0 | 6 | 0 | 0.0313 |
 | XRP-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | 0.0000 |
 | XRP-hourly-et | reversal_0.2_0.75 | 1 | 0 | 1 | 0 | -0.0265 |
 | XRP-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | 0.0000 |
@@ -9026,10 +9205,35 @@ _... and 4800 more._
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0428 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.0428 |
 
-**Total pnl: 11.6075**
+**Total pnl: 20.1191**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 48 | 1 | 37 | 10 | 3.0200 |
+| reversal_0.2_0.6 | 48 | 1 | 37 | 10 | 3.1679 |
+| reversal_0.2_0.65 | 50 | 2 | 40 | 8 | 1.8290 |
+| reversal_0.2_0.7 | 46 | 2 | 39 | 5 | 0.6504 |
+| reversal_0.2_0.75 | 43 | 2 | 37 | 4 | -0.7834 |
+| reversal_0.2_0.8 | 41 | 1 | 37 | 3 | -0.7690 |
+| reversal_0.3_0.55 | 55 | 2 | 43 | 10 | 2.6843 |
+| reversal_0.3_0.6 | 54 | 2 | 41 | 11 | 2.8774 |
+| reversal_0.3_0.65 | 56 | 3 | 45 | 8 | 1.3566 |
+| reversal_0.3_0.7 | 53 | 4 | 43 | 6 | 0.2063 |
+| reversal_0.3_0.75 | 51 | 3 | 45 | 3 | -0.9482 |
+| reversal_0.3_0.8 | 51 | 2 | 46 | 3 | -1.0477 |
+| reversal_0.4_0.55 | 60 | 2 | 47 | 11 | 3.4714 |
+| reversal_0.4_0.6 | 60 | 2 | 47 | 11 | 3.3899 |
+| reversal_0.4_0.65 | 61 | 3 | 49 | 9 | 1.6807 |
+| reversal_0.4_0.7 | 63 | 4 | 51 | 8 | 0.7460 |
+| reversal_0.4_0.75 | 61 | 3 | 53 | 5 | -0.9731 |
+| reversal_0.4_0.8 | 60 | 2 | 54 | 4 | -0.4394 |
+
+**Total pnl: 20.1191**
 
 <details>
-<summary>BNB-15m — 30 trade(s), total pnl 1.5933</summary>
+<summary>BNB-15m — 48 trade(s), total pnl 1.5933</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9063,6 +9267,24 @@ _... and 4800 more._
 | 2026-07-14 19:25:27.325 | 2026-07-14 19:25:52.385 | 25.1 | reversal_0.3_0.8 | UP | TIMEOUT | -0.0559 |
 | 2026-07-14 19:25:27.325 | 2026-07-14 19:25:52.385 | 25.1 | reversal_0.4_0.8 | UP | TIMEOUT | -0.0559 |
 | 2026-07-14 19:26:41.131 | 2026-07-14 19:27:06.143 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.1235 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.2_0.55 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.2_0.6 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.2_0.65 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.2_0.7 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.2_0.75 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.2_0.8 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.3_0.55 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.3_0.6 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.3_0.65 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.3_0.7 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.3_0.75 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.3_0.8 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.4_0.55 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.4_0.6 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.4_0.65 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.4_0.7 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.4_0.75 | UP | UNWIND | 0.0000 |
+| 2026-07-14 19:59:58.964 | 2026-07-14 19:59:58.964 | 0.0 | reversal_0.4_0.8 | UP | UNWIND | 0.0000 |
 
 </details>
 
@@ -9111,7 +9333,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>BTC-15m — 30 trade(s), total pnl 0.2456</summary>
+<summary>BTC-15m — 44 trade(s), total pnl 0.3494</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9145,11 +9367,25 @@ _... and 4800 more._
 | 2026-07-14 19:49:50.840 | 2026-07-14 19:50:15.862 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0153 |
 | 2026-07-14 19:49:50.840 | 2026-07-14 19:50:15.862 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0153 |
 | 2026-07-14 19:53:05.454 | 2026-07-14 19:53:30.471 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | 0.0280 |
+| 2026-07-14 19:55:10.304 | 2026-07-14 19:55:35.305 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | -0.1854 |
+| 2026-07-14 19:55:12.360 | 2026-07-14 19:55:37.389 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | -0.2484 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:51.148 | 2026-07-14 19:57:16.150 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0637 |
+| 2026-07-14 19:56:58.271 | 2026-07-14 19:57:23.274 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.0497 |
+| 2026-07-14 19:56:58.271 | 2026-07-14 19:57:23.274 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.0497 |
 
 </details>
 
 <details>
-<summary>BTC-5m — 65 trade(s), total pnl -0.1230</summary>
+<summary>BTC-5m — 68 trade(s), total pnl 0.2124</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9218,6 +9454,9 @@ _... and 4800 more._
 | 2026-07-14 19:37:35.241 | 2026-07-14 19:38:00.248 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0447 |
 | 2026-07-14 19:37:35.241 | 2026-07-14 19:38:00.248 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0447 |
 | 2026-07-14 19:37:35.241 | 2026-07-14 19:38:00.248 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0447 |
+| 2026-07-14 19:56:32.984 | 2026-07-14 19:56:57.991 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.1118 |
+| 2026-07-14 19:56:32.984 | 2026-07-14 19:56:57.991 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.1118 |
+| 2026-07-14 19:56:32.984 | 2026-07-14 19:56:57.991 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.1118 |
 
 </details>
 
@@ -9242,7 +9481,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>DOGE-15m — 46 trade(s), total pnl 2.2780</summary>
+<summary>DOGE-15m — 48 trade(s), total pnl 2.0668</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9292,11 +9531,13 @@ _... and 4800 more._
 | 2026-07-14 19:52:00.726 | 2026-07-14 19:52:25.842 | 25.1 | reversal_0.4_0.7 | UP | TIMEOUT | -0.0071 |
 | 2026-07-14 19:52:36.849 | 2026-07-14 19:53:01.922 | 25.1 | reversal_0.3_0.75 | UP | TIMEOUT | 0.0331 |
 | 2026-07-14 19:52:36.849 | 2026-07-14 19:53:01.922 | 25.1 | reversal_0.4_0.75 | UP | TIMEOUT | 0.0331 |
+| 2026-07-14 19:55:11.672 | 2026-07-14 19:55:36.689 | 25.0 | reversal_0.3_0.8 | UP | TIMEOUT | -0.1056 |
+| 2026-07-14 19:55:11.672 | 2026-07-14 19:55:36.689 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | -0.1056 |
 
 </details>
 
 <details>
-<summary>DOGE-5m — 85 trade(s), total pnl 2.5695</summary>
+<summary>DOGE-5m — 103 trade(s), total pnl 5.5482</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9385,6 +9626,24 @@ _... and 4800 more._
 | 2026-07-14 19:44:03.352 | 2026-07-14 19:44:28.365 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | 0.0510 |
 | 2026-07-14 19:44:03.352 | 2026-07-14 19:44:28.365 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | 0.0510 |
 | 2026-07-14 19:44:03.371 | 2026-07-14 19:44:28.380 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.488 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.1879 |
+| 2026-07-14 19:58:14.501 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.1419 |
+| 2026-07-14 19:58:14.501 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.1419 |
+| 2026-07-14 19:58:14.501 | 2026-07-14 19:58:39.506 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.1419 |
+| 2026-07-14 19:58:21.872 | 2026-07-14 19:58:47.009 | 25.1 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0994 |
+| 2026-07-14 19:58:21.872 | 2026-07-14 19:58:47.009 | 25.1 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0994 |
+| 2026-07-14 19:58:21.872 | 2026-07-14 19:58:47.009 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0994 |
 
 </details>
 
@@ -9406,7 +9665,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>ETH-15m — 55 trade(s), total pnl 1.4525</summary>
+<summary>ETH-15m — 61 trade(s), total pnl 1.1141</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9465,11 +9724,17 @@ _... and 4800 more._
 | 2026-07-14 19:51:45.212 | 2026-07-14 19:52:10.218 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | -0.2276 |
 | 2026-07-14 19:51:48.013 | 2026-07-14 19:52:13.022 | 25.0 | reversal_0.3_0.65 | UP | TIMEOUT | -0.2901 |
 | 2026-07-14 19:51:48.013 | 2026-07-14 19:52:13.022 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | -0.2901 |
+| 2026-07-14 19:55:11.948 | 2026-07-14 19:55:34.076 | 22.1 | reversal_0.3_0.7 | UP | STOPLOSS | -0.4255 |
+| 2026-07-14 19:55:11.948 | 2026-07-14 19:55:34.076 | 22.1 | reversal_0.4_0.7 | UP | STOPLOSS | -0.4255 |
+| 2026-07-14 19:56:32.740 | 2026-07-14 19:56:57.749 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.1569 |
+| 2026-07-14 19:56:32.740 | 2026-07-14 19:56:57.749 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.1569 |
+| 2026-07-14 19:56:32.870 | 2026-07-14 19:56:57.897 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0994 |
+| 2026-07-14 19:56:32.870 | 2026-07-14 19:56:57.897 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0994 |
 
 </details>
 
 <details>
-<summary>ETH-5m — 117 trade(s), total pnl 2.7607</summary>
+<summary>ETH-5m — 132 trade(s), total pnl 5.7484</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9590,6 +9855,21 @@ _... and 4800 more._
 | 2026-07-14 19:46:47.266 | 2026-07-14 19:47:12.282 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.1988 |
 | 2026-07-14 19:46:47.266 | 2026-07-14 19:47:12.282 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.1988 |
 | 2026-07-14 19:46:47.266 | 2026-07-14 19:47:12.282 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.1988 |
+| 2026-07-14 19:56:22.289 | 2026-07-14 19:56:37.658 | 15.4 | reversal_0.2_0.55 | DOWN | UNWIND | 0.2326 |
+| 2026-07-14 19:56:22.289 | 2026-07-14 19:56:37.658 | 15.4 | reversal_0.2_0.6 | DOWN | UNWIND | 0.2326 |
+| 2026-07-14 19:56:22.289 | 2026-07-14 19:56:37.658 | 15.4 | reversal_0.3_0.55 | DOWN | UNWIND | 0.2326 |
+| 2026-07-14 19:56:22.289 | 2026-07-14 19:56:37.658 | 15.4 | reversal_0.3_0.6 | DOWN | UNWIND | 0.2326 |
+| 2026-07-14 19:56:22.289 | 2026-07-14 19:56:37.658 | 15.4 | reversal_0.4_0.55 | DOWN | UNWIND | 0.2326 |
+| 2026-07-14 19:56:22.289 | 2026-07-14 19:56:37.658 | 15.4 | reversal_0.4_0.6 | DOWN | UNWIND | 0.2326 |
+| 2026-07-14 19:56:22.447 | 2026-07-14 19:56:37.658 | 15.2 | reversal_0.2_0.65 | DOWN | UNWIND | 0.2239 |
+| 2026-07-14 19:56:22.447 | 2026-07-14 19:56:37.658 | 15.2 | reversal_0.3_0.65 | DOWN | UNWIND | 0.2239 |
+| 2026-07-14 19:56:22.447 | 2026-07-14 19:56:37.658 | 15.2 | reversal_0.4_0.65 | DOWN | UNWIND | 0.2239 |
+| 2026-07-14 19:56:22.726 | 2026-07-14 19:56:43.858 | 21.1 | reversal_0.2_0.7 | DOWN | UNWIND | 0.2098 |
+| 2026-07-14 19:56:22.726 | 2026-07-14 19:56:43.858 | 21.1 | reversal_0.3_0.7 | DOWN | UNWIND | 0.2098 |
+| 2026-07-14 19:56:22.726 | 2026-07-14 19:56:43.858 | 21.1 | reversal_0.4_0.7 | DOWN | UNWIND | 0.2098 |
+| 2026-07-14 19:56:37.658 | 2026-07-14 19:57:02.660 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0970 |
+| 2026-07-14 19:56:37.658 | 2026-07-14 19:57:02.660 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0970 |
+| 2026-07-14 19:56:37.658 | 2026-07-14 19:57:02.660 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0970 |
 
 </details>
 
@@ -9614,7 +9894,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>SOL-15m — 55 trade(s), total pnl 2.7264</summary>
+<summary>SOL-15m — 57 trade(s), total pnl 2.8134</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9673,11 +9953,13 @@ _... and 4800 more._
 | 2026-07-14 19:51:44.953 | 2026-07-14 19:52:10.039 | 25.1 | reversal_0.4_0.7 | UP | TIMEOUT | -0.1135 |
 | 2026-07-14 19:51:48.439 | 2026-07-14 19:52:13.455 | 25.0 | reversal_0.3_0.75 | UP | TIMEOUT | -0.1722 |
 | 2026-07-14 19:51:48.439 | 2026-07-14 19:52:13.455 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | -0.1722 |
+| 2026-07-14 19:56:56.683 | 2026-07-14 19:57:21.687 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0435 |
+| 2026-07-14 19:56:56.683 | 2026-07-14 19:57:21.687 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0435 |
 
 </details>
 
 <details>
-<summary>SOL-5m — 128 trade(s), total pnl -3.5728</summary>
+<summary>SOL-5m — 146 trade(s), total pnl -1.9960</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9809,6 +10091,24 @@ _... and 4800 more._
 | 2026-07-14 19:44:36.698 | 2026-07-14 19:44:40.097 | 3.4 | reversal_0.2_0.7 | DOWN | UNWIND | 0.1840 |
 | 2026-07-14 19:44:36.698 | 2026-07-14 19:44:40.097 | 3.4 | reversal_0.2_0.75 | DOWN | UNWIND | 0.1840 |
 | 2026-07-14 19:44:36.698 | 2026-07-14 19:44:40.097 | 3.4 | reversal_0.2_0.8 | DOWN | UNWIND | 0.1840 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:37.657 | 2026-07-14 19:57:02.690 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.0927 |
+| 2026-07-14 19:56:45.727 | 2026-07-14 19:57:10.758 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0621 |
+| 2026-07-14 19:56:45.727 | 2026-07-14 19:57:10.758 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0621 |
+| 2026-07-14 19:56:45.727 | 2026-07-14 19:57:10.758 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0621 |
 
 </details>
 
@@ -9892,7 +10192,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>XRP-5m — 87 trade(s), total pnl -0.7722</summary>
+<summary>XRP-5m — 105 trade(s), total pnl 0.2196</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -9983,6 +10283,24 @@ _... and 4800 more._
 | 2026-07-14 19:47:50.174 | 2026-07-14 19:48:15.175 | 25.0 | reversal_0.2_0.75 | DOWN | TIMEOUT | -0.0662 |
 | 2026-07-14 19:47:50.174 | 2026-07-14 19:48:15.175 | 25.0 | reversal_0.3_0.75 | DOWN | TIMEOUT | -0.0662 |
 | 2026-07-14 19:47:50.174 | 2026-07-14 19:48:15.175 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0662 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.2_0.55 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.2_0.6 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.2_0.65 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.872 | 2026-07-14 19:57:03.881 | 25.0 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0863 |
+| 2026-07-14 19:56:38.924 | 2026-07-14 19:57:03.929 | 25.0 | reversal_0.2_0.7 | DOWN | TIMEOUT | 0.0709 |
+| 2026-07-14 19:56:38.924 | 2026-07-14 19:57:03.929 | 25.0 | reversal_0.3_0.7 | DOWN | TIMEOUT | 0.0709 |
+| 2026-07-14 19:56:38.924 | 2026-07-14 19:57:03.929 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | 0.0709 |
+| 2026-07-14 19:57:03.641 | 2026-07-14 19:57:28.724 | 25.1 | reversal_0.2_0.75 | DOWN | TIMEOUT | 0.0132 |
+| 2026-07-14 19:57:03.641 | 2026-07-14 19:57:28.724 | 25.1 | reversal_0.3_0.75 | DOWN | TIMEOUT | 0.0132 |
+| 2026-07-14 19:57:03.641 | 2026-07-14 19:57:28.724 | 25.1 | reversal_0.4_0.75 | DOWN | TIMEOUT | 0.0132 |
+| 2026-07-14 19:58:23.116 | 2026-07-14 19:58:48.133 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.0124 |
+| 2026-07-14 19:58:23.116 | 2026-07-14 19:58:48.133 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.0124 |
+| 2026-07-14 19:58:23.116 | 2026-07-14 19:58:48.133 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.0124 |
 
 </details>
 
@@ -11547,37 +11865,37 @@ _... and 4800 more._
 <!-- siglab-hour-body-start -->
 <!-- siglab-hour-trades-start -->
 <details>
-<summary>Trades this hour: 788 trade(s)</summary>
+<summary>Trades this hour: 875 trade(s)</summary>
 
 #### Summary: PnL by market and strategy
 
 | market | strategy | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
-| BNB-15m | reversal | 45 | 0 | 45 | 0 | 1.3871 |
+| BNB-15m | reversal | 50 | 4 | 46 | 0 | -0.0765 |
 | BNB-4h | reversal | 10 | 7 | 3 | 0 | -3.0713 |
-| BNB-5m | reversal | 75 | 2 | 73 | 0 | 0.0323 |
+| BNB-5m | reversal | 80 | 2 | 76 | 2 | 0.1034 |
 | BNB-hourly-et | reversal | 14 | 1 | 11 | 2 | -0.1124 |
-| BTC-15m | reversal | 39 | 0 | 30 | 9 | 4.4376 |
-| BTC-5m | reversal | 64 | 0 | 29 | 35 | 9.4698 |
+| BTC-15m | reversal | 49 | 8 | 32 | 9 | 1.3704 |
+| BTC-5m | reversal | 81 | 2 | 38 | 41 | 9.4388 |
 | BTC-hourly-et | reversal | 10 | 0 | 10 | 0 | 0.1668 |
 | DOGE-15m | reversal | 36 | 0 | 21 | 15 | 5.6921 |
-| DOGE-4h | reversal | 10 | 2 | 6 | 2 | -0.4762 |
-| DOGE-5m | reversal | 90 | 0 | 57 | 33 | 7.4683 |
+| DOGE-4h | reversal | 12 | 2 | 8 | 2 | -0.9700 |
+| DOGE-5m | reversal | 96 | 0 | 59 | 37 | 8.3789 |
 | DOGE-hourly-et | reversal | 18 | 0 | 15 | 3 | -0.9330 |
 | ETH-15m | reversal | 30 | 0 | 28 | 2 | 0.3751 |
-| ETH-5m | reversal | 76 | 5 | 52 | 19 | 1.5305 |
+| ETH-5m | reversal | 94 | 5 | 64 | 25 | 3.6062 |
 | SOL-15m | reversal | 30 | 0 | 24 | 6 | 1.6719 |
 | SOL-4h | reversal | 6 | 3 | 3 | 0 | -2.1321 |
-| SOL-5m | reversal | 49 | 0 | 35 | 14 | -0.5214 |
+| SOL-5m | reversal | 55 | 0 | 41 | 14 | -0.3817 |
 | SOL-hourly-et | reversal | 8 | 0 | 8 | 0 | 0.1250 |
 | XRP-15m | reversal | 30 | 0 | 28 | 2 | 1.5173 |
 | XRP-4h | reversal | 8 | 6 | 2 | 0 | -2.6640 |
-| XRP-5m | reversal | 118 | 0 | 102 | 16 | 11.0492 |
+| XRP-5m | reversal | 136 | 10 | 107 | 19 | 7.6212 |
 | XRP-hourly-et | reversal | 13 | 0 | 13 | 0 | -1.8635 |
 | weather:jeddah:37°C | reversal | 1 | 0 | 1 | 0 | -0.0439 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal | 8 | 0 | 8 | 0 | -1.1677 |
 
-**Total pnl: 31.9375**
+**Total pnl: 26.6510**
 
 #### Summary: PnL by market and variant
 
@@ -11586,15 +11904,15 @@ _... and 4800 more._
 | BNB-15m | reversal_0.2_0.55 | 3 | 0 | 3 | 0 | -0.0191 |
 | BNB-15m | reversal_0.2_0.6 | 3 | 0 | 3 | 0 | -0.0191 |
 | BNB-15m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | -0.0675 |
-| BNB-15m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | 0.2513 |
-| BNB-15m | reversal_0.2_0.75 | 2 | 0 | 2 | 0 | 0.1846 |
+| BNB-15m | reversal_0.2_0.7 | 3 | 1 | 2 | 0 | -0.1541 |
+| BNB-15m | reversal_0.2_0.75 | 3 | 1 | 2 | 0 | -0.2101 |
 | BNB-15m | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0000 |
 | BNB-15m | reversal_0.3_0.55 | 3 | 0 | 3 | 0 | -0.0191 |
 | BNB-15m | reversal_0.3_0.6 | 3 | 0 | 3 | 0 | -0.0191 |
 | BNB-15m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | -0.0675 |
-| BNB-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | 0.2513 |
-| BNB-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | 0.1846 |
-| BNB-15m | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.0000 |
+| BNB-15m | reversal_0.3_0.7 | 3 | 1 | 2 | 0 | -0.1541 |
+| BNB-15m | reversal_0.3_0.75 | 3 | 1 | 2 | 0 | -0.2101 |
+| BNB-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | 0.1366 |
 | BNB-15m | reversal_0.4_0.55 | 3 | 0 | 3 | 0 | 0.0903 |
 | BNB-15m | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | 0.0903 |
 | BNB-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | 0.0419 |
@@ -11623,12 +11941,12 @@ _... and 4800 more._
 | BNB-5m | reversal_0.3_0.7 | 4 | 0 | 4 | 0 | 0.2488 |
 | BNB-5m | reversal_0.3_0.75 | 4 | 0 | 4 | 0 | 0.2069 |
 | BNB-5m | reversal_0.3_0.8 | 4 | 0 | 4 | 0 | 0.0659 |
-| BNB-5m | reversal_0.4_0.55 | 5 | 0 | 5 | 0 | -0.1764 |
-| BNB-5m | reversal_0.4_0.6 | 5 | 0 | 5 | 0 | -0.1764 |
+| BNB-5m | reversal_0.4_0.55 | 6 | 0 | 5 | 1 | 0.0675 |
+| BNB-5m | reversal_0.4_0.6 | 6 | 0 | 5 | 1 | 0.0675 |
 | BNB-5m | reversal_0.4_0.65 | 5 | 1 | 4 | 0 | -0.2708 |
-| BNB-5m | reversal_0.4_0.7 | 5 | 0 | 5 | 0 | 0.4113 |
-| BNB-5m | reversal_0.4_0.75 | 5 | 0 | 5 | 0 | 0.3694 |
-| BNB-5m | reversal_0.4_0.8 | 5 | 0 | 5 | 0 | 0.1864 |
+| BNB-5m | reversal_0.4_0.7 | 6 | 0 | 6 | 0 | 0.3134 |
+| BNB-5m | reversal_0.4_0.75 | 6 | 0 | 6 | 0 | 0.2369 |
+| BNB-5m | reversal_0.4_0.8 | 6 | 0 | 6 | 0 | 0.0001 |
 | BNB-hourly-et | reversal_0.2_0.55 | 1 | 1 | 0 | 0 | -0.5042 |
 | BNB-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
 | BNB-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | 0.0000 |
@@ -11643,41 +11961,41 @@ _... and 4800 more._
 | BNB-hourly-et | reversal_0.4_0.7 | 1 | 0 | 0 | 1 | 0.2113 |
 | BNB-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0649 |
 | BNB-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0353 |
-| BTC-15m | reversal_0.2_0.55 | 2 | 0 | 1 | 1 | 0.3153 |
-| BTC-15m | reversal_0.2_0.6 | 2 | 0 | 1 | 1 | 0.3153 |
-| BTC-15m | reversal_0.2_0.65 | 2 | 0 | 1 | 1 | 0.3153 |
-| BTC-15m | reversal_0.2_0.7 | 2 | 0 | 1 | 1 | 0.3387 |
+| BTC-15m | reversal_0.2_0.55 | 3 | 1 | 1 | 1 | -0.0985 |
+| BTC-15m | reversal_0.2_0.6 | 3 | 1 | 1 | 1 | -0.0985 |
+| BTC-15m | reversal_0.2_0.65 | 3 | 1 | 1 | 1 | -0.0985 |
+| BTC-15m | reversal_0.2_0.7 | 3 | 1 | 1 | 1 | -0.0751 |
 | BTC-15m | reversal_0.2_0.75 | 1 | 0 | 0 | 1 | 0.1987 |
 | BTC-15m | reversal_0.2_0.8 | 2 | 0 | 2 | 0 | 0.1118 |
-| BTC-15m | reversal_0.3_0.55 | 2 | 0 | 1 | 1 | 0.3342 |
-| BTC-15m | reversal_0.3_0.6 | 2 | 0 | 1 | 1 | 0.3342 |
-| BTC-15m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | 0.2542 |
-| BTC-15m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | 0.2394 |
-| BTC-15m | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | 0.0795 |
-| BTC-15m | reversal_0.3_0.8 | 2 | 0 | 2 | 0 | -0.0621 |
+| BTC-15m | reversal_0.3_0.55 | 3 | 1 | 1 | 1 | -0.0796 |
+| BTC-15m | reversal_0.3_0.6 | 3 | 1 | 1 | 1 | -0.0796 |
+| BTC-15m | reversal_0.3_0.65 | 3 | 1 | 2 | 0 | -0.1596 |
+| BTC-15m | reversal_0.3_0.7 | 3 | 1 | 2 | 0 | -0.1744 |
+| BTC-15m | reversal_0.3_0.75 | 2 | 0 | 2 | 0 | 0.2233 |
+| BTC-15m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.0373 |
 | BTC-15m | reversal_0.4_0.55 | 3 | 0 | 2 | 1 | 0.5574 |
 | BTC-15m | reversal_0.4_0.6 | 3 | 0 | 2 | 1 | 0.4664 |
 | BTC-15m | reversal_0.4_0.65 | 3 | 0 | 3 | 0 | 0.3000 |
 | BTC-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.4096 |
 | BTC-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | 0.0663 |
 | BTC-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | -0.1366 |
-| BTC-5m | reversal_0.2_0.55 | 3 | 0 | 1 | 2 | 0.5283 |
-| BTC-5m | reversal_0.2_0.6 | 3 | 0 | 1 | 2 | 0.5283 |
-| BTC-5m | reversal_0.2_0.65 | 3 | 0 | 1 | 2 | 0.5283 |
-| BTC-5m | reversal_0.2_0.7 | 3 | 0 | 1 | 2 | 0.4682 |
-| BTC-5m | reversal_0.2_0.75 | 3 | 0 | 1 | 2 | 0.4901 |
-| BTC-5m | reversal_0.2_0.8 | 3 | 0 | 3 | 0 | 0.3344 |
-| BTC-5m | reversal_0.3_0.55 | 3 | 0 | 1 | 2 | 0.5283 |
-| BTC-5m | reversal_0.3_0.6 | 3 | 0 | 1 | 2 | 0.5283 |
-| BTC-5m | reversal_0.3_0.65 | 3 | 0 | 1 | 2 | 0.5283 |
-| BTC-5m | reversal_0.3_0.7 | 3 | 0 | 1 | 2 | 0.4682 |
-| BTC-5m | reversal_0.3_0.75 | 3 | 0 | 1 | 2 | 0.4901 |
-| BTC-5m | reversal_0.3_0.8 | 3 | 0 | 3 | 0 | 0.3344 |
-| BTC-5m | reversal_0.4_0.55 | 5 | 0 | 2 | 3 | 0.6888 |
-| BTC-5m | reversal_0.4_0.6 | 5 | 0 | 2 | 3 | 0.6121 |
-| BTC-5m | reversal_0.4_0.65 | 5 | 0 | 2 | 3 | 0.5385 |
-| BTC-5m | reversal_0.4_0.7 | 4 | 0 | 1 | 3 | 0.6795 |
-| BTC-5m | reversal_0.4_0.75 | 4 | 0 | 1 | 3 | 0.6888 |
+| BTC-5m | reversal_0.2_0.55 | 4 | 0 | 1 | 3 | 0.7722 |
+| BTC-5m | reversal_0.2_0.6 | 4 | 0 | 1 | 3 | 0.7722 |
+| BTC-5m | reversal_0.2_0.65 | 4 | 0 | 2 | 2 | 0.6962 |
+| BTC-5m | reversal_0.2_0.7 | 4 | 0 | 2 | 2 | 0.5533 |
+| BTC-5m | reversal_0.2_0.75 | 4 | 0 | 1 | 3 | 0.6875 |
+| BTC-5m | reversal_0.2_0.8 | 4 | 1 | 3 | 0 | -0.0383 |
+| BTC-5m | reversal_0.3_0.55 | 4 | 0 | 1 | 3 | 0.7722 |
+| BTC-5m | reversal_0.3_0.6 | 4 | 0 | 1 | 3 | 0.7722 |
+| BTC-5m | reversal_0.3_0.65 | 4 | 0 | 2 | 2 | 0.6962 |
+| BTC-5m | reversal_0.3_0.7 | 4 | 0 | 2 | 2 | 0.5533 |
+| BTC-5m | reversal_0.3_0.75 | 4 | 0 | 1 | 3 | 0.6875 |
+| BTC-5m | reversal_0.3_0.8 | 4 | 1 | 3 | 0 | -0.0383 |
+| BTC-5m | reversal_0.4_0.55 | 6 | 0 | 3 | 3 | 0.4998 |
+| BTC-5m | reversal_0.4_0.6 | 6 | 0 | 3 | 3 | 0.4231 |
+| BTC-5m | reversal_0.4_0.65 | 6 | 0 | 3 | 3 | 0.3248 |
+| BTC-5m | reversal_0.4_0.7 | 5 | 0 | 2 | 3 | 0.4138 |
+| BTC-5m | reversal_0.4_0.75 | 5 | 0 | 2 | 3 | 0.3842 |
 | BTC-5m | reversal_0.4_0.8 | 5 | 0 | 5 | 0 | 0.5069 |
 | BTC-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | 0.0721 |
 | BTC-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0165 |
@@ -11712,11 +12030,13 @@ _... and 4800 more._
 | DOGE-4h | reversal_0.3_0.65 | 1 | 0 | 1 | 0 | -0.0588 |
 | DOGE-4h | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.1111 |
 | DOGE-4h | reversal_0.3_0.75 | 1 | 1 | 0 | 0 | -0.3774 |
+| DOGE-4h | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | -0.2469 |
 | DOGE-4h | reversal_0.4_0.55 | 1 | 0 | 0 | 1 | 0.2679 |
 | DOGE-4h | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0413 |
 | DOGE-4h | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0588 |
 | DOGE-4h | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1111 |
 | DOGE-4h | reversal_0.4_0.75 | 1 | 1 | 0 | 0 | -0.3774 |
+| DOGE-4h | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.2469 |
 | DOGE-5m | reversal_0.2_0.55 | 4 | 0 | 3 | 1 | 0.2454 |
 | DOGE-5m | reversal_0.2_0.6 | 4 | 0 | 3 | 1 | 0.2454 |
 | DOGE-5m | reversal_0.2_0.65 | 4 | 0 | 3 | 1 | 0.2454 |
@@ -11729,12 +12049,12 @@ _... and 4800 more._
 | DOGE-5m | reversal_0.3_0.7 | 5 | 0 | 3 | 2 | 0.4138 |
 | DOGE-5m | reversal_0.3_0.75 | 4 | 0 | 2 | 2 | 0.3997 |
 | DOGE-5m | reversal_0.3_0.8 | 4 | 0 | 3 | 1 | 0.2082 |
-| DOGE-5m | reversal_0.4_0.55 | 7 | 0 | 4 | 3 | 0.5925 |
-| DOGE-5m | reversal_0.4_0.6 | 7 | 0 | 4 | 3 | 0.6691 |
-| DOGE-5m | reversal_0.4_0.65 | 7 | 0 | 4 | 3 | 0.8746 |
-| DOGE-5m | reversal_0.4_0.7 | 7 | 0 | 4 | 3 | 0.7300 |
-| DOGE-5m | reversal_0.4_0.75 | 6 | 0 | 3 | 3 | 0.5905 |
-| DOGE-5m | reversal_0.4_0.8 | 6 | 0 | 5 | 1 | 0.3862 |
+| DOGE-5m | reversal_0.4_0.55 | 8 | 0 | 4 | 4 | 0.8306 |
+| DOGE-5m | reversal_0.4_0.6 | 8 | 0 | 4 | 4 | 0.9072 |
+| DOGE-5m | reversal_0.4_0.65 | 8 | 0 | 4 | 4 | 1.1036 |
+| DOGE-5m | reversal_0.4_0.7 | 8 | 0 | 4 | 4 | 0.9428 |
+| DOGE-5m | reversal_0.4_0.75 | 7 | 0 | 4 | 3 | 0.6567 |
+| DOGE-5m | reversal_0.4_0.8 | 7 | 0 | 6 | 1 | 0.3126 |
 | DOGE-hourly-et | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.2072 |
 | DOGE-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.1626 |
 | DOGE-hourly-et | reversal_0.2_0.65 | 1 | 0 | 0 | 1 | 0.2290 |
@@ -11770,24 +12090,24 @@ _... and 4800 more._
 | ETH-15m | reversal_0.4_0.7 | 3 | 0 | 3 | 0 | 0.0776 |
 | ETH-15m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | -0.0991 |
 | ETH-15m | reversal_0.4_0.8 | 3 | 0 | 3 | 0 | 0.1126 |
-| ETH-5m | reversal_0.2_0.55 | 3 | 0 | 2 | 1 | 0.0293 |
-| ETH-5m | reversal_0.2_0.6 | 3 | 0 | 2 | 1 | -0.0169 |
-| ETH-5m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | 0.2429 |
-| ETH-5m | reversal_0.2_0.7 | 2 | 0 | 2 | 0 | 0.0993 |
-| ETH-5m | reversal_0.2_0.75 | 3 | 0 | 2 | 1 | 0.0387 |
-| ETH-5m | reversal_0.2_0.8 | 3 | 0 | 2 | 1 | -0.0744 |
-| ETH-5m | reversal_0.3_0.55 | 4 | 0 | 3 | 1 | -0.0357 |
-| ETH-5m | reversal_0.3_0.6 | 4 | 0 | 3 | 1 | -0.0819 |
-| ETH-5m | reversal_0.3_0.65 | 2 | 0 | 2 | 0 | 0.2429 |
-| ETH-5m | reversal_0.3_0.7 | 2 | 0 | 2 | 0 | 0.0993 |
-| ETH-5m | reversal_0.3_0.75 | 3 | 0 | 2 | 1 | 0.0387 |
-| ETH-5m | reversal_0.3_0.8 | 3 | 0 | 2 | 1 | -0.0744 |
-| ETH-5m | reversal_0.4_0.55 | 7 | 0 | 3 | 4 | 0.7000 |
-| ETH-5m | reversal_0.4_0.6 | 7 | 0 | 4 | 3 | 0.4814 |
-| ETH-5m | reversal_0.4_0.65 | 7 | 1 | 4 | 2 | 0.5180 |
-| ETH-5m | reversal_0.4_0.7 | 7 | 1 | 5 | 1 | 0.2304 |
-| ETH-5m | reversal_0.4_0.75 | 8 | 1 | 6 | 1 | -0.1676 |
-| ETH-5m | reversal_0.4_0.8 | 6 | 2 | 4 | 0 | -0.7395 |
+| ETH-5m | reversal_0.2_0.55 | 4 | 0 | 2 | 2 | 0.2948 |
+| ETH-5m | reversal_0.2_0.6 | 4 | 0 | 2 | 2 | 0.2310 |
+| ETH-5m | reversal_0.2_0.65 | 3 | 0 | 3 | 0 | 0.4566 |
+| ETH-5m | reversal_0.2_0.7 | 3 | 0 | 3 | 0 | 0.2531 |
+| ETH-5m | reversal_0.2_0.75 | 4 | 0 | 3 | 1 | 0.0387 |
+| ETH-5m | reversal_0.2_0.8 | 4 | 0 | 3 | 1 | -0.2634 |
+| ETH-5m | reversal_0.3_0.55 | 5 | 0 | 3 | 2 | 0.2298 |
+| ETH-5m | reversal_0.3_0.6 | 5 | 0 | 3 | 2 | 0.1660 |
+| ETH-5m | reversal_0.3_0.65 | 3 | 0 | 3 | 0 | 0.4566 |
+| ETH-5m | reversal_0.3_0.7 | 3 | 0 | 3 | 0 | 0.2531 |
+| ETH-5m | reversal_0.3_0.75 | 4 | 0 | 3 | 1 | 0.0387 |
+| ETH-5m | reversal_0.3_0.8 | 4 | 0 | 3 | 1 | -0.2634 |
+| ETH-5m | reversal_0.4_0.55 | 8 | 0 | 3 | 5 | 0.9655 |
+| ETH-5m | reversal_0.4_0.6 | 8 | 0 | 4 | 4 | 0.7293 |
+| ETH-5m | reversal_0.4_0.65 | 8 | 1 | 5 | 2 | 0.7317 |
+| ETH-5m | reversal_0.4_0.7 | 8 | 1 | 6 | 1 | 0.3842 |
+| ETH-5m | reversal_0.4_0.75 | 9 | 1 | 7 | 1 | -0.1676 |
+| ETH-5m | reversal_0.4_0.8 | 7 | 2 | 5 | 0 | -0.9285 |
 | SOL-15m | reversal_0.2_0.55 | 1 | 0 | 1 | 0 | -0.0496 |
 | SOL-15m | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0496 |
 | SOL-15m | reversal_0.2_0.65 | 2 | 0 | 2 | 0 | -0.1951 |
@@ -11824,12 +12144,12 @@ _... and 4800 more._
 | SOL-5m | reversal_0.3_0.7 | 2 | 0 | 1 | 1 | -0.0303 |
 | SOL-5m | reversal_0.3_0.75 | 3 | 0 | 2 | 1 | -0.1324 |
 | SOL-5m | reversal_0.3_0.8 | 3 | 0 | 2 | 1 | 0.2391 |
-| SOL-5m | reversal_0.4_0.55 | 5 | 0 | 3 | 2 | 0.2959 |
-| SOL-5m | reversal_0.4_0.6 | 5 | 0 | 3 | 2 | 0.2783 |
-| SOL-5m | reversal_0.4_0.65 | 4 | 0 | 3 | 1 | -0.0267 |
-| SOL-5m | reversal_0.4_0.7 | 5 | 0 | 4 | 1 | -0.0945 |
-| SOL-5m | reversal_0.4_0.75 | 4 | 0 | 3 | 1 | -0.1324 |
-| SOL-5m | reversal_0.4_0.8 | 5 | 0 | 4 | 1 | 0.3128 |
+| SOL-5m | reversal_0.4_0.55 | 6 | 0 | 4 | 2 | 0.4099 |
+| SOL-5m | reversal_0.4_0.6 | 6 | 0 | 4 | 2 | 0.2133 |
+| SOL-5m | reversal_0.4_0.65 | 5 | 0 | 4 | 1 | -0.1183 |
+| SOL-5m | reversal_0.4_0.7 | 6 | 0 | 5 | 1 | -0.0378 |
+| SOL-5m | reversal_0.4_0.75 | 5 | 0 | 4 | 1 | -0.0747 |
+| SOL-5m | reversal_0.4_0.8 | 6 | 0 | 5 | 1 | 0.3807 |
 | SOL-hourly-et | reversal_0.3_0.55 | 1 | 0 | 1 | 0 | 0.1875 |
 | SOL-hourly-et | reversal_0.3_0.7 | 1 | 0 | 1 | 0 | -0.0284 |
 | SOL-hourly-et | reversal_0.3_0.75 | 1 | 0 | 1 | 0 | -0.1558 |
@@ -11864,24 +12184,24 @@ _... and 4800 more._
 | XRP-4h | reversal_0.4_0.7 | 1 | 1 | 0 | 0 | -0.4225 |
 | XRP-4h | reversal_0.4_0.75 | 1 | 1 | 0 | 0 | -0.3947 |
 | XRP-4h | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0736 |
-| XRP-5m | reversal_0.2_0.55 | 5 | 0 | 5 | 0 | 0.3960 |
-| XRP-5m | reversal_0.2_0.6 | 5 | 0 | 5 | 0 | 0.3960 |
-| XRP-5m | reversal_0.2_0.65 | 5 | 0 | 5 | 0 | 0.3960 |
-| XRP-5m | reversal_0.2_0.7 | 5 | 0 | 5 | 0 | 0.3960 |
-| XRP-5m | reversal_0.2_0.75 | 4 | 0 | 4 | 0 | 0.3402 |
-| XRP-5m | reversal_0.2_0.8 | 4 | 0 | 4 | 0 | 0.1490 |
-| XRP-5m | reversal_0.3_0.55 | 7 | 0 | 6 | 1 | 0.7063 |
-| XRP-5m | reversal_0.3_0.6 | 7 | 0 | 6 | 1 | 0.7063 |
-| XRP-5m | reversal_0.3_0.65 | 7 | 0 | 6 | 1 | 0.7063 |
-| XRP-5m | reversal_0.3_0.7 | 7 | 0 | 6 | 1 | 0.6935 |
-| XRP-5m | reversal_0.3_0.75 | 6 | 0 | 5 | 1 | 0.6236 |
-| XRP-5m | reversal_0.3_0.8 | 6 | 0 | 6 | 0 | 0.3144 |
-| XRP-5m | reversal_0.4_0.55 | 9 | 0 | 7 | 2 | 1.0693 |
-| XRP-5m | reversal_0.4_0.6 | 9 | 0 | 7 | 2 | 1.0693 |
-| XRP-5m | reversal_0.4_0.65 | 8 | 0 | 6 | 2 | 0.9161 |
-| XRP-5m | reversal_0.4_0.7 | 8 | 0 | 6 | 2 | 0.9033 |
-| XRP-5m | reversal_0.4_0.75 | 8 | 0 | 6 | 2 | 0.7787 |
-| XRP-5m | reversal_0.4_0.8 | 8 | 0 | 7 | 1 | 0.4889 |
+| XRP-5m | reversal_0.2_0.55 | 6 | 0 | 6 | 0 | 0.5177 |
+| XRP-5m | reversal_0.2_0.6 | 6 | 0 | 6 | 0 | 0.4621 |
+| XRP-5m | reversal_0.2_0.65 | 6 | 0 | 5 | 1 | 0.6182 |
+| XRP-5m | reversal_0.2_0.7 | 6 | 0 | 5 | 1 | 0.6088 |
+| XRP-5m | reversal_0.2_0.75 | 5 | 1 | 4 | 0 | -0.0572 |
+| XRP-5m | reversal_0.2_0.8 | 5 | 1 | 4 | 0 | -0.2169 |
+| XRP-5m | reversal_0.3_0.55 | 8 | 1 | 6 | 1 | 0.3289 |
+| XRP-5m | reversal_0.3_0.6 | 8 | 1 | 6 | 1 | 0.3289 |
+| XRP-5m | reversal_0.3_0.65 | 8 | 1 | 6 | 1 | 0.3289 |
+| XRP-5m | reversal_0.3_0.7 | 8 | 1 | 6 | 1 | 0.3161 |
+| XRP-5m | reversal_0.3_0.75 | 7 | 1 | 5 | 1 | 0.2462 |
+| XRP-5m | reversal_0.3_0.8 | 7 | 1 | 6 | 0 | -0.0515 |
+| XRP-5m | reversal_0.4_0.55 | 10 | 0 | 7 | 3 | 1.3396 |
+| XRP-5m | reversal_0.4_0.6 | 10 | 0 | 8 | 2 | 1.0612 |
+| XRP-5m | reversal_0.4_0.65 | 9 | 0 | 7 | 2 | 0.6605 |
+| XRP-5m | reversal_0.4_0.7 | 9 | 0 | 7 | 2 | 0.6054 |
+| XRP-5m | reversal_0.4_0.75 | 9 | 1 | 6 | 2 | 0.4013 |
+| XRP-5m | reversal_0.4_0.8 | 9 | 1 | 7 | 1 | 0.1230 |
 | XRP-hourly-et | reversal_0.2_0.6 | 1 | 0 | 1 | 0 | -0.0661 |
 | XRP-hourly-et | reversal_0.2_0.65 | 1 | 0 | 1 | 0 | -0.2701 |
 | XRP-hourly-et | reversal_0.2_0.7 | 1 | 0 | 1 | 0 | -0.3103 |
@@ -11899,10 +12219,35 @@ _... and 4800 more._
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.55 | 5 | 0 | 5 | 0 | -0.7256 |
 | worldcup:who-will-perform-at-world-cup-halftime-show:Karol G | reversal_0.4_0.6 | 3 | 0 | 3 | 0 | -0.4421 |
 
-**Total pnl: 31.9375**
+**Total pnl: 26.6510**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 36 | 2 | 26 | 8 | 1.1132 |
+| reversal_0.2_0.6 | 38 | 1 | 29 | 8 | 1.1317 |
+| reversal_0.2_0.65 | 37 | 2 | 28 | 7 | 1.1922 |
+| reversal_0.2_0.7 | 35 | 2 | 27 | 6 | 1.5124 |
+| reversal_0.2_0.75 | 31 | 2 | 22 | 7 | 0.9891 |
+| reversal_0.2_0.8 | 30 | 2 | 26 | 2 | -0.4868 |
+| reversal_0.3_0.55 | 47 | 3 | 30 | 14 | 1.9800 |
+| reversal_0.3_0.6 | 47 | 3 | 31 | 13 | 1.1723 |
+| reversal_0.3_0.65 | 45 | 6 | 30 | 9 | 0.2572 |
+| reversal_0.3_0.7 | 47 | 5 | 34 | 8 | 0.9228 |
+| reversal_0.3_0.75 | 45 | 5 | 30 | 10 | 0.7194 |
+| reversal_0.3_0.8 | 45 | 2 | 40 | 3 | 0.2624 |
+| reversal_0.4_0.55 | 70 | 0 | 46 | 24 | 5.6658 |
+| reversal_0.4_0.6 | 67 | 0 | 47 | 20 | 4.2271 |
+| reversal_0.4_0.65 | 64 | 5 | 44 | 15 | 2.1578 |
+| reversal_0.4_0.7 | 66 | 3 | 51 | 12 | 2.7086 |
+| reversal_0.4_0.75 | 63 | 4 | 49 | 10 | 0.9203 |
+| reversal_0.4_0.8 | 62 | 3 | 56 | 3 | 0.2055 |
+
+**Total pnl: 26.6510**
 
 <details>
-<summary>BNB-15m — 45 trade(s), total pnl 1.3871</summary>
+<summary>BNB-15m — 50 trade(s), total pnl -0.0765</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -11951,6 +12296,11 @@ _... and 4800 more._
 | 2026-07-14 18:49:13.148 | 2026-07-14 18:49:38.469 | 25.3 | reversal_0.4_0.7 | UP | TIMEOUT | -0.0780 |
 | 2026-07-14 18:49:48.155 | 2026-07-14 18:50:13.156 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | 0.1039 |
 | 2026-07-14 18:49:51.704 | 2026-07-14 18:50:16.715 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | 0.0373 |
+| 2026-07-14 18:57:07.559 | 2026-07-14 18:57:26.990 | 19.4 | reversal_0.2_0.7 | DOWN | STOPLOSS | -0.4054 |
+| 2026-07-14 18:57:07.559 | 2026-07-14 18:57:26.990 | 19.4 | reversal_0.3_0.7 | DOWN | STOPLOSS | -0.4054 |
+| 2026-07-14 18:57:13.085 | 2026-07-14 18:57:25.934 | 12.8 | reversal_0.2_0.75 | DOWN | STOPLOSS | -0.3947 |
+| 2026-07-14 18:57:13.085 | 2026-07-14 18:57:25.934 | 12.8 | reversal_0.3_0.75 | DOWN | STOPLOSS | -0.3947 |
+| 2026-07-14 18:57:36.498 | 2026-07-14 18:58:01.604 | 25.1 | reversal_0.3_0.8 | UP | TIMEOUT | 0.1366 |
 
 </details>
 
@@ -11973,7 +12323,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>BNB-5m — 75 trade(s), total pnl 0.0323</summary>
+<summary>BNB-5m — 80 trade(s), total pnl 0.1034</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12052,6 +12402,11 @@ _... and 4800 more._
 | 2026-07-14 18:51:51.451 | 2026-07-14 18:52:16.562 | 25.1 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 18:51:51.451 | 2026-07-14 18:52:16.562 | 25.1 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 18:51:51.451 | 2026-07-14 18:52:16.562 | 25.1 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 18:55:21.848 | 2026-07-14 18:55:39.416 | 17.6 | reversal_0.4_0.55 | UP | UNWIND | 0.2439 |
+| 2026-07-14 18:55:21.848 | 2026-07-14 18:55:39.416 | 17.6 | reversal_0.4_0.6 | UP | UNWIND | 0.2439 |
+| 2026-07-14 18:55:22.136 | 2026-07-14 18:55:47.142 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | -0.0979 |
+| 2026-07-14 18:55:39.416 | 2026-07-14 18:56:04.417 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | -0.1325 |
+| 2026-07-14 18:55:39.549 | 2026-07-14 18:56:04.585 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | -0.1863 |
 
 </details>
 
@@ -12078,7 +12433,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>BTC-15m — 39 trade(s), total pnl 4.4376</summary>
+<summary>BTC-15m — 49 trade(s), total pnl 1.3704</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12121,11 +12476,21 @@ _... and 4800 more._
 | 2026-07-14 18:48:43.864 | 2026-07-14 18:49:08.864 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | 0.1702 |
 | 2026-07-14 18:49:04.800 | 2026-07-14 18:49:29.809 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | -0.0132 |
 | 2026-07-14 18:49:05.174 | 2026-07-14 18:49:30.176 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | -0.0745 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.2_0.55 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.2_0.6 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.2_0.65 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.2_0.7 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.3_0.55 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.3_0.6 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.3_0.65 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:08.092 | 2026-07-14 18:57:24.412 | 16.3 | reversal_0.3_0.7 | DOWN | STOPLOSS | -0.4138 |
+| 2026-07-14 18:57:30.817 | 2026-07-14 18:57:55.821 | 25.0 | reversal_0.3_0.75 | UP | TIMEOUT | 0.1438 |
+| 2026-07-14 18:57:32.030 | 2026-07-14 18:57:57.031 | 25.0 | reversal_0.3_0.8 | UP | TIMEOUT | 0.0994 |
 
 </details>
 
 <details>
-<summary>BTC-5m — 64 trade(s), total pnl 9.4698</summary>
+<summary>BTC-5m — 81 trade(s), total pnl 9.4388</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12193,6 +12558,23 @@ _... and 4800 more._
 | 2026-07-14 18:51:38.429 | 2026-07-14 18:52:03.435 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0994 |
 | 2026-07-14 18:51:38.429 | 2026-07-14 18:52:03.435 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0994 |
 | 2026-07-14 18:51:38.429 | 2026-07-14 18:52:03.435 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0994 |
+| 2026-07-14 18:55:39.313 | 2026-07-14 18:56:04.315 | 25.0 | reversal_0.4_0.55 | UP | TIMEOUT | -0.1890 |
+| 2026-07-14 18:55:39.313 | 2026-07-14 18:56:04.315 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | -0.1890 |
+| 2026-07-14 18:55:39.635 | 2026-07-14 18:56:04.643 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | -0.2137 |
+| 2026-07-14 18:56:59.987 | 2026-07-14 18:57:24.989 | 25.0 | reversal_0.4_0.7 | DOWN | TIMEOUT | -0.2657 |
+| 2026-07-14 18:57:00.291 | 2026-07-14 18:57:25.293 | 25.0 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.3046 |
+| 2026-07-14 18:57:31.940 | 2026-07-14 18:57:55.494 | 23.6 | reversal_0.2_0.55 | UP | UNWIND | 0.2439 |
+| 2026-07-14 18:57:31.940 | 2026-07-14 18:57:55.494 | 23.6 | reversal_0.2_0.6 | UP | UNWIND | 0.2439 |
+| 2026-07-14 18:57:31.940 | 2026-07-14 18:57:55.494 | 23.6 | reversal_0.3_0.55 | UP | UNWIND | 0.2439 |
+| 2026-07-14 18:57:31.940 | 2026-07-14 18:57:55.494 | 23.6 | reversal_0.3_0.6 | UP | UNWIND | 0.2439 |
+| 2026-07-14 18:57:33.593 | 2026-07-14 18:57:58.595 | 25.0 | reversal_0.2_0.65 | UP | TIMEOUT | 0.1679 |
+| 2026-07-14 18:57:33.593 | 2026-07-14 18:57:58.595 | 25.0 | reversal_0.3_0.65 | UP | TIMEOUT | 0.1679 |
+| 2026-07-14 18:57:34.134 | 2026-07-14 18:57:59.134 | 25.0 | reversal_0.2_0.7 | UP | TIMEOUT | 0.0851 |
+| 2026-07-14 18:57:34.134 | 2026-07-14 18:57:59.134 | 25.0 | reversal_0.3_0.7 | UP | TIMEOUT | 0.0851 |
+| 2026-07-14 18:57:55.476 | 2026-07-14 18:58:07.258 | 11.8 | reversal_0.2_0.75 | UP | UNWIND | 0.1974 |
+| 2026-07-14 18:57:55.476 | 2026-07-14 18:58:07.258 | 11.8 | reversal_0.3_0.75 | UP | UNWIND | 0.1974 |
+| 2026-07-14 18:58:02.726 | 2026-07-14 18:58:27.666 | 24.9 | reversal_0.2_0.8 | UP | STOPLOSS | -0.3727 |
+| 2026-07-14 18:58:02.726 | 2026-07-14 18:58:27.666 | 24.9 | reversal_0.3_0.8 | UP | STOPLOSS | -0.3727 |
 
 </details>
 
@@ -12259,7 +12641,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>DOGE-4h — 10 trade(s), total pnl -0.4762</summary>
+<summary>DOGE-4h — 12 trade(s), total pnl -0.9700</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12273,11 +12655,13 @@ _... and 4800 more._
 | 2026-07-14 18:48:25.278 | 2026-07-14 18:48:50.690 | 25.4 | reversal_0.4_0.7 | UP | TIMEOUT | -0.1111 |
 | 2026-07-14 18:49:04.752 | 2026-07-14 18:49:22.032 | 17.3 | reversal_0.3_0.75 | UP | STOPLOSS | -0.3774 |
 | 2026-07-14 18:49:04.752 | 2026-07-14 18:49:22.032 | 17.3 | reversal_0.4_0.75 | UP | STOPLOSS | -0.3774 |
+| 2026-07-14 18:58:05.071 | 2026-07-14 18:58:31.151 | 26.1 | reversal_0.3_0.8 | UP | TIMEOUT | -0.2469 |
+| 2026-07-14 18:58:05.071 | 2026-07-14 18:58:31.151 | 26.1 | reversal_0.4_0.8 | UP | TIMEOUT | -0.2469 |
 
 </details>
 
 <details>
-<summary>DOGE-5m — 90 trade(s), total pnl 7.4683</summary>
+<summary>DOGE-5m — 96 trade(s), total pnl 8.3789</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12371,6 +12755,12 @@ _... and 4800 more._
 | 2026-07-14 18:51:51.450 | 2026-07-14 18:52:16.458 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0116 |
 | 2026-07-14 18:51:51.450 | 2026-07-14 18:52:16.458 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0116 |
 | 2026-07-14 18:51:51.450 | 2026-07-14 18:52:16.458 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0116 |
+| 2026-07-14 18:55:21.748 | 2026-07-14 18:55:30.493 | 8.7 | reversal_0.4_0.55 | UP | UNWIND | 0.2381 |
+| 2026-07-14 18:55:21.748 | 2026-07-14 18:55:30.493 | 8.7 | reversal_0.4_0.6 | UP | UNWIND | 0.2381 |
+| 2026-07-14 18:55:21.788 | 2026-07-14 18:55:39.342 | 17.6 | reversal_0.4_0.65 | UP | UNWIND | 0.2290 |
+| 2026-07-14 18:55:21.847 | 2026-07-14 18:55:39.743 | 17.9 | reversal_0.4_0.7 | UP | UNWIND | 0.2128 |
+| 2026-07-14 18:55:30.463 | 2026-07-14 18:55:55.496 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | 0.0662 |
+| 2026-07-14 18:55:39.342 | 2026-07-14 18:56:04.391 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | -0.0736 |
 
 </details>
 
@@ -12439,7 +12829,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>ETH-5m — 76 trade(s), total pnl 1.5305</summary>
+<summary>ETH-5m — 94 trade(s), total pnl 3.6062</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12519,6 +12909,24 @@ _... and 4800 more._
 | 2026-07-14 18:52:35.994 | 2026-07-14 18:53:00.995 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.0621 |
 | 2026-07-14 18:52:35.994 | 2026-07-14 18:53:00.995 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.0621 |
 | 2026-07-14 18:52:35.994 | 2026-07-14 18:53:00.995 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.0621 |
+| 2026-07-14 18:55:13.186 | 2026-07-14 18:55:22.178 | 9.0 | reversal_0.2_0.55 | UP | UNWIND | 0.2655 |
+| 2026-07-14 18:55:13.186 | 2026-07-14 18:55:22.178 | 9.0 | reversal_0.3_0.55 | UP | UNWIND | 0.2655 |
+| 2026-07-14 18:55:13.186 | 2026-07-14 18:55:22.178 | 9.0 | reversal_0.4_0.55 | UP | UNWIND | 0.2655 |
+| 2026-07-14 18:55:13.201 | 2026-07-14 18:55:30.464 | 17.3 | reversal_0.2_0.6 | UP | UNWIND | 0.2479 |
+| 2026-07-14 18:55:13.201 | 2026-07-14 18:55:30.464 | 17.3 | reversal_0.3_0.6 | UP | UNWIND | 0.2479 |
+| 2026-07-14 18:55:13.201 | 2026-07-14 18:55:30.464 | 17.3 | reversal_0.4_0.6 | UP | UNWIND | 0.2479 |
+| 2026-07-14 18:55:13.550 | 2026-07-14 18:55:38.665 | 25.1 | reversal_0.2_0.65 | UP | TIMEOUT | 0.2137 |
+| 2026-07-14 18:55:13.550 | 2026-07-14 18:55:38.665 | 25.1 | reversal_0.3_0.65 | UP | TIMEOUT | 0.2137 |
+| 2026-07-14 18:55:13.550 | 2026-07-14 18:55:38.665 | 25.1 | reversal_0.4_0.65 | UP | TIMEOUT | 0.2137 |
+| 2026-07-14 18:55:22.178 | 2026-07-14 18:55:47.208 | 25.0 | reversal_0.2_0.7 | UP | TIMEOUT | 0.1538 |
+| 2026-07-14 18:55:22.178 | 2026-07-14 18:55:47.208 | 25.0 | reversal_0.3_0.7 | UP | TIMEOUT | 0.1538 |
+| 2026-07-14 18:55:22.178 | 2026-07-14 18:55:47.208 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | 0.1538 |
+| 2026-07-14 18:55:30.464 | 2026-07-14 18:55:55.464 | 25.0 | reversal_0.2_0.75 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 18:55:30.464 | 2026-07-14 18:55:55.464 | 25.0 | reversal_0.3_0.75 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 18:55:30.464 | 2026-07-14 18:55:55.464 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | 0.0000 |
+| 2026-07-14 18:55:39.593 | 2026-07-14 18:56:04.618 | 25.0 | reversal_0.2_0.8 | UP | TIMEOUT | -0.1890 |
+| 2026-07-14 18:55:39.593 | 2026-07-14 18:56:04.618 | 25.0 | reversal_0.3_0.8 | UP | TIMEOUT | -0.1890 |
+| 2026-07-14 18:55:39.593 | 2026-07-14 18:56:04.618 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | -0.1890 |
 
 </details>
 
@@ -12575,7 +12983,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>SOL-5m — 49 trade(s), total pnl -0.5214</summary>
+<summary>SOL-5m — 55 trade(s), total pnl -0.3817</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12628,6 +13036,12 @@ _... and 4800 more._
 | 2026-07-14 18:51:51.451 | 2026-07-14 18:52:16.550 | 25.1 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.2649 |
 | 2026-07-14 18:54:32.534 | 2026-07-14 18:54:38.940 | 6.4 | reversal_0.3_0.8 | UP | UNWIND | 0.1863 |
 | 2026-07-14 18:54:32.534 | 2026-07-14 18:54:38.940 | 6.4 | reversal_0.4_0.8 | UP | UNWIND | 0.1863 |
+| 2026-07-14 18:55:22.161 | 2026-07-14 18:55:47.168 | 25.0 | reversal_0.4_0.55 | UP | TIMEOUT | 0.1140 |
+| 2026-07-14 18:55:31.350 | 2026-07-14 18:55:56.351 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | -0.0650 |
+| 2026-07-14 18:55:39.789 | 2026-07-14 18:56:04.824 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | -0.0916 |
+| 2026-07-14 18:56:19.949 | 2026-07-14 18:56:44.952 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | 0.0567 |
+| 2026-07-14 18:57:18.682 | 2026-07-14 18:57:43.690 | 25.0 | reversal_0.4_0.75 | UP | TIMEOUT | 0.0577 |
+| 2026-07-14 18:57:24.203 | 2026-07-14 18:57:49.231 | 25.0 | reversal_0.4_0.8 | UP | TIMEOUT | 0.0679 |
 
 </details>
 
@@ -12702,7 +13116,7 @@ _... and 4800 more._
 </details>
 
 <details>
-<summary>XRP-5m — 118 trade(s), total pnl 11.0492</summary>
+<summary>XRP-5m — 136 trade(s), total pnl 7.6212</summary>
 
 | entry (HKT) | exit (HKT) | holding (s) | variant | side | outcome | pnl |
 |---|---|---|---|---|---|---|
@@ -12824,6 +13238,24 @@ _... and 4800 more._
 | 2026-07-14 18:51:51.450 | 2026-07-14 18:52:16.468 | 25.0 | reversal_0.2_0.8 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 18:51:51.450 | 2026-07-14 18:52:16.468 | 25.0 | reversal_0.3_0.8 | DOWN | TIMEOUT | 0.0000 |
 | 2026-07-14 18:51:51.450 | 2026-07-14 18:52:16.468 | 25.0 | reversal_0.4_0.8 | DOWN | TIMEOUT | 0.0000 |
+| 2026-07-14 18:55:21.876 | 2026-07-14 18:55:39.422 | 17.5 | reversal_0.4_0.55 | UP | UNWIND | 0.2703 |
+| 2026-07-14 18:55:30.423 | 2026-07-14 18:55:55.428 | 25.0 | reversal_0.4_0.6 | UP | TIMEOUT | -0.0081 |
+| 2026-07-14 18:55:39.370 | 2026-07-14 18:56:04.387 | 25.0 | reversal_0.4_0.65 | UP | TIMEOUT | -0.2556 |
+| 2026-07-14 18:55:39.422 | 2026-07-14 18:56:04.427 | 25.0 | reversal_0.4_0.7 | UP | TIMEOUT | -0.2979 |
+| 2026-07-14 18:57:07.465 | 2026-07-14 18:57:30.816 | 23.4 | reversal_0.3_0.55 | DOWN | STOPLOSS | -0.3774 |
+| 2026-07-14 18:57:07.465 | 2026-07-14 18:57:30.816 | 23.4 | reversal_0.3_0.6 | DOWN | STOPLOSS | -0.3774 |
+| 2026-07-14 18:57:07.465 | 2026-07-14 18:57:30.816 | 23.4 | reversal_0.3_0.65 | DOWN | STOPLOSS | -0.3774 |
+| 2026-07-14 18:57:07.465 | 2026-07-14 18:57:30.816 | 23.4 | reversal_0.3_0.7 | DOWN | STOPLOSS | -0.3774 |
+| 2026-07-14 18:57:07.465 | 2026-07-14 18:57:30.816 | 23.4 | reversal_0.3_0.75 | DOWN | STOPLOSS | -0.3774 |
+| 2026-07-14 18:57:07.465 | 2026-07-14 18:57:30.816 | 23.4 | reversal_0.4_0.75 | DOWN | STOPLOSS | -0.3774 |
+| 2026-07-14 18:57:31.567 | 2026-07-14 18:57:56.571 | 25.0 | reversal_0.2_0.55 | UP | TIMEOUT | 0.1217 |
+| 2026-07-14 18:57:31.772 | 2026-07-14 18:57:56.784 | 25.0 | reversal_0.2_0.6 | UP | TIMEOUT | 0.0661 |
+| 2026-07-14 18:58:00.705 | 2026-07-14 18:58:02.789 | 2.1 | reversal_0.2_0.65 | UP | UNWIND | 0.2222 |
+| 2026-07-14 18:58:00.763 | 2026-07-14 18:58:05.550 | 4.8 | reversal_0.2_0.7 | UP | UNWIND | 0.2128 |
+| 2026-07-14 18:58:01.858 | 2026-07-14 18:58:27.667 | 25.8 | reversal_0.2_0.75 | UP | STOPLOSS | -0.3974 |
+| 2026-07-14 18:58:02.727 | 2026-07-14 18:58:27.667 | 24.9 | reversal_0.2_0.8 | UP | STOPLOSS | -0.3659 |
+| 2026-07-14 18:58:02.727 | 2026-07-14 18:58:27.667 | 24.9 | reversal_0.3_0.8 | UP | STOPLOSS | -0.3659 |
+| 2026-07-14 18:58:02.727 | 2026-07-14 18:58:27.667 | 24.9 | reversal_0.4_0.8 | UP | STOPLOSS | -0.3659 |
 
 </details>
 
@@ -14351,6 +14783,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 33.1597**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 42 | 2 | 30 | 10 | 1.2827 |
+| reversal_0.2_0.6 | 41 | 2 | 31 | 8 | 0.9721 |
+| reversal_0.2_0.65 | 39 | 1 | 29 | 9 | 1.1536 |
+| reversal_0.2_0.7 | 37 | 2 | 30 | 5 | 0.1878 |
+| reversal_0.2_0.75 | 36 | 2 | 30 | 4 | -0.8475 |
+| reversal_0.2_0.8 | 37 | 2 | 30 | 5 | -0.2606 |
+| reversal_0.3_0.55 | 56 | 2 | 41 | 13 | 2.0922 |
+| reversal_0.3_0.6 | 55 | 2 | 42 | 11 | 1.4565 |
+| reversal_0.3_0.65 | 53 | 1 | 39 | 13 | 1.8933 |
+| reversal_0.3_0.7 | 48 | 2 | 37 | 9 | 1.5768 |
+| reversal_0.3_0.75 | 51 | 2 | 42 | 7 | 0.6102 |
+| reversal_0.3_0.8 | 51 | 2 | 43 | 6 | 0.6306 |
+| reversal_0.4_0.55 | 76 | 1 | 55 | 20 | 5.5638 |
+| reversal_0.4_0.6 | 74 | 1 | 54 | 19 | 5.0238 |
+| reversal_0.4_0.65 | 69 | 1 | 50 | 18 | 3.7404 |
+| reversal_0.4_0.7 | 68 | 1 | 54 | 13 | 4.1540 |
+| reversal_0.4_0.75 | 69 | 1 | 59 | 9 | 2.2430 |
+| reversal_0.4_0.8 | 66 | 1 | 60 | 5 | 1.6870 |
+
+**Total pnl: 33.1597**
+
 <details>
 <summary>BNB-15m — 23 trade(s), total pnl 1.0824</summary>
 
@@ -15831,6 +16288,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: -8.3776**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 39 | 1 | 30 | 8 | 0.4322 |
+| reversal_0.2_0.6 | 38 | 1 | 30 | 7 | -0.2804 |
+| reversal_0.2_0.65 | 36 | 1 | 29 | 6 | -0.5466 |
+| reversal_0.2_0.7 | 40 | 3 | 32 | 5 | -1.0617 |
+| reversal_0.2_0.75 | 37 | 4 | 30 | 3 | -0.1103 |
+| reversal_0.2_0.8 | 32 | 4 | 26 | 2 | -0.0859 |
+| reversal_0.3_0.55 | 51 | 2 | 39 | 10 | 0.3251 |
+| reversal_0.3_0.6 | 52 | 2 | 41 | 9 | -0.5333 |
+| reversal_0.3_0.65 | 48 | 2 | 38 | 8 | -0.4640 |
+| reversal_0.3_0.7 | 52 | 3 | 42 | 7 | -0.5209 |
+| reversal_0.3_0.75 | 53 | 3 | 44 | 6 | 0.7684 |
+| reversal_0.3_0.8 | 48 | 3 | 43 | 2 | -0.2862 |
+| reversal_0.4_0.55 | 67 | 2 | 51 | 14 | -0.1645 |
+| reversal_0.4_0.6 | 64 | 2 | 49 | 13 | -1.1026 |
+| reversal_0.4_0.65 | 63 | 2 | 52 | 9 | -1.8837 |
+| reversal_0.4_0.7 | 68 | 2 | 57 | 9 | -1.9240 |
+| reversal_0.4_0.75 | 65 | 2 | 56 | 7 | -0.3542 |
+| reversal_0.4_0.8 | 59 | 3 | 54 | 2 | -0.5850 |
+
+**Total pnl: -8.3776**
+
 <details>
 <summary>BNB-15m — 63 trade(s), total pnl 3.9811</summary>
 
@@ -17294,6 +17776,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 8.3461**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 37 | 3 | 29 | 5 | 0.8590 |
+| reversal_0.2_0.6 | 34 | 2 | 27 | 5 | 1.1282 |
+| reversal_0.2_0.65 | 26 | 2 | 20 | 4 | 1.0083 |
+| reversal_0.2_0.7 | 28 | 2 | 21 | 5 | 0.5198 |
+| reversal_0.2_0.75 | 24 | 1 | 17 | 6 | 0.7676 |
+| reversal_0.2_0.8 | 24 | 1 | 23 | 0 | -0.4680 |
+| reversal_0.3_0.55 | 49 | 3 | 39 | 7 | 0.7885 |
+| reversal_0.3_0.6 | 45 | 2 | 36 | 7 | 1.2377 |
+| reversal_0.3_0.65 | 33 | 2 | 26 | 5 | 1.3846 |
+| reversal_0.3_0.7 | 35 | 2 | 27 | 6 | 0.4907 |
+| reversal_0.3_0.75 | 30 | 1 | 22 | 7 | 0.6677 |
+| reversal_0.3_0.8 | 34 | 2 | 31 | 1 | -0.6011 |
+| reversal_0.4_0.55 | 63 | 3 | 52 | 8 | 0.0299 |
+| reversal_0.4_0.6 | 56 | 2 | 46 | 8 | 0.8449 |
+| reversal_0.4_0.65 | 46 | 3 | 36 | 7 | 0.1401 |
+| reversal_0.4_0.7 | 55 | 2 | 46 | 7 | 0.5543 |
+| reversal_0.4_0.75 | 45 | 3 | 34 | 8 | 0.2132 |
+| reversal_0.4_0.8 | 49 | 4 | 43 | 2 | -1.2193 |
+
+**Total pnl: 8.3461**
+
 <details>
 <summary>BNB-15m — 16 trade(s), total pnl -0.8576</summary>
 
@@ -18665,6 +19172,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 49.2413**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 34 | 0 | 21 | 13 | 3.0963 |
+| reversal_0.2_0.6 | 34 | 0 | 21 | 13 | 3.4532 |
+| reversal_0.2_0.65 | 31 | 0 | 23 | 8 | 2.6028 |
+| reversal_0.2_0.7 | 30 | 0 | 24 | 6 | 1.9889 |
+| reversal_0.2_0.75 | 31 | 0 | 25 | 6 | 1.7937 |
+| reversal_0.2_0.8 | 30 | 1 | 27 | 2 | 1.3254 |
+| reversal_0.3_0.55 | 49 | 0 | 32 | 17 | 4.4134 |
+| reversal_0.3_0.6 | 48 | 0 | 32 | 16 | 4.6874 |
+| reversal_0.3_0.65 | 42 | 0 | 31 | 11 | 3.3670 |
+| reversal_0.3_0.7 | 42 | 1 | 33 | 8 | 2.0996 |
+| reversal_0.3_0.75 | 41 | 0 | 34 | 7 | 1.9036 |
+| reversal_0.3_0.8 | 39 | 1 | 34 | 4 | 1.5349 |
+| reversal_0.4_0.55 | 63 | 1 | 43 | 19 | 4.1990 |
+| reversal_0.4_0.6 | 56 | 1 | 38 | 17 | 4.1255 |
+| reversal_0.4_0.65 | 53 | 2 | 39 | 12 | 2.5197 |
+| reversal_0.4_0.7 | 53 | 2 | 43 | 8 | 1.9167 |
+| reversal_0.4_0.75 | 50 | 0 | 43 | 7 | 2.4071 |
+| reversal_0.4_0.8 | 47 | 1 | 42 | 4 | 1.8071 |
+
+**Total pnl: 49.2413**
+
 <details>
 <summary>BNB-15m — 36 trade(s), total pnl 2.9451</summary>
 
@@ -19935,6 +20467,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 1.5213**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 17 | 0 | 17 | 0 | 0.2244 |
+| reversal_0.2_0.6 | 17 | 0 | 17 | 0 | 0.2628 |
+| reversal_0.2_0.65 | 17 | 0 | 17 | 0 | 0.0791 |
+| reversal_0.2_0.7 | 18 | 0 | 17 | 1 | -0.0049 |
+| reversal_0.2_0.75 | 17 | 0 | 16 | 1 | -0.2195 |
+| reversal_0.2_0.8 | 15 | 0 | 15 | 0 | -0.4506 |
+| reversal_0.3_0.55 | 24 | 0 | 22 | 2 | 0.5591 |
+| reversal_0.3_0.6 | 24 | 0 | 23 | 1 | 0.4254 |
+| reversal_0.3_0.65 | 24 | 0 | 23 | 1 | 0.1757 |
+| reversal_0.3_0.7 | 25 | 0 | 23 | 2 | 0.0598 |
+| reversal_0.3_0.75 | 24 | 0 | 23 | 1 | -0.3692 |
+| reversal_0.3_0.8 | 22 | 0 | 22 | 0 | -0.4167 |
+| reversal_0.4_0.55 | 39 | 0 | 37 | 2 | -0.2118 |
+| reversal_0.4_0.6 | 33 | 0 | 32 | 1 | 0.7588 |
+| reversal_0.4_0.65 | 33 | 0 | 31 | 2 | 0.6957 |
+| reversal_0.4_0.7 | 34 | 0 | 31 | 3 | 0.2828 |
+| reversal_0.4_0.75 | 33 | 0 | 31 | 2 | 0.0399 |
+| reversal_0.4_0.8 | 31 | 0 | 31 | 0 | -0.3695 |
+
+**Total pnl: 1.5213**
+
 <details>
 <summary>BNB-15m — 12 trade(s), total pnl 1.5340</summary>
 
@@ -20784,6 +21341,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | weather:guangzhou:34°C or higher | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | 0.0339 |
 | weather:guangzhou:34°C or higher | reversal_0.4_0.6 | 2 | 0 | 2 | 0 | -0.0251 |
 | weather:manila:33°C | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | -0.0090 |
+
+**Total pnl: -5.6817**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 10 | 0 | 10 | 0 | -0.0545 |
+| reversal_0.2_0.6 | 10 | 0 | 10 | 0 | -0.1898 |
+| reversal_0.2_0.65 | 10 | 0 | 10 | 0 | -0.1898 |
+| reversal_0.2_0.7 | 10 | 0 | 10 | 0 | -0.2501 |
+| reversal_0.2_0.75 | 10 | 0 | 10 | 0 | -0.1685 |
+| reversal_0.2_0.8 | 10 | 0 | 10 | 0 | -0.0661 |
+| reversal_0.3_0.55 | 15 | 1 | 14 | 0 | -0.4685 |
+| reversal_0.3_0.6 | 15 | 1 | 14 | 0 | -0.4360 |
+| reversal_0.3_0.65 | 14 | 1 | 13 | 0 | -0.4767 |
+| reversal_0.3_0.7 | 14 | 2 | 12 | 0 | -0.6354 |
+| reversal_0.3_0.75 | 14 | 2 | 12 | 0 | -0.7193 |
+| reversal_0.3_0.8 | 15 | 1 | 14 | 0 | -0.0766 |
+| reversal_0.4_0.55 | 32 | 1 | 30 | 1 | -0.1163 |
+| reversal_0.4_0.6 | 31 | 1 | 29 | 1 | -0.0986 |
+| reversal_0.4_0.65 | 27 | 1 | 25 | 1 | -0.4697 |
+| reversal_0.4_0.7 | 28 | 2 | 25 | 1 | -0.5152 |
+| reversal_0.4_0.75 | 28 | 2 | 26 | 0 | -0.8616 |
+| reversal_0.4_0.8 | 29 | 1 | 28 | 0 | 0.1110 |
 
 **Total pnl: -5.6817**
 

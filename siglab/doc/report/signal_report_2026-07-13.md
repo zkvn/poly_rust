@@ -613,6 +613,31 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 
 **Total pnl: 0.1358**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 41 | 4 | 35 | 1 | -0.4124 |
+| reversal_0.2_0.6 | 38 | 3 | 33 | 1 | 0.1072 |
+| reversal_0.2_0.65 | 38 | 2 | 34 | 1 | 0.2480 |
+| reversal_0.2_0.7 | 36 | 1 | 33 | 1 | 0.6783 |
+| reversal_0.2_0.75 | 38 | 4 | 33 | 0 | -0.1600 |
+| reversal_0.2_0.8 | 39 | 0 | 38 | 0 | -0.0049 |
+| reversal_0.3_0.55 | 44 | 3 | 38 | 2 | -0.2642 |
+| reversal_0.3_0.6 | 43 | 2 | 37 | 3 | 0.7132 |
+| reversal_0.3_0.65 | 43 | 3 | 38 | 1 | -0.4822 |
+| reversal_0.3_0.7 | 41 | 3 | 36 | 1 | -0.5029 |
+| reversal_0.3_0.75 | 43 | 5 | 37 | 0 | -0.8263 |
+| reversal_0.3_0.8 | 44 | 1 | 42 | 0 | -0.5517 |
+| reversal_0.4_0.55 | 55 | 2 | 48 | 4 | -0.0215 |
+| reversal_0.4_0.6 | 49 | 1 | 43 | 4 | 1.2920 |
+| reversal_0.4_0.65 | 51 | 2 | 46 | 2 | 0.4774 |
+| reversal_0.4_0.7 | 47 | 2 | 42 | 2 | 0.2264 |
+| reversal_0.4_0.75 | 50 | 3 | 44 | 2 | 0.0826 |
+| reversal_0.4_0.8 | 50 | 1 | 48 | 0 | -0.4632 |
+
+**Total pnl: 0.1358**
+
 <details>
 <summary>BNB-15m — 15 trade(s), total pnl 0.2862</summary>
 
@@ -2020,6 +2045,33 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: -37.1839**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_doge | 2 | 0 | 0 | 0 | -0.9418 |
+| high_prob_eth | 1 | 0 | 0 | 1 | 0.1257 |
+| reversal_0.2_0.55 | 40 | 3 | 26 | 11 | 0.1252 |
+| reversal_0.2_0.6 | 39 | 3 | 30 | 6 | -1.2250 |
+| reversal_0.2_0.65 | 38 | 3 | 28 | 7 | -0.7632 |
+| reversal_0.2_0.7 | 39 | 4 | 31 | 4 | -2.0189 |
+| reversal_0.2_0.75 | 35 | 3 | 28 | 4 | -1.2335 |
+| reversal_0.2_0.8 | 35 | 1 | 31 | 3 | -0.9775 |
+| reversal_0.3_0.55 | 53 | 3 | 38 | 12 | -0.9926 |
+| reversal_0.3_0.6 | 49 | 3 | 38 | 8 | -1.2453 |
+| reversal_0.3_0.65 | 49 | 3 | 37 | 9 | -1.4355 |
+| reversal_0.3_0.7 | 47 | 7 | 36 | 4 | -3.1824 |
+| reversal_0.3_0.75 | 43 | 4 | 35 | 4 | -1.3910 |
+| reversal_0.3_0.8 | 45 | 2 | 40 | 3 | -1.8722 |
+| reversal_0.4_0.55 | 84 | 6 | 66 | 12 | -2.4577 |
+| reversal_0.4_0.6 | 75 | 6 | 60 | 9 | -3.1211 |
+| reversal_0.4_0.65 | 74 | 6 | 58 | 10 | -3.4429 |
+| reversal_0.4_0.7 | 70 | 10 | 55 | 5 | -5.5446 |
+| reversal_0.4_0.75 | 60 | 7 | 49 | 4 | -3.8318 |
+| reversal_0.4_0.8 | 59 | 3 | 53 | 3 | -1.7578 |
+
+**Total pnl: -37.1839**
+
 <details>
 <summary>BNB-15m — 52 trade(s), total pnl -4.7336</summary>
 
@@ -3323,6 +3375,34 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 9.6763**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 1 | 0.0870 |
+| high_prob_doge | 4 | 0 | 0 | 1 | 0.3193 |
+| high_prob_eth | 1 | 0 | 0 | 1 | 0.1366 |
+| reversal_0.2_0.55 | 25 | 0 | 20 | 5 | 0.9061 |
+| reversal_0.2_0.6 | 24 | 0 | 20 | 4 | 0.6098 |
+| reversal_0.2_0.65 | 24 | 0 | 21 | 3 | 0.0287 |
+| reversal_0.2_0.7 | 23 | 2 | 19 | 2 | -0.2674 |
+| reversal_0.2_0.75 | 27 | 2 | 23 | 2 | -0.1376 |
+| reversal_0.2_0.8 | 24 | 1 | 22 | 1 | 0.3067 |
+| reversal_0.3_0.55 | 31 | 0 | 24 | 7 | 1.3309 |
+| reversal_0.3_0.6 | 30 | 0 | 25 | 5 | 0.4070 |
+| reversal_0.3_0.65 | 30 | 0 | 26 | 4 | -0.1741 |
+| reversal_0.3_0.7 | 28 | 3 | 23 | 2 | -0.9369 |
+| reversal_0.3_0.75 | 33 | 2 | 28 | 3 | -0.2851 |
+| reversal_0.3_0.8 | 30 | 1 | 27 | 2 | 0.4699 |
+| reversal_0.4_0.55 | 42 | 1 | 28 | 13 | 1.6771 |
+| reversal_0.4_0.6 | 42 | 1 | 29 | 12 | 1.3383 |
+| reversal_0.4_0.65 | 43 | 0 | 30 | 13 | 2.0367 |
+| reversal_0.4_0.7 | 42 | 2 | 30 | 10 | 1.0860 |
+| reversal_0.4_0.75 | 47 | 1 | 40 | 6 | 0.7689 |
+| reversal_0.4_0.8 | 44 | 2 | 40 | 2 | -0.0316 |
+
+**Total pnl: 9.6763**
+
 <details>
 <summary>(unknown market) — 446 trade(s), total pnl 0.8161</summary>
 
@@ -4078,6 +4158,34 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: -21.4391**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 0 | 0.0753 |
+| high_prob_doge | 4 | 0 | 0 | 2 | 0.3878 |
+| high_prob_eth | 1 | 0 | 0 | 1 | 0.1350 |
+| reversal_0.2_0.55 | 17 | 1 | 14 | 2 | -1.2484 |
+| reversal_0.2_0.6 | 17 | 2 | 13 | 2 | -1.3538 |
+| reversal_0.2_0.65 | 14 | 1 | 11 | 2 | -0.5944 |
+| reversal_0.2_0.7 | 14 | 1 | 11 | 2 | -0.6020 |
+| reversal_0.2_0.75 | 13 | 1 | 11 | 1 | -0.8890 |
+| reversal_0.2_0.8 | 11 | 2 | 9 | 0 | -0.7223 |
+| reversal_0.3_0.55 | 25 | 1 | 21 | 3 | -1.5633 |
+| reversal_0.3_0.6 | 24 | 2 | 19 | 3 | -1.6867 |
+| reversal_0.3_0.65 | 21 | 1 | 17 | 3 | -0.9273 |
+| reversal_0.3_0.7 | 20 | 1 | 17 | 2 | -1.2379 |
+| reversal_0.3_0.75 | 18 | 1 | 17 | 0 | -1.7785 |
+| reversal_0.3_0.8 | 17 | 2 | 15 | 0 | -1.0476 |
+| reversal_0.4_0.55 | 43 | 3 | 30 | 10 | -0.7522 |
+| reversal_0.4_0.6 | 41 | 3 | 29 | 9 | -1.0663 |
+| reversal_0.4_0.65 | 37 | 2 | 27 | 8 | -0.8034 |
+| reversal_0.4_0.7 | 35 | 2 | 28 | 5 | -1.9323 |
+| reversal_0.4_0.75 | 32 | 2 | 29 | 1 | -2.3784 |
+| reversal_0.4_0.8 | 34 | 3 | 30 | 1 | -1.4534 |
+
+**Total pnl: -21.4391**
+
 <details>
 <summary>(unknown market) — 439 trade(s), total pnl -21.4391</summary>
 
@@ -4580,6 +4688,33 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: -5.3918**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_doge | 3 | 0 | 0 | 1 | 0.2237 |
+| high_prob_eth | 2 | 0 | 0 | 0 | 0.1335 |
+| reversal_0.2_0.55 | 13 | 1 | 11 | 1 | -0.8240 |
+| reversal_0.2_0.6 | 13 | 0 | 12 | 1 | -0.6116 |
+| reversal_0.2_0.65 | 13 | 1 | 11 | 1 | -0.4549 |
+| reversal_0.2_0.7 | 11 | 0 | 10 | 1 | 0.0264 |
+| reversal_0.2_0.75 | 12 | 0 | 12 | 0 | 0.2258 |
+| reversal_0.2_0.8 | 10 | 0 | 10 | 0 | -0.1896 |
+| reversal_0.3_0.55 | 19 | 0 | 17 | 2 | -0.5745 |
+| reversal_0.3_0.6 | 19 | 0 | 16 | 3 | -0.4910 |
+| reversal_0.3_0.65 | 18 | 1 | 15 | 2 | -0.4792 |
+| reversal_0.3_0.7 | 15 | 0 | 14 | 1 | -0.3760 |
+| reversal_0.3_0.75 | 17 | 1 | 16 | 0 | -0.7357 |
+| reversal_0.3_0.8 | 16 | 0 | 16 | 0 | -0.5085 |
+| reversal_0.4_0.55 | 22 | 0 | 19 | 3 | 0.1550 |
+| reversal_0.4_0.6 | 22 | 0 | 19 | 3 | -0.0770 |
+| reversal_0.4_0.65 | 23 | 1 | 19 | 3 | -0.1235 |
+| reversal_0.4_0.7 | 20 | 0 | 18 | 2 | -0.1750 |
+| reversal_0.4_0.75 | 21 | 1 | 19 | 1 | -0.4300 |
+| reversal_0.4_0.8 | 19 | 0 | 19 | 0 | -0.1057 |
+
+**Total pnl: -5.3918**
+
 <details>
 <summary>(unknown market) — 308 trade(s), total pnl -5.3918</summary>
 
@@ -4932,6 +5067,15 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.1685**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_doge | 1 | 0 | 0 | 1 | 0.1047 |
+| high_prob_eth | 1 | 0 | 0 | 0 | 0.0638 |
+
+**Total pnl: 0.1685**
+
 <details>
 <summary>(unknown market) — 2 trade(s), total pnl 0.1685</summary>
 
@@ -4975,6 +5119,15 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 |---|---|---|---|---|---|---|
 |  | high_prob_btc | 1 | 0 | 0 | 1 | 0.0854 |
 |  | high_prob_doge | 2 | 0 | 0 | 0 | 0.1277 |
+
+**Total pnl: 0.2131**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 1 | 0.0854 |
+| high_prob_doge | 2 | 0 | 0 | 0 | 0.1277 |
 
 **Total pnl: 0.2131**
 
@@ -5027,6 +5180,16 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.5052**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 1 | 0.0782 |
+| high_prob_doge | 3 | 0 | 0 | 1 | 0.2335 |
+| reversal_btc | 1 | 0 | 0 | 1 | 0.1935 |
+
+**Total pnl: 0.5052**
+
 <details>
 <summary>(unknown market) — 5 trade(s), total pnl 0.5052</summary>
 
@@ -5075,6 +5238,16 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 |  | high_prob_btc | 1 | 0 | 0 | 0 | 0.0753 |
 |  | high_prob_doge | 5 | 1 | 0 | 1 | -0.1349 |
 |  | reversal_btc | 1 | 0 | 0 | 1 | 0.1796 |
+
+**Total pnl: 0.1200**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 0 | 0.0753 |
+| high_prob_doge | 5 | 1 | 0 | 1 | -0.1349 |
+| reversal_btc | 1 | 0 | 0 | 1 | 0.1796 |
 
 **Total pnl: 0.1200**
 
@@ -5132,6 +5305,17 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.9745**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 0 | 0.0811 |
+| high_prob_doge | 6 | 0 | 0 | 4 | 0.5560 |
+| high_prob_eth | 1 | 0 | 0 | 0 | 0.0695 |
+| reversal_sol | 1 | 0 | 0 | 1 | 0.2679 |
+
+**Total pnl: 0.9745**
+
 <details>
 <summary>(unknown market) — 9 trade(s), total pnl 0.9745</summary>
 
@@ -5184,6 +5368,14 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 0.0582**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_doge | 1 | 0 | 0 | 0 | 0.0582 |
+
+**Total pnl: 0.0582**
+
 <details>
 <summary>(unknown market) — 1 trade(s), total pnl 0.0582</summary>
 
@@ -5226,6 +5418,15 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 |---|---|---|---|---|---|---|
 |  | high_prob_doge | 3 | 0 | 0 | 0 | 0.1915 |
 |  | high_prob_eth | 1 | 0 | 0 | 0 | 0.0582 |
+
+**Total pnl: 0.2497**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_doge | 3 | 0 | 0 | 0 | 0.1915 |
+| high_prob_eth | 1 | 0 | 0 | 0 | 0.0582 |
 
 **Total pnl: 0.2497**
 
@@ -5273,6 +5474,14 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | market | variant | trades | sl | timeout | unwind | total pnl |
 |---|---|---|---|---|---|---|
 |  | high_prob_btc | 1 | 0 | 0 | 1 | 0.0791 |
+
+**Total pnl: 0.0791**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| high_prob_btc | 1 | 0 | 0 | 1 | 0.0791 |
 
 **Total pnl: 0.0791**
 

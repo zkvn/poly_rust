@@ -107,6 +107,15 @@ struct Args {
     /// format; see that function's doc comment.
     #[arg(long)]
     regenerate_reports_only: bool,
+
+    /// One-off: re-render just the merged "Trades this hour" table in every hour block of
+    /// every signal_report_*.md in --report-dir from --log's ground truth
+    /// (report::refresh_hour_trades_tables), then exit immediately. Unlike
+    /// --regenerate-reports-only, this does NOT discard hours' real market-state/staleness/
+    /// CPU snapshots — use this to backfill a trades-table rendering change (new column/
+    /// table) into already-written hours.
+    #[arg(long)]
+    refresh_trade_tables_only: bool,
 }
 
 fn append_jsonl(path: &PathBuf, rec: &SiglabTradeRecord) -> Result<()> {
@@ -143,6 +152,15 @@ async fn main() -> Result<()> {
         worldcup_cfg.events.len(),
         args.worldcup_config
     );
+
+    if args.refresh_trade_tables_only {
+        let paths = report::refresh_hour_trades_tables(&args.log, &args.report_dir)?;
+        eprintln!(
+            "[siglab] refreshed trade tables in {} report(s): {paths:?}",
+            paths.len()
+        );
+        return Ok(());
+    }
 
     if args.regenerate_reports_only {
         let paths = report::regenerate_from_trade_log(

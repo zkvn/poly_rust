@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use chrono::{FixedOffset, TimeZone as _, Timelike, Utc};
+use chrono::{FixedOffset, NaiveDate, TimeZone as _, Timelike, Utc};
 
 use crate::cgroup;
 use crate::config::SiglabConfig;
@@ -239,6 +239,44 @@ fn render_variant_summary(trades: &[SiglabTradeRecord]) -> String {
     out
 }
 
+/// Same shape as `render_trade_summary`/`render_variant_summary`, but aggregated by
+/// `variant_id` alone, summed across every market — answers "which variant performs best
+/// overall" (e.g. `reversal_0.3_0.55`'s total pnl across BTC/ETH/XRP/weather/etc combined),
+/// which the per-market `render_variant_summary` table can't show directly since it never
+/// collapses a variant's rows across markets. Shown last of the three summary tables, as
+/// the most zoomed-out view. Added 2026-07-15 per explicit request.
+fn render_variant_totals_summary(trades: &[SiglabTradeRecord]) -> String {
+    let mut out = String::from("#### Summary: PnL by variant (all markets)\n\n");
+    let mut agg: HashMap<String, MarketStrategyAgg> = HashMap::new();
+    for t in trades {
+        let entry = agg.entry(t.variant_id.clone()).or_default();
+        entry.trades += 1;
+        entry.pnl += t.pnl;
+        match t.outcome.as_str() {
+            "STOPLOSS" => entry.sl += 1,
+            "TIMEOUT" => entry.timeout += 1,
+            "UNWIND" => entry.unwind += 1,
+            _ => {}
+        }
+    }
+    let mut rows: Vec<_> = agg.into_iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    out.push_str(
+        "| variant | trades | sl | timeout | unwind | total pnl |\n\
+         |---|---|---|---|---|---|\n",
+    );
+    for (variant, a) in &rows {
+        out.push_str(&format!(
+            "| {variant} | {} | {} | {} | {} | {:.4} |\n",
+            a.trades, a.sl, a.timeout, a.unwind, a.pnl
+        ));
+    }
+    let grand_total: f64 = trades.iter().map(|t| t.pnl).sum();
+    out.push_str(&format!("\n**Total pnl: {grand_total:.4}**\n\n"));
+    out
+}
+
 /// One market's trade table (no `market` column — it's already in the enclosing
 /// `<details>`'s summary), sorted by entry time.
 fn render_market_trade_table(rows: &[&SiglabTradeRecord]) -> String {
@@ -291,6 +329,7 @@ fn render_hour_trades_section(trades: &[SiglabTradeRecord]) -> String {
 
     out.push_str(&render_trade_summary(trades));
     out.push_str(&render_variant_summary(trades));
+    out.push_str(&render_variant_totals_summary(trades));
 
     let mut by_market: HashMap<&str, Vec<&SiglabTradeRecord>> = HashMap::new();
     for t in trades {
@@ -716,6 +755,106 @@ pub fn regenerate_from_trade_log(
     Ok(written)
 }
 
+/// Parses an `HOUR_MARKER_PREFIX` hour key (e.g. `"2026-07-14T21"`, always HKT) into
+/// `[start, end)` unix-second bounds for that real HKT hour.
+fn hour_bounds(hour_key: &str) -> Result<(f64, f64)> {
+    let (date_str, hour_str) = hour_key
+        .split_once('T')
+        .with_context(|| format!("malformed hour key {hour_key:?}"))?;
+    let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+        .with_context(|| format!("bad date in hour key {hour_key:?}"))?;
+    let hour: u32 = hour_str
+        .parse()
+        .with_context(|| format!("bad hour in hour key {hour_key:?}"))?;
+    let naive = date
+        .and_hms_opt(hour, 0, 0)
+        .with_context(|| format!("bad hour value in hour key {hour_key:?}"))?;
+    let start = hkt()
+        .from_local_datetime(&naive)
+        .single()
+        .with_context(|| format!("ambiguous/invalid local time for hour key {hour_key:?}"))?;
+    let start_ts = start.timestamp() as f64;
+    Ok((start_ts, start_ts + 3600.0))
+}
+
+/// One-off maintenance: re-renders just the merged "Trades this hour" table (the span
+/// between `HOUR_TRADES_MARKER_START/END`) of every hour block in every
+/// `signal_report_*.md` under `report_dir`, from `trade_log_path`'s ground truth — used to
+/// backfill a rendering change (e.g. a new summary table/column) into hours the live
+/// process already wrote and closed. Unlike `regenerate_from_trade_log`, this does **not**
+/// touch anything else in the file — each hour's real market-state/staleness/CPU snapshots
+/// (not recoverable from the trade log alone) are left exactly as the live process wrote
+/// them. Added 2026-07-15 to backfill the new `render_variant_totals_summary` table without
+/// discarding that data.
+pub fn refresh_hour_trades_tables(
+    trade_log_path: &Path,
+    report_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let all_trades = recent_trades(trade_log_path, 0.0);
+    let mut written = Vec::new();
+
+    for entry in std::fs::read_dir(report_dir).context("read report dir")? {
+        let path = entry.context("read report dir entry")?.path();
+        let is_report = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("signal_report_") && n.ends_with(".md"));
+        if !is_report {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
+        let mut new_content = String::with_capacity(content.len());
+        let mut rest = content.as_str();
+        let mut changed = false;
+
+        while let Some(hour_pos) = rest.find(HOUR_MARKER_PREFIX) {
+            new_content.push_str(&rest[..hour_pos]);
+            rest = &rest[hour_pos..];
+            let key_start = HOUR_MARKER_PREFIX.len();
+            let marker_end = rest[key_start..]
+                .find(" -->\n")
+                .map(|p| key_start + p + " -->\n".len())
+                .with_context(|| format!("malformed hour marker in {path:?}"))?;
+            let hour_key = &rest[key_start..marker_end - " -->\n".len()];
+            let (start_ts, end_ts) = hour_bounds(hour_key)
+                .with_context(|| format!("hour key {hour_key:?} in {path:?}"))?;
+            let hour_trades: Vec<SiglabTradeRecord> = all_trades
+                .iter()
+                .filter(|t| t.logged_at >= start_ts && t.logged_at < end_ts)
+                .cloned()
+                .collect();
+
+            match (
+                rest.find(HOUR_TRADES_MARKER_START),
+                rest.find(HOUR_TRADES_MARKER_END),
+            ) {
+                (Some(ts), Some(te)) if te >= ts => {
+                    new_content.push_str(&rest[..ts]);
+                    new_content.push_str(HOUR_TRADES_MARKER_START);
+                    new_content.push_str(&render_hour_trades_section(&hour_trades));
+                    new_content.push_str(HOUR_TRADES_MARKER_END);
+                    changed = true;
+                    rest = &rest[te + HOUR_TRADES_MARKER_END.len()..];
+                }
+                _ => {
+                    // No trades markers in this hour block — leave it untouched, advance past
+                    // the hour marker line so the search loop makes progress.
+                    new_content.push_str(&rest[..marker_end]);
+                    rest = &rest[marker_end..];
+                }
+            }
+        }
+        new_content.push_str(rest);
+
+        if changed {
+            std::fs::write(&path, &new_content).with_context(|| format!("write {path:?}"))?;
+            written.push(path);
+        }
+    }
+    Ok(written)
+}
+
 /// Writes (inserting) this run's section into today's report file — either nested inside
 /// the still-current hour's `<details>` (if the last write was in the same real HKT hour)
 /// or as a fresh hour section on top (collapsing the previous hour's section, since only the
@@ -1036,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn hour_trades_section_includes_both_summary_tables() {
+    fn hour_trades_section_includes_all_three_summary_tables() {
         let trades = vec![mk_trade(
             "XRP-5m",
             "reversal_0.2_0.55",
@@ -1047,7 +1186,24 @@ mod tests {
         let section = render_hour_trades_section(&trades);
         assert!(section.contains("PnL by market and strategy"));
         assert!(section.contains("PnL by market and variant"));
+        assert!(section.contains("PnL by variant (all markets)"));
         assert!(section.contains("reversal_0.2_0.55"));
+    }
+
+    #[test]
+    fn variant_totals_summary_sums_one_variant_across_markets() {
+        let trades = vec![
+            mk_trade("XRP-5m", "reversal_0.2_0.55", "reversal", 100.0, 0.1),
+            mk_trade("XRP-15m", "reversal_0.2_0.55", "reversal", 110.0, 0.2),
+            mk_trade("BTC-5m", "reversal_0.2_0.55", "reversal", 120.0, -0.05),
+            mk_trade("XRP-5m", "reversal_0.3_0.6", "reversal", 130.0, 1.0),
+        ];
+        let summary = render_variant_totals_summary(&trades);
+        // Unlike render_variant_summary (per-market), the three reversal_0.2_0.55 trades
+        // across three different markets must collapse into one row.
+        assert!(summary.contains("| reversal_0.2_0.55 | 3 | 0 | 0 | 0 | 0.2500 |"));
+        assert!(summary.contains("| reversal_0.3_0.6 | 1 | 0 | 0 | 0 | 1.0000 |"));
+        assert!(summary.contains("Total pnl: 1.2500"));
     }
 
     #[test]
@@ -1304,5 +1460,81 @@ mod tests {
             "must be one merged trades section, not one per run"
         );
         assert_eq!(after_second.matches(RUN_MARKER).count(), 2);
+    }
+
+    #[test]
+    fn refresh_hour_trades_tables_recomputes_from_log_without_touching_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path();
+        let trade_log = dir.path().join("trades.jsonl");
+        let now = Utc::now().timestamp() as f64;
+        std::fs::write(
+            &trade_log,
+            format!(
+                "{{\"logged_at\":{now},\"market_kind\":\"crypto\",\"variant_id\":\"variant_alpha\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{now},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"TIMEOUT\",\"pnl\":0.1}}\n"
+            ),
+        )
+        .unwrap();
+
+        let snapshots: SharedSnapshots = Arc::new(Mutex::new(HashMap::new()));
+        crate::snapshot::update(
+            &snapshots,
+            "BTC-5m",
+            crate::snapshot::MarketSnapshot {
+                kind: "crypto",
+                label: "BTC-5m".to_string(),
+                up_price: 0.4242,
+                dn_price: 0.5758,
+                last_tick_ms: (now * 1000.0) as i64,
+            },
+        );
+        let stale_log = new_stale_log();
+        let cfg = SiglabConfig {
+            markets: vec![],
+            hourly_markets: vec![],
+            variants: vec![],
+        };
+
+        let path = write_hourly_report(
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(before.contains("variant_alpha"));
+        assert!(!before.contains("variant_beta"));
+        // The run-level crypto snapshot row is what refresh must leave untouched.
+        assert!(before.contains("0.4242"));
+
+        // A second trade lands in the trade log after the report was already written —
+        // refresh must pick it up from ground truth even though it wasn't there at write
+        // time.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&trade_log)
+            .unwrap();
+        use std::io::Write as _;
+        writeln!(
+            f,
+            "{{\"logged_at\":{now},\"market_kind\":\"crypto\",\"variant_id\":\"variant_beta\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{now},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"UNWIND\",\"pnl\":0.2}}"
+        )
+        .unwrap();
+
+        let written = refresh_hour_trades_tables(&trade_log, report_dir).unwrap();
+        assert_eq!(written, vec![path.clone()]);
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("variant_alpha") && after.contains("variant_beta"));
+        assert!(after.contains("PnL by variant (all markets)"));
+        // Untouched by the refresh: the run-level crypto snapshot row.
+        assert!(after.contains("0.4242"));
     }
 }

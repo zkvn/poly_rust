@@ -444,6 +444,31 @@ Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid v
 
 **Total pnl: -5.7545**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 13 | 2 | 11 | 0 | -1.0889 |
+| reversal_0.2_0.6 | 11 | 2 | 9 | 0 | -0.6542 |
+| reversal_0.2_0.65 | 12 | 1 | 11 | 0 | -0.4931 |
+| reversal_0.2_0.7 | 9 | 2 | 6 | 1 | -0.4465 |
+| reversal_0.2_0.75 | 9 | 1 | 7 | 1 | 0.1078 |
+| reversal_0.2_0.8 | 10 | 2 | 8 | 0 | -0.5558 |
+| reversal_0.3_0.55 | 22 | 2 | 20 | 0 | -1.1852 |
+| reversal_0.3_0.6 | 19 | 2 | 17 | 0 | -0.3687 |
+| reversal_0.3_0.65 | 20 | 1 | 19 | 0 | -0.3889 |
+| reversal_0.3_0.7 | 13 | 2 | 10 | 1 | -0.6191 |
+| reversal_0.3_0.75 | 11 | 1 | 9 | 1 | 0.2582 |
+| reversal_0.3_0.8 | 15 | 2 | 13 | 0 | -0.1784 |
+| reversal_0.4_0.55 | 31 | 2 | 29 | 0 | -1.6291 |
+| reversal_0.4_0.6 | 25 | 2 | 23 | 0 | 0.2068 |
+| reversal_0.4_0.65 | 26 | 1 | 25 | 0 | 0.2096 |
+| reversal_0.4_0.7 | 20 | 2 | 17 | 1 | 0.0665 |
+| reversal_0.4_0.75 | 16 | 1 | 14 | 1 | 0.7395 |
+| reversal_0.4_0.8 | 21 | 2 | 19 | 0 | 0.2650 |
+
+**Total pnl: -5.7545**
+
 <details>
 <summary>BNB-15m — 24 trade(s), total pnl 3.3198</summary>
 
@@ -1198,6 +1223,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | weather:tokyo:34°C | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0067 |
 | weather:tokyo:34°C | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.0522 |
 | weather:tokyo:34°C | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | 0.0066 |
+
+**Total pnl: 5.9179**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 13 | 0 | 11 | 2 | 0.7225 |
+| reversal_0.2_0.6 | 13 | 0 | 11 | 2 | 0.7225 |
+| reversal_0.2_0.65 | 13 | 0 | 11 | 2 | 0.6624 |
+| reversal_0.2_0.7 | 12 | 1 | 9 | 2 | 0.3729 |
+| reversal_0.2_0.75 | 13 | 1 | 12 | 0 | -0.1278 |
+| reversal_0.2_0.8 | 13 | 0 | 13 | 0 | -0.0581 |
+| reversal_0.3_0.55 | 20 | 0 | 18 | 2 | 0.5503 |
+| reversal_0.3_0.6 | 19 | 0 | 17 | 2 | 0.6139 |
+| reversal_0.3_0.65 | 19 | 0 | 17 | 2 | 0.6795 |
+| reversal_0.3_0.7 | 18 | 1 | 15 | 2 | 0.5702 |
+| reversal_0.3_0.75 | 20 | 1 | 19 | 0 | -0.1559 |
+| reversal_0.3_0.8 | 15 | 0 | 15 | 0 | 0.1292 |
+| reversal_0.4_0.55 | 36 | 0 | 34 | 2 | -0.4407 |
+| reversal_0.4_0.6 | 24 | 0 | 22 | 2 | 0.5220 |
+| reversal_0.4_0.65 | 25 | 0 | 23 | 2 | 0.7867 |
+| reversal_0.4_0.7 | 25 | 1 | 22 | 2 | 0.5856 |
+| reversal_0.4_0.75 | 24 | 1 | 23 | 0 | 0.0172 |
+| reversal_0.4_0.8 | 23 | 1 | 22 | 0 | -0.2345 |
 
 **Total pnl: 5.9179**
 
@@ -2062,6 +2112,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | weather:seoul:32°C | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0331 |
 | weather:seoul:32°C | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0072 |
 | weather:seoul:32°C | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | 0.0071 |
+
+**Total pnl: -2.8263**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 23 | 0 | 22 | 1 | 0.2592 |
+| reversal_0.2_0.6 | 24 | 0 | 23 | 1 | 0.0845 |
+| reversal_0.2_0.65 | 21 | 0 | 20 | 1 | -0.0271 |
+| reversal_0.2_0.7 | 22 | 0 | 21 | 1 | -0.0154 |
+| reversal_0.2_0.75 | 22 | 0 | 21 | 1 | -0.0820 |
+| reversal_0.2_0.8 | 19 | 0 | 18 | 1 | -0.2749 |
+| reversal_0.3_0.55 | 27 | 0 | 26 | 1 | 0.2145 |
+| reversal_0.3_0.6 | 28 | 0 | 27 | 1 | 0.0398 |
+| reversal_0.3_0.65 | 24 | 0 | 23 | 1 | -0.1046 |
+| reversal_0.3_0.7 | 25 | 0 | 24 | 1 | -0.1640 |
+| reversal_0.3_0.75 | 25 | 0 | 24 | 1 | -0.1583 |
+| reversal_0.3_0.8 | 23 | 1 | 21 | 1 | -0.7662 |
+| reversal_0.4_0.55 | 31 | 0 | 31 | 0 | 0.2003 |
+| reversal_0.4_0.6 | 32 | 0 | 32 | 0 | -0.1967 |
+| reversal_0.4_0.65 | 28 | 0 | 28 | 0 | -0.0492 |
+| reversal_0.4_0.7 | 31 | 0 | 31 | 0 | -0.2747 |
+| reversal_0.4_0.75 | 29 | 0 | 28 | 1 | -0.4603 |
+| reversal_0.4_0.8 | 29 | 1 | 27 | 1 | -1.0512 |
 
 **Total pnl: -2.8263**
 
@@ -3024,6 +3099,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | XRP-hourly-et | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | 0.0438 |
 | XRP-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.2053 |
 | XRP-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0119 |
+
+**Total pnl: 29.6932**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 29 | 0 | 21 | 8 | 3.2033 |
+| reversal_0.2_0.6 | 30 | 0 | 22 | 8 | 2.6253 |
+| reversal_0.2_0.65 | 27 | 0 | 22 | 5 | 2.3084 |
+| reversal_0.2_0.7 | 30 | 0 | 27 | 3 | 1.1851 |
+| reversal_0.2_0.75 | 25 | 1 | 22 | 2 | 0.8365 |
+| reversal_0.2_0.8 | 28 | 1 | 25 | 2 | 0.8473 |
+| reversal_0.3_0.55 | 37 | 0 | 27 | 10 | 3.0819 |
+| reversal_0.3_0.6 | 39 | 1 | 28 | 10 | 2.1478 |
+| reversal_0.3_0.65 | 35 | 1 | 28 | 6 | 1.6089 |
+| reversal_0.3_0.7 | 38 | 1 | 33 | 4 | 0.4856 |
+| reversal_0.3_0.75 | 32 | 1 | 28 | 3 | 0.4655 |
+| reversal_0.3_0.8 | 38 | 2 | 34 | 2 | 0.3019 |
+| reversal_0.4_0.55 | 44 | 0 | 32 | 12 | 3.5343 |
+| reversal_0.4_0.6 | 47 | 0 | 35 | 12 | 3.0486 |
+| reversal_0.4_0.65 | 43 | 1 | 33 | 9 | 2.1481 |
+| reversal_0.4_0.7 | 45 | 1 | 37 | 7 | 1.1843 |
+| reversal_0.4_0.75 | 41 | 2 | 33 | 6 | 0.2465 |
+| reversal_0.4_0.8 | 45 | 2 | 41 | 2 | 0.4339 |
 
 **Total pnl: 29.6932**
 
@@ -4111,6 +4211,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 2.0644**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 10 | 0 | 7 | 3 | 0.9022 |
+| reversal_0.2_0.6 | 9 | 0 | 6 | 3 | 0.9558 |
+| reversal_0.2_0.65 | 9 | 1 | 7 | 1 | -0.0063 |
+| reversal_0.2_0.7 | 9 | 1 | 8 | 0 | -0.2410 |
+| reversal_0.2_0.75 | 8 | 2 | 6 | 0 | -0.8118 |
+| reversal_0.2_0.8 | 8 | 3 | 5 | 0 | -1.3376 |
+| reversal_0.3_0.55 | 15 | 0 | 12 | 3 | 0.9444 |
+| reversal_0.3_0.6 | 14 | 0 | 11 | 3 | 0.9980 |
+| reversal_0.3_0.65 | 15 | 1 | 13 | 1 | -0.0020 |
+| reversal_0.3_0.7 | 15 | 1 | 14 | 0 | -0.0451 |
+| reversal_0.3_0.75 | 14 | 2 | 12 | 0 | -0.4429 |
+| reversal_0.3_0.8 | 13 | 2 | 11 | 0 | -1.3477 |
+| reversal_0.4_0.55 | 29 | 0 | 22 | 7 | 1.2925 |
+| reversal_0.4_0.6 | 28 | 0 | 21 | 7 | 1.3461 |
+| reversal_0.4_0.65 | 29 | 0 | 24 | 5 | 0.6497 |
+| reversal_0.4_0.7 | 29 | 0 | 25 | 4 | 0.6969 |
+| reversal_0.4_0.75 | 27 | 2 | 22 | 3 | -0.1702 |
+| reversal_0.4_0.8 | 26 | 1 | 25 | 0 | -1.3166 |
+
+**Total pnl: 2.0644**
+
 <details>
 <summary>BNB-15m — 6 trade(s), total pnl 0.4362</summary>
 
@@ -4837,6 +4962,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | XRP-5m | reversal_0.4_0.7 | 2 | 0 | 2 | 0 | 0.1431 |
 | XRP-5m | reversal_0.4_0.75 | 2 | 0 | 2 | 0 | 0.1431 |
 | XRP-5m | reversal_0.4_0.8 | 2 | 0 | 2 | 0 | 0.1431 |
+
+**Total pnl: 17.9133**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 12 | 0 | 11 | 1 | 1.1792 |
+| reversal_0.2_0.6 | 12 | 0 | 11 | 1 | 1.1792 |
+| reversal_0.2_0.65 | 12 | 0 | 11 | 1 | 1.1792 |
+| reversal_0.2_0.7 | 12 | 0 | 11 | 1 | 1.1025 |
+| reversal_0.2_0.75 | 12 | 0 | 11 | 1 | 1.0148 |
+| reversal_0.2_0.8 | 12 | 0 | 12 | 0 | 0.7838 |
+| reversal_0.3_0.55 | 14 | 0 | 13 | 1 | 0.9891 |
+| reversal_0.3_0.6 | 14 | 0 | 13 | 1 | 0.9891 |
+| reversal_0.3_0.65 | 14 | 0 | 13 | 1 | 0.9891 |
+| reversal_0.3_0.7 | 14 | 0 | 13 | 1 | 0.9124 |
+| reversal_0.3_0.75 | 14 | 0 | 13 | 1 | 0.8247 |
+| reversal_0.3_0.8 | 14 | 0 | 14 | 0 | 0.5768 |
+| reversal_0.4_0.55 | 26 | 0 | 25 | 1 | 1.6891 |
+| reversal_0.4_0.6 | 26 | 0 | 25 | 1 | 1.4539 |
+| reversal_0.4_0.65 | 26 | 0 | 25 | 1 | 1.3626 |
+| reversal_0.4_0.7 | 26 | 0 | 25 | 1 | 1.1048 |
+| reversal_0.4_0.75 | 26 | 1 | 24 | 1 | 0.4384 |
+| reversal_0.4_0.8 | 26 | 0 | 25 | 1 | 0.1446 |
 
 **Total pnl: 17.9133**
 
@@ -5585,6 +5735,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | weather:san-francisco:76-77°F | reversal_0.2_0.8 | 1 | 0 | 1 | 0 | 0.0303 |
 | weather:san-francisco:76-77°F | reversal_0.3_0.8 | 1 | 0 | 1 | 0 | 0.0303 |
 | weather:san-francisco:76-77°F | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | 0.0303 |
+
+**Total pnl: 8.6218**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 22 | 1 | 14 | 7 | 2.2518 |
+| reversal_0.2_0.6 | 22 | 1 | 14 | 7 | 2.0820 |
+| reversal_0.2_0.65 | 21 | 1 | 13 | 7 | 2.0288 |
+| reversal_0.2_0.7 | 21 | 1 | 16 | 4 | 0.9552 |
+| reversal_0.2_0.75 | 20 | 1 | 15 | 4 | 0.9556 |
+| reversal_0.2_0.8 | 19 | 1 | 17 | 1 | 0.3410 |
+| reversal_0.3_0.55 | 34 | 5 | 21 | 8 | -0.1736 |
+| reversal_0.3_0.6 | 31 | 2 | 21 | 8 | 1.1394 |
+| reversal_0.3_0.65 | 29 | 2 | 19 | 8 | 1.1766 |
+| reversal_0.3_0.7 | 28 | 2 | 21 | 5 | 0.1592 |
+| reversal_0.3_0.75 | 28 | 2 | 21 | 5 | 0.0461 |
+| reversal_0.3_0.8 | 26 | 2 | 22 | 2 | -0.1717 |
+| reversal_0.4_0.55 | 49 | 7 | 33 | 9 | -1.8912 |
+| reversal_0.4_0.6 | 46 | 4 | 33 | 9 | -0.6138 |
+| reversal_0.4_0.65 | 44 | 2 | 33 | 9 | 0.6404 |
+| reversal_0.4_0.7 | 40 | 2 | 32 | 6 | 0.2300 |
+| reversal_0.4_0.75 | 40 | 2 | 32 | 6 | -0.3084 |
+| reversal_0.4_0.8 | 37 | 2 | 32 | 3 | -0.2256 |
 
 **Total pnl: 8.6218**
 
@@ -6695,6 +6870,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 4.5430**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 22 | 0 | 20 | 2 | 0.6679 |
+| reversal_0.2_0.6 | 21 | 0 | 19 | 2 | 0.8662 |
+| reversal_0.2_0.65 | 21 | 0 | 19 | 2 | 0.4227 |
+| reversal_0.2_0.7 | 20 | 0 | 18 | 2 | 0.4560 |
+| reversal_0.2_0.75 | 22 | 0 | 21 | 1 | 0.1652 |
+| reversal_0.2_0.8 | 17 | 0 | 16 | 1 | -0.1613 |
+| reversal_0.3_0.55 | 29 | 0 | 26 | 3 | 0.8335 |
+| reversal_0.3_0.6 | 28 | 0 | 25 | 3 | 1.2578 |
+| reversal_0.3_0.65 | 27 | 0 | 25 | 2 | 0.3844 |
+| reversal_0.3_0.7 | 24 | 0 | 22 | 2 | 0.6314 |
+| reversal_0.3_0.75 | 26 | 0 | 25 | 1 | 0.3533 |
+| reversal_0.3_0.8 | 21 | 0 | 20 | 1 | -0.0507 |
+| reversal_0.4_0.55 | 50 | 1 | 45 | 4 | -2.5320 |
+| reversal_0.4_0.6 | 40 | 0 | 35 | 5 | 0.5984 |
+| reversal_0.4_0.65 | 31 | 0 | 28 | 3 | 0.3572 |
+| reversal_0.4_0.7 | 27 | 1 | 24 | 2 | 0.4803 |
+| reversal_0.4_0.75 | 29 | 2 | 26 | 1 | -0.1258 |
+| reversal_0.4_0.8 | 25 | 0 | 24 | 1 | -0.0615 |
+
+**Total pnl: 4.5430**
+
 <details>
 <summary>BNB-15m — 18 trade(s), total pnl -0.8490</summary>
 
@@ -7691,6 +7891,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | weather:san-francisco:78-79°F | reversal_0.4_0.65 | 2 | 0 | 2 | 0 | 0.0229 |
 | weather:toronto:33°C | reversal_0.4_0.55 | 1 | 0 | 1 | 0 | 0.0090 |
 | weather:toronto:33°C | reversal_0.4_0.65 | 1 | 0 | 1 | 0 | -0.0597 |
+
+**Total pnl: 2.9674**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 24 | 1 | 23 | 0 | 0.0917 |
+| reversal_0.2_0.6 | 22 | 1 | 21 | 0 | 0.2125 |
+| reversal_0.2_0.65 | 22 | 1 | 21 | 0 | 0.2914 |
+| reversal_0.2_0.7 | 21 | 1 | 20 | 0 | 0.0977 |
+| reversal_0.2_0.75 | 19 | 1 | 18 | 0 | -0.0640 |
+| reversal_0.2_0.8 | 14 | 1 | 13 | 0 | 0.2624 |
+| reversal_0.3_0.55 | 31 | 1 | 29 | 1 | 0.2465 |
+| reversal_0.3_0.6 | 27 | 1 | 26 | 0 | 0.2768 |
+| reversal_0.3_0.65 | 26 | 1 | 25 | 0 | 0.3805 |
+| reversal_0.3_0.7 | 25 | 1 | 24 | 0 | 0.1774 |
+| reversal_0.3_0.75 | 24 | 1 | 23 | 0 | -0.1081 |
+| reversal_0.3_0.8 | 21 | 1 | 20 | 0 | 0.3167 |
+| reversal_0.4_0.55 | 44 | 1 | 41 | 2 | 0.3001 |
+| reversal_0.4_0.6 | 39 | 1 | 37 | 1 | 0.2669 |
+| reversal_0.4_0.65 | 37 | 1 | 35 | 1 | 0.2262 |
+| reversal_0.4_0.7 | 32 | 1 | 30 | 1 | 0.1254 |
+| reversal_0.4_0.75 | 32 | 1 | 30 | 1 | -0.4155 |
+| reversal_0.4_0.8 | 26 | 1 | 25 | 0 | 0.2828 |
 
 **Total pnl: 2.9674**
 
@@ -8712,6 +8937,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | weather:toronto:32°C | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | -0.2250 |
 | weather:toronto:33°C | reversal_0.4_0.55 | 2 | 0 | 2 | 0 | -0.1681 |
 | weather:toronto:33°C | reversal_0.4_0.6 | 1 | 0 | 1 | 0 | 0.0000 |
+
+**Total pnl: 13.0149**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 30 | 0 | 24 | 6 | 1.4868 |
+| reversal_0.2_0.6 | 29 | 0 | 23 | 6 | 1.6363 |
+| reversal_0.2_0.65 | 26 | 0 | 23 | 3 | 1.0018 |
+| reversal_0.2_0.7 | 23 | 0 | 22 | 1 | -0.0092 |
+| reversal_0.2_0.75 | 21 | 0 | 20 | 1 | -0.0211 |
+| reversal_0.2_0.8 | 16 | 0 | 16 | 0 | -0.6116 |
+| reversal_0.3_0.55 | 38 | 0 | 32 | 6 | 1.5473 |
+| reversal_0.3_0.6 | 37 | 0 | 31 | 6 | 1.4741 |
+| reversal_0.3_0.65 | 31 | 0 | 28 | 3 | 1.0078 |
+| reversal_0.3_0.7 | 28 | 0 | 27 | 1 | 0.0140 |
+| reversal_0.3_0.75 | 27 | 0 | 25 | 2 | -0.0044 |
+| reversal_0.3_0.8 | 22 | 0 | 22 | 0 | -0.4616 |
+| reversal_0.4_0.55 | 63 | 0 | 55 | 8 | 0.7860 |
+| reversal_0.4_0.6 | 52 | 0 | 43 | 9 | 2.4215 |
+| reversal_0.4_0.65 | 44 | 0 | 40 | 4 | 1.8665 |
+| reversal_0.4_0.7 | 43 | 0 | 41 | 2 | 0.7640 |
+| reversal_0.4_0.75 | 40 | 0 | 37 | 3 | 0.4509 |
+| reversal_0.4_0.8 | 36 | 0 | 36 | 0 | -0.3342 |
 
 **Total pnl: 13.0149**
 
@@ -9821,6 +10071,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 
 **Total pnl: 9.0739**
 
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 11 | 0 | 9 | 2 | 0.5610 |
+| reversal_0.2_0.6 | 11 | 0 | 9 | 2 | 0.5610 |
+| reversal_0.2_0.65 | 10 | 0 | 9 | 1 | 0.2025 |
+| reversal_0.2_0.7 | 10 | 0 | 9 | 1 | -0.2075 |
+| reversal_0.2_0.75 | 12 | 0 | 12 | 0 | -0.0266 |
+| reversal_0.2_0.8 | 11 | 0 | 11 | 0 | 0.0348 |
+| reversal_0.3_0.55 | 21 | 0 | 19 | 2 | 0.6685 |
+| reversal_0.3_0.6 | 17 | 0 | 15 | 2 | 0.9954 |
+| reversal_0.3_0.65 | 16 | 0 | 15 | 1 | 0.5281 |
+| reversal_0.3_0.7 | 15 | 0 | 14 | 1 | -0.0390 |
+| reversal_0.3_0.75 | 16 | 0 | 16 | 0 | 0.1760 |
+| reversal_0.3_0.8 | 15 | 0 | 15 | 0 | 0.1248 |
+| reversal_0.4_0.55 | 47 | 0 | 40 | 7 | 1.4918 |
+| reversal_0.4_0.6 | 38 | 0 | 32 | 6 | 2.0282 |
+| reversal_0.4_0.65 | 38 | 0 | 34 | 4 | 1.3413 |
+| reversal_0.4_0.7 | 36 | 1 | 31 | 4 | 0.4070 |
+| reversal_0.4_0.75 | 40 | 1 | 33 | 6 | 0.2213 |
+| reversal_0.4_0.8 | 35 | 1 | 33 | 1 | 0.0053 |
+
+**Total pnl: 9.0739**
+
 <details>
 <summary>BNB-15m — 5 trade(s), total pnl -0.5467</summary>
 
@@ -10705,6 +10980,31 @@ _Regenerated from the trade log (2026-07-14 format backfill) — historical mark
 | XRP-hourly-et | reversal_0.4_0.7 | 1 | 0 | 1 | 0 | -0.1908 |
 | XRP-hourly-et | reversal_0.4_0.75 | 1 | 0 | 1 | 0 | -0.1908 |
 | XRP-hourly-et | reversal_0.4_0.8 | 1 | 0 | 1 | 0 | -0.0248 |
+
+**Total pnl: 14.7459**
+
+#### Summary: PnL by variant (all markets)
+
+| variant | trades | sl | timeout | unwind | total pnl |
+|---|---|---|---|---|---|
+| reversal_0.2_0.55 | 14 | 1 | 10 | 3 | 1.0566 |
+| reversal_0.2_0.6 | 14 | 1 | 10 | 3 | 1.0419 |
+| reversal_0.2_0.65 | 13 | 1 | 9 | 3 | 0.9470 |
+| reversal_0.2_0.7 | 13 | 1 | 10 | 2 | 0.6314 |
+| reversal_0.2_0.75 | 14 | 1 | 12 | 1 | 0.4973 |
+| reversal_0.2_0.8 | 14 | 1 | 12 | 1 | 0.3147 |
+| reversal_0.3_0.55 | 20 | 1 | 16 | 3 | 1.0349 |
+| reversal_0.3_0.6 | 21 | 1 | 17 | 3 | 0.9879 |
+| reversal_0.3_0.65 | 19 | 1 | 15 | 3 | 0.9653 |
+| reversal_0.3_0.7 | 20 | 1 | 17 | 2 | 0.5525 |
+| reversal_0.3_0.75 | 20 | 1 | 18 | 1 | 0.4807 |
+| reversal_0.3_0.8 | 20 | 1 | 18 | 1 | 0.2524 |
+| reversal_0.4_0.55 | 27 | 1 | 20 | 6 | 1.7634 |
+| reversal_0.4_0.6 | 28 | 1 | 22 | 5 | 1.5667 |
+| reversal_0.4_0.65 | 27 | 1 | 21 | 5 | 1.4937 |
+| reversal_0.4_0.7 | 30 | 2 | 24 | 4 | 0.3730 |
+| reversal_0.4_0.75 | 27 | 1 | 23 | 3 | 0.6959 |
+| reversal_0.4_0.8 | 28 | 1 | 26 | 1 | 0.0906 |
 
 **Total pnl: 14.7459**
 
