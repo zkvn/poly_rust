@@ -9,8 +9,496 @@ and does not claim. Weather and World Cup markets trade via a self-contained
 `bucket_reversal.rs` reversal engine (18 variants per bucket, no delta/Gamma/resolve —
 see that file's doc comment), separate from crypto's `trader::machine::Machine`.
 
-<!-- siglab-hour:2026-07-14T10 -->
+<!-- siglab-hour:2026-07-14T11 -->
 <details open>
+<summary><strong>2026-07-14 11:00 HKT — 1 report run(s), 22 trade(s) this hour, total pnl -0.0480</strong></summary>
+
+<!-- siglab-hour-body-start -->
+<!-- siglab-run -->
+<details>
+<summary>2026-07-14 11:08 HKT — 24 crypto market(s), 405 weather bucket(s), 334 World Cup bucket(s), 41 trade(s), 5000 stale event(s)</summary>
+
+<details>
+<summary>Trades (past 15 min): 41 trade(s)</summary>
+
+#### Summary: PnL by market and strategy
+
+| market | strategy | trades | total pnl |
+|---|---|---|---|
+| BTC-15m | reversal | 18 | -1.0062 |
+| DOGE-4h | reversal | 1 | -0.1046 |
+| DOGE-hourly-et | reversal | 6 | -0.5804 |
+| ETH-15m | reversal | 6 | 0.4578 |
+| SOL-15m | reversal | 6 | 0.2748 |
+| weather:busan:30°C | reversal | 4 | -0.2002 |
+
+**Total pnl: -1.1588**
+
+<details>
+<summary>BTC-15m — 18 trade(s), total pnl -1.0062</summary>
+
+| datetime (HKT) | variant | side | outcome | pnl |
+|---|---|---|---|---|
+| 2026-07-14 10:53:45 | reversal_0.2_0.55 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.2_0.6 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.2_0.65 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.2_0.7 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.2_0.75 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.2_0.8 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.3_0.55 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.3_0.6 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.3_0.65 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.3_0.7 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.3_0.75 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.3_0.8 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.4_0.55 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.4_0.6 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.4_0.65 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.4_0.7 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.4_0.75 | DOWN | TIMEOUT | -0.0559 |
+| 2026-07-14 10:53:45 | reversal_0.4_0.8 | DOWN | TIMEOUT | -0.0559 |
+
+</details>
+
+<details>
+<summary>DOGE-4h — 1 trade(s), total pnl -0.1046</summary>
+
+| datetime (HKT) | variant | side | outcome | pnl |
+|---|---|---|---|---|
+| 2026-07-14 10:59:05 | reversal_0.3_0.75 | DOWN | TIMEOUT | -0.1046 |
+
+</details>
+
+<details>
+<summary>DOGE-hourly-et — 6 trade(s), total pnl -0.5804</summary>
+
+| datetime (HKT) | variant | side | outcome | pnl |
+|---|---|---|---|---|
+| 2026-07-14 11:02:01 | reversal_0.3_0.6 | UP | TIMEOUT | -0.0687 |
+| 2026-07-14 11:02:01 | reversal_0.3_0.65 | UP | TIMEOUT | -0.0687 |
+| 2026-07-14 11:02:01 | reversal_0.4_0.6 | UP | TIMEOUT | -0.0687 |
+| 2026-07-14 11:02:01 | reversal_0.4_0.65 | UP | TIMEOUT | -0.0687 |
+| 2026-07-14 11:02:04 | reversal_0.3_0.7 | UP | TIMEOUT | -0.1528 |
+| 2026-07-14 11:02:04 | reversal_0.4_0.7 | UP | TIMEOUT | -0.1528 |
+
+</details>
+
+<details>
+<summary>ETH-15m — 6 trade(s), total pnl 0.4578</summary>
+
+| datetime (HKT) | variant | side | outcome | pnl |
+|---|---|---|---|---|
+| 2026-07-14 11:03:58 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0763 |
+| 2026-07-14 11:03:58 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0763 |
+| 2026-07-14 11:03:58 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0763 |
+| 2026-07-14 11:03:58 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.0763 |
+| 2026-07-14 11:03:58 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0763 |
+| 2026-07-14 11:03:58 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0763 |
+
+</details>
+
+<details>
+<summary>SOL-15m — 6 trade(s), total pnl 0.2748</summary>
+
+| datetime (HKT) | variant | side | outcome | pnl |
+|---|---|---|---|---|
+| 2026-07-14 11:03:48 | reversal_0.3_0.55 | DOWN | TIMEOUT | 0.0458 |
+| 2026-07-14 11:03:48 | reversal_0.3_0.6 | DOWN | TIMEOUT | 0.0458 |
+| 2026-07-14 11:03:48 | reversal_0.3_0.65 | DOWN | TIMEOUT | 0.0458 |
+| 2026-07-14 11:03:48 | reversal_0.4_0.55 | DOWN | TIMEOUT | 0.0458 |
+| 2026-07-14 11:03:48 | reversal_0.4_0.6 | DOWN | TIMEOUT | 0.0458 |
+| 2026-07-14 11:03:48 | reversal_0.4_0.65 | DOWN | TIMEOUT | 0.0458 |
+
+</details>
+
+<details>
+<summary>weather:busan:30°C — 4 trade(s), total pnl -0.2002</summary>
+
+| datetime (HKT) | variant | side | outcome | pnl |
+|---|---|---|---|---|
+| 2026-07-14 11:01:16 | reversal_0.3_0.6 | UP | TIMEOUT | -0.0238 |
+| 2026-07-14 11:01:16 | reversal_0.4_0.6 | UP | TIMEOUT | -0.0238 |
+| 2026-07-14 11:01:27 | reversal_0.3_0.65 | UP | TIMEOUT | -0.0763 |
+| 2026-07-14 11:01:27 | reversal_0.4_0.65 | UP | TIMEOUT | -0.0763 |
+
+</details>
+
+</details>
+
+<details>
+<summary>Crypto market state snapshot</summary>
+
+| market | up | down | age (s) |
+|---|---|---|---|
+| BNB-15m | 0.5650 | 0.4350 | 60.0 |
+| BNB-4h | 0.9500 | 0.0500 | 69.1 |
+| BNB-5m | 0.6200 | 0.3800 | 60.0 |
+| BNB-hourly-et | 0.5100 | 0.4900 | 60.4 |
+| BTC-15m | 0.2050 | 0.7950 | 59.9 |
+| BTC-4h | 0.8700 | 0.1300 | 59.9 |
+| BTC-5m | 0.0950 | 0.9050 | 59.9 |
+| BTC-hourly-et | 0.3750 | 0.6250 | 59.9 |
+| DOGE-15m | 0.8150 | 0.1850 | 60.1 |
+| DOGE-4h | 0.3650 | 0.6350 | 60.5 |
+| DOGE-5m | 0.7850 | 0.2150 | 60.0 |
+| DOGE-hourly-et | 0.6050 | 0.3950 | 60.3 |
+| ETH-15m | 0.2050 | 0.7950 | 59.9 |
+| ETH-4h | 0.7700 | 0.2300 | 59.9 |
+| ETH-5m | 0.2950 | 0.7050 | 59.9 |
+| ETH-hourly-et | 0.4050 | 0.5950 | 60.0 |
+| SOL-15m | 0.1250 | 0.8750 | 59.9 |
+| SOL-4h | 0.4950 | 0.5050 | 60.2 |
+| SOL-5m | 0.1550 | 0.8450 | 59.9 |
+| SOL-hourly-et | 0.3750 | 0.6250 | 59.9 |
+| XRP-15m | 0.8250 | 0.1750 | 59.9 |
+| XRP-4h | 0.4450 | 0.5550 | 60.2 |
+| XRP-5m | 0.5050 | 0.4950 | 59.9 |
+| XRP-hourly-et | 0.5850 | 0.4150 | 59.9 |
+
+</details>
+
+<details>
+<summary>Weather market state snapshot (49 reporting)</summary>
+
+| city | top outcome | probability | age (s) |
+|---|---|---|---|
+| amsterdam | 28°C | 0.485 | 60.2 |
+| ankara | 29°C | 0.535 | 60.5 |
+| atlanta | 82-83°F | 0.440 | 61.4 |
+| austin | 82-83°F | 0.360 | 60.2 |
+| beijing | 34°C | 0.410 | 61.7 |
+| buenos-aires | 16°C | 0.465 | 73.4 |
+| busan | 30°C | 0.655 | 60.1 |
+| cape-town | 16°C | 0.390 | 61.7 |
+| chengdu | 38°C | 0.415 | 61.5 |
+| chicago | 96-97°F | 0.445 | 60.7 |
+| chongqing | 42°C | 0.425 | 62.1 |
+| dallas | 86-87°F | 0.335 | 61.5 |
+| denver | 94-95°F | 0.545 | 73.6 |
+| guangzhou | 33°C | 0.385 | 60.3 |
+| helsinki | 24°C | 0.465 | 60.9 |
+| hong-kong | 29°C | 0.450 | 60.6 |
+| houston | 82-83°F | 0.365 | 60.0 |
+| istanbul | 25°C | 0.620 | 60.3 |
+| jeddah | 38°C or higher | 0.590 | 61.4 |
+| karachi | 32°C | 0.425 | 60.7 |
+| kuala-lumpur | 33°C | 0.465 | 61.7 |
+| london | 29°C | 0.450 | 68.4 |
+| los-angeles | 74-75°F | 0.555 | 60.2 |
+| lucknow | 37°C | 0.333 | 63.4 |
+| madrid | 37°C | 0.685 | 61.8 |
+| manila | 33°C | 0.515 | 60.4 |
+| mexico-city | 25°C | 0.415 | 60.2 |
+| miami | 92-93°F | 0.510 | 63.9 |
+| milan | 34°C | 0.485 | 60.2 |
+| moscow | 25°C | 0.490 | 67.1 |
+| munich | 29°C | 0.400 | 60.0 |
+| nyc | 96-97°F | 0.545 | 60.2 |
+| panama-city | 33°C | 0.465 | 65.1 |
+| paris | 35°C | 0.475 | 62.2 |
+| qingdao | 31°C | 0.410 | 60.9 |
+| san-francisco | 76-77°F | 0.360 | 62.8 |
+| sao-paulo | 18°C | 0.505 | 70.7 |
+| seattle | 82-83°F | 0.435 | 60.2 |
+| seoul | 32°C | 0.875 | 60.5 |
+| shanghai | 36°C | 0.581 | 60.4 |
+| shenzhen | 29°C | 0.405 | 60.3 |
+| singapore | 32°C | 0.755 | 60.7 |
+| taipei | 35°C | 0.375 | 63.5 |
+| tel-aviv | 32°C | 0.550 | 72.1 |
+| tokyo | 34°C | 0.600 | 60.0 |
+| toronto | 36°C | 0.385 | 60.1 |
+| warsaw | 26°C | 0.405 | 60.1 |
+| wellington | 15°C | 0.980 | 60.6 |
+| wuhan | 38°C | 0.435 | 61.5 |
+
+</details>
+
+<details>
+<summary>World Cup market state snapshot (52 reporting)</summary>
+
+| event | top outcome | probability | age (s) |
+|---|---|---|---|
+| another-world-cup-card-reversed-20260706193823524 | Another World Cup card reversed? | 0.020 | 1483.6 |
+| how-many-world-cup-matches-will-trump-attend-20260610185739769 | 1 | 0.963 | 61.7 |
+| president-trump-to-attend-world-cup-final-20260608152749044 | President Trump to Attend World Cup Final? | 0.948 | 63.1 |
+| what-song-will-be-played-first-at-the-world-cup-halftime-show-20260703154131021 | Vogue | 0.385 | 77.5 |
+| what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487 | Dai Dai | 0.986 | 10310.2 |
+| which-continent-will-win-the-world-cup | Europe (UEFA) | 0.825 | 66.6 |
+| who-will-perform-at-world-cup-halftime-show | Shakira | 0.994 | 309.8 |
+| will-messi-and-ronaldo-shake-hands-during-world-cup-20260609221211643 | Will Messi and Ronaldo Shake Hands During World Cup? | 0.007 | 96.9 |
+| world-cup-3rd-place-game-exact-matchup-20260708194423346 | ESP vs ARG | 0.335 | 61.1 |
+| world-cup-argentina-stage-of-elimination | Semifinals | 0.552 | 60.6 |
+| world-cup-boot-brand-worn-by-golden-ball-winner-20260623194803363 | Adidas | 0.385 | 70.7 |
+| world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153 | Nike | 0.600 | 97.9 |
+| world-cup-bronze-ball-winner-20260603194938828 | Lionel Messi | 0.208 | 61.0 |
+| world-cup-bronze-boot-winner-20260603200444388 | Harry Kane | 0.385 | 299.8 |
+| world-cup-continent-to-score-the-most-goals-20260612155037505 | Europe (UEFA) | 0.998 | 95.9 |
+| world-cup-england-stage-of-elimination | Semifinals | 0.445 | 65.0 |
+| world-cup-fair-play-award-winner-20260603201520240 | Norway | 0.818 | 60.1 |
+| world-cup-fastest-goal-in-a-final-record-broken-20260609182956386 | World Cup: Fastest Goal in a Final Record Broken? | 0.011 | 83.8 |
+| world-cup-finals-exact-matchup-20260708195422328 | FRA vs ENG | 0.335 | 60.3 |
+| world-cup-france-stage-of-elimination | Semifinals | 0.405 | 65.3 |
+| world-cup-furthest-advancing-uefa-nation | France | 0.475 | 63.9 |
+| world-cup-goalkeeper-to-score-20260607161409835 | World Cup: Goalkeeper to Score? | 0.008 | 120.9 |
+| world-cup-golden-ball-winner-20260603194031758 | Kylian Mbappé | 0.405 | 65.0 |
+| world-cup-golden-boot-winner | Kylian Mbappe | 0.565 | 66.2 |
+| world-cup-golden-glove-winner-20260603195306910 | Mike Maignan | 0.360 | 121.7 |
+| world-cup-group-of-champion-20260605001357294 | Group I (Senegal, Norway, France, Iraq) | 0.395 | 204.4 |
+| world-cup-julian-alvarez-goals-20260611150351743 | 2+ | 0.405 | 186.7 |
+| world-cup-kylian-mbappe-goals-20260611144016735 | 9+ | 0.690 | 73.8 |
+| world-cup-lamine-yamal-goals-20260610223923587 | 2+ | 0.480 | 205.5 |
+| world-cup-lionel-messi-goals-20260611144827122 | 9+ | 0.610 | 97.0 |
+| world-cup-messi-to-score-2-penalties-20260605004829032 | World Cup: Messi to Score 2+ Penalties? | 0.080 | 75.6 |
+| world-cup-most-assists | Michael Olise | 0.923 | 74.6 |
+| world-cup-most-clean-sheets-gk | Mike Maignan | 0.186 | 134.9 |
+| world-cup-most-goal-contributions | Kylian Mbappé | 0.695 | 67.9 |
+| world-cup-most-goals-record-broken-20260608192914170 | World Cup: Most Player Goals Record Broken? | 0.011 | 141.4 |
+| world-cup-nation-of-top-goalscorer | France | 0.555 | 62.0 |
+| world-cup-nation-to-reach-final | France | 0.595 | 62.6 |
+| world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234 | 5+ matches | 0.565 | 186.3 |
+| world-cup-nopt-of-matches-suspended-by-weather-protocol-20260610211248548 | 4+ matches | 0.110 | 544.9 |
+| world-cup-nopt-of-matches-to-go-to-extra-time-20260610205948193 | 9+ matches | 0.800 | 126.1 |
+| world-cup-number-of-missed-penalties-20260610205749652 | 10+ missed penalties | 0.013 | 62.0 |
+| world-cup-player-to-score | Michael Olise | 0.365 | 136.9 |
+| world-cup-shirt-manufacturer-worn-by-champion-20260623192343445 | Nike | 0.605 | 79.8 |
+| world-cup-silver-ball-winner-20260603194459107 | Lionel Messi | 0.387 | 60.0 |
+| world-cup-silver-boot-winner-20260603195826159 | Lionel Messi | 0.475 | 136.0 |
+| world-cup-single-match-yellow-cards-record-broken-20260608181825534 | World Cup: Single Match Yellow Cards Record Broken? | 0.005 | 119.9 |
+| world-cup-spain-stage-of-elimination | Semifinals | 0.595 | 134.6 |
+| world-cup-team-with-the-most-clean-sheets-20260612153557923 | Spain | 0.805 | 63.5 |
+| world-cup-top-scorer-nation | France | 0.540 | 82.7 |
+| world-cup-unbeaten-champion |  | 1.000 | 201.3 |
+| world-cup-winner | France | 0.390 | 59.9 |
+| world-cup-young-player-award-winner-20260602160649063 | Lamine Yamal | 0.430 | 61.1 |
+
+</details>
+
+<details>
+<summary>Staleness events (observe-only — no auto action taken)</summary>
+
+| market | silent (ms) | bucket crossed (ms) |
+|---|---|---|
+| weather:buenos-aires:20°C:poly | 13295 | 10000 |
+| worldcup:world-cup-player-to-score:Pau Cubarsí:poly | 31570 | 30000 |
+| worldcup:world-cup-player-to-score:Marc Cucurella:poly | 12260 | 10000 |
+| worldcup:world-cup-finals-exact-matchup-20260708195422328:ESP vs ENG:poly | 12966 | 10000 |
+| worldcup:world-cup-kylian-mbappe-goals-20260611144016735:13+:poly | 34225 | 30000 |
+| weather:miami:86-87°F:poly | 10354 | 10000 |
+| worldcup:world-cup-nopt-of-matches-suspended-by-weather-protocol-20260610211248548:5+ matches:poly | 11874 | 10000 |
+| worldcup:world-cup-player-to-score:Declan Rice:poly | 31500 | 30000 |
+| weather:toronto:38°C:poly | 12269 | 10000 |
+| weather:san-francisco:78-79°F:poly | 13810 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Mikel Oyarzabal:poly | 10690 | 10000 |
+| worldcup:world-cup-player-to-score:William Saliba:poly | 12231 | 10000 |
+| weather:milan:35°C:poly | 12701 | 10000 |
+| weather:tel-aviv:34°C:poly | 10369 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Ed Sheeran:poly | 32817 | 30000 |
+| weather:lucknow:34°C:poly | 14600 | 10000 |
+| weather:chengdu:35°C:poly | 14809 | 10000 |
+| weather:toronto:40°C:poly | 14638 | 10000 |
+| weather:milan:31°C:poly | 13492 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Wizkid:poly | 12508 | 10000 |
+| weather:milan:30°C:poly | 13491 | 10000 |
+| worldcup:world-cup-most-assists:Bukayo Saka:poly | 14610 | 10000 |
+| weather:san-francisco:71°F or below:poly | 13734 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Pitbull:poly | 34239 | 30000 |
+| worldcup:world-cup-boot-brand-worn-by-golden-ball-winner-20260623194803363:Skechers:poly | 32856 | 30000 |
+| worldcup:world-cup-julian-alvarez-goals-20260611150351743:3+:poly | 11807 | 10000 |
+| weather:toronto:39°C:poly | 11569 | 10000 |
+| weather:milan:37°C:poly | 13485 | 10000 |
+| weather:miami:100-101°F:poly | 10363 | 10000 |
+| worldcup:world-cup-julian-alvarez-goals-20260611150351743:6+:poly | 33044 | 30000 |
+| worldcup:what-song-will-be-played-first-at-the-world-cup-halftime-show-20260703154131021:Waka Waka:poly | 124971 | 120000 |
+| weather:helsinki:21°C:poly | 11594 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Bruno Mars:poly | 12445 | 10000 |
+| worldcup:world-cup-finals-exact-matchup-20260708195422328:ESP vs ARG:poly | 14851 | 10000 |
+| worldcup:world-cup-golden-glove-winner-20260603195306910:Diogo Costa:poly | 11983 | 10000 |
+| worldcup:world-cup-player-to-score:Pedri:poly | 33677 | 30000 |
+| weather:houston:78-79°F:poly | 30310 | 30000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Ousmane Dembélé:poly | 10742 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Jude Bellingham:poly | 14769 | 10000 |
+| weather:nyc:100-101°F:poly | 11052 | 10000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:5+:poly | 11838 | 10000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:6+:poly | 62638 | 60000 |
+| weather:tel-aviv:31°C:poly | 10370 | 10000 |
+| weather:helsinki:23°C:poly | 12395 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Burna Boy:poly | 12527 | 10000 |
+| weather:cape-town:14°C:poly | 10282 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Coldplay:poly | 12552 | 10000 |
+| weather:san-francisco:88-89°F:poly | 13945 | 10000 |
+| worldcup:world-cup-silver-ball-winner-20260603194459107:Jude Bellingham:poly | 14630 | 10000 |
+| weather:nyc:88-89°F:poly | 11638 | 10000 |
+| weather:jeddah:37°C:poly | 13790 | 10000 |
+| weather:nyc:87°F or below:poly | 30102 | 30000 |
+| worldcup:world-cup-player-to-score:Marc Guéhi:poly | 34402 | 30000 |
+| worldcup:what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487:Chantaje:poly | 33844 | 30000 |
+| weather:london:27°C:poly | 10571 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Antonio Nusa:poly | 10581 | 10000 |
+| worldcup:world-cup-nopt-of-matches-decided-by-penalty-shootout-20260610210228234:7+ matches:poly | 11715 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Mikel Oyarzabal:poly | 11917 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Ousmane Dembélé:poly | 10843 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:João Neves:poly | 10581 | 10000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:Nike:poly | 14014 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Rihanna:poly | 11696 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Lautaro Martínez:poly | 30653 | 30000 |
+| worldcup:world-cup-player-to-score:Bukayo Saka:poly | 10162 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:South Africa:poly | 11927 | 10000 |
+| weather:shanghai:35°C:poly | 13865 | 10000 |
+| worldcup:world-cup-golden-glove-winner-20260603195306910:Jordan Pickford:poly | 14302 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Dua Lipa:poly | 13771 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:SZA:poly | 31278 | 30000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:2+:poly | 11394 | 10000 |
+| weather:jeddah:35°C:poly | 10767 | 10000 |
+| worldcup:world-cup-player-to-score:Ferran Torres:poly | 11505 | 10000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:FRA vs ARG:poly | 12753 | 10000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Lamine Yamal:poly | 14799 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Uruguay:poly | 11917 | 10000 |
+| worldcup:world-cup-winner:Argentina:poly | 11499 | 10000 |
+| weather:moscow:27°C:poly | 10710 | 10000 |
+| weather:helsinki:28°C:poly | 13955 | 10000 |
+| weather:buenos-aires:13°C:poly | 10874 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Rayan:poly | 10610 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Drake:poly | 12700 | 10000 |
+| worldcup:world-cup-golden-boot-winner:Ousmane Dembele:poly | 14535 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Karol G:poly | 33481 | 30000 |
+| weather:panama-city:37°C:poly | 13325 | 10000 |
+| worldcup:world-cup-kylian-mbappe-goals-20260611144016735:11+:poly | 11532 | 10000 |
+| weather:moscow:24°C:poly | 13882 | 10000 |
+| weather:manila:32°C:poly | 10312 | 10000 |
+| weather:moscow:22°C:poly | 14397 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Yan Diomande:poly | 10769 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Lucas Bergvall:poly | 10611 | 10000 |
+| worldcup:world-cup-player-to-score:Gavi:poly | 12820 | 10000 |
+| weather:helsinki:25°C:poly | 13629 | 10000 |
+| weather:paris:31°C or below:poly | 13971 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Kylian Mbappé:poly | 30657 | 30000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Ferran Torres:poly | 30653 | 30000 |
+| weather:busan:35°C:poly | 13624 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:J Balvin:poly | 11679 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Rayan Cherki:poly | 10805 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Kylian Mbappé:poly | 11917 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Geovany Quenda:poly | 10610 | 10000 |
+| weather:cape-town:11°C:poly | 12828 | 10000 |
+| weather:lucknow:33°C:poly | 13777 | 10000 |
+| worldcup:world-cup-nation-of-top-goalscorer:England:poly | 11598 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Nico Paz:poly | 10610 | 10000 |
+| weather:london:26°C:poly | 10758 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Charli XCX:poly | 60810 | 60000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Lamine Yamal:poly | 30655 | 30000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:Adidas:poly | 10581 | 10000 |
+| worldcup:world-cup-most-goal-contributions:Kylian Mbappé:poly | 11611 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Beyoncé:poly | 62139 | 60000 |
+| weather:buenos-aires:19°C:poly | 10965 | 10000 |
+| worldcup:world-cup-nation-of-top-goalscorer:Argentina:poly | 11989 | 10000 |
+| worldcup:world-cup-lionel-messi-goals-20260611144827122:9+:poly | 12279 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Erling Haaland:poly | 14519 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Adele:poly | 61885 | 60000 |
+| weather:qingdao:32°C:poly | 11832 | 10000 |
+| weather:atlanta:74-75°F:poly | 33137 | 30000 |
+| weather:qingdao:33°C:poly | 10109 | 10000 |
+| worldcup:world-cup-player-to-score:Martin Zubimendi:poly | 13473 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Bukayo Saka:poly | 10931 | 10000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:FRA vs ENG:poly | 11717 | 10000 |
+| worldcup:world-cup-bronze-ball-winner-20260603194938828:Lamine Yamal:poly | 12935 | 10000 |
+| worldcup:world-cup-most-goal-contributions:Lionel Messi:poly | 13599 | 10000 |
+| worldcup:world-cup-most-goal-contributions:Lamine Yamal:poly | 11804 | 10000 |
+| worldcup:world-cup-player-to-score:Rodri:poly | 11714 | 10000 |
+| worldcup:world-cup-lionel-messi-goals-20260611144827122:12+:poly | 11625 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Senegal:poly | 11927 | 10000 |
+| worldcup:will-messi-and-ronaldo-shake-hands-during-world-cup-20260609221211643:Will Messi and Ronaldo Shake Hands During World Cup?:poly | 14205 | 10000 |
+| worldcup:world-cup-nation-of-top-goalscorer:France:poly | 12787 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Ariana Grande:poly | 13607 | 10000 |
+| worldcup:world-cup-lamine-yamal-goals-20260610223923587:4+:poly | 13427 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Kobbie Mainoo:poly | 10581 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:England:poly | 11927 | 10000 |
+| weather:denver:94-95°F:poly | 12891 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Netherlands:poly | 11927 | 10000 |
+| worldcup:world-cup-kylian-mbappe-goals-20260611144016735:9+:poly | 11586 | 10000 |
+| worldcup:world-cup-young-player-award-winner-20260602160649063:Kenan Yıldız:poly | 10581 | 10000 |
+| worldcup:which-continent-will-win-the-world-cup:South America (CONMEBOL):poly | 11509 | 10000 |
+| worldcup:world-cup-boot-brand-worn-by-golden-ball-winner-20260623194803363:Adidas:poly | 201585 | 200000 |
+| weather:london:28°C:poly | 10756 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Mexico:poly | 11927 | 10000 |
+| weather:kuala-lumpur:32°C:poly | 10908 | 10000 |
+| weather:london:32°C:poly | 10718 | 10000 |
+| weather:helsinki:24°C:poly | 12529 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Lamine Yamal:poly | 11917 | 10000 |
+| worldcup:world-cup-golden-ball-winner-20260603194031758:Ousmane Dembélé:poly | 10804 | 10000 |
+| worldcup:world-cup-group-of-champion-20260605001357294:Group I (Senegal, Norway, France, Iraq):poly | 10323 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Sam Smith:poly | 11482 | 10000 |
+| weather:moscow:20°C:poly | 14449 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Germany:poly | 11927 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Billie Eilish:poly | 12725 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Nicki Minaj:poly | 11489 | 10000 |
+| worldcup:world-cup-player-to-score:Dani Olmo:poly | 11540 | 10000 |
+| weather:panama-city:28°C or below:poly | 13551 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Cape Verde:poly | 11927 | 10000 |
+| weather:istanbul:27°C:poly | 14126 | 10000 |
+| worldcup:world-cup-group-of-champion-20260605001357294:Group H (Cape Verde, Uruguay, Spain, Saudi Arabia):poly | 12705 | 10000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Álvaro Morata:poly | 11917 | 10000 |
+| worldcup:world-cup-3rd-place-game-exact-matchup-20260708194423346:ESP vs ARG:poly | 11719 | 10000 |
+| weather:moscow:25°C:poly | 14106 | 10000 |
+| worldcup:world-cup-bronze-boot-winner-20260603200444388:Erling Haaland:poly | 34520 | 30000 |
+| weather:shanghai:39°C or higher:poly | 10963 | 10000 |
+| worldcup:world-cup-fair-play-award-winner-20260603201520240:Iran:poly | 11927 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Davido:poly | 61884 | 60000 |
+| worldcup:world-cup-silver-boot-winner-20260603195826159:Lionel Messi:poly | 31975 | 30000 |
+| weather:madrid:36°C:poly | 13523 | 10000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:New Balance:poly | 13180 | 10000 |
+| weather:istanbul:30°C:poly | 14144 | 10000 |
+| worldcup:world-cup-most-clean-sheets-gk:Mike Maignan:poly | 32133 | 30000 |
+| worldcup:world-cup-nation-to-reach-final:Argentina:poly | 11512 | 10000 |
+| weather:london:25°C:poly | 10764 | 10000 |
+| weather:cape-town:18°C:poly | 12652 | 10000 |
+| weather:paris:32°C:poly | 10643 | 10000 |
+| worldcup:world-cup-boot-sponsor-worn-by-golden-boot-winner-20260623194235153:Puma:poly | 201583 | 200000 |
+| weather:lucknow:32°C:poly | 13775 | 10000 |
+| weather:paris:35°C:poly | 10612 | 10000 |
+| weather:istanbul:28°C:poly | 14127 | 10000 |
+| weather:madrid:33°C or below:poly | 63180 | 60000 |
+| weather:miami:88-89°F:poly | 31734 | 30000 |
+| weather:jeddah:34°C:poly | 13756 | 10000 |
+| worldcup:what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487:Sorry:poly | 13809 | 10000 |
+| worldcup:world-cup-kylian-mbappe-goals-20260611144016735:10+:poly | 10715 | 10000 |
+| worldcup:world-cup-top-scorer-nation:France:poly | 12008 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Camila Cabello:poly | 33700 | 30000 |
+| weather:chongqing:45°C:poly | 10222 | 10000 |
+| weather:istanbul:23°C:poly | 13465 | 10000 |
+| weather:istanbul:26°C:poly | 13464 | 10000 |
+| worldcup:world-cup-player-to-score:Marcus Thuram:poly | 12289 | 10000 |
+| weather:helsinki:26°C:poly | 30979 | 30000 |
+| weather:helsinki:22°C:poly | 12141 | 10000 |
+| weather:cape-town:17°C:poly | 30361 | 30000 |
+| worldcup:world-cup-number-of-missed-penalties-20260610205749652:20+ missed penalties:poly | 61115 | 60000 |
+| worldcup:world-cup-unbeaten-champion::poly | 12294 | 10000 |
+| worldcup:world-cup-kylian-mbappe-goals-20260611144016735:12+:poly | 12481 | 10000 |
+| weather:moscow:23°C:poly | 30817 | 30000 |
+| weather:ankara:31°C:poly | 13270 | 10000 |
+| weather:mexico-city:22°C:poly | 12467 | 10000 |
+| worldcup:who-will-perform-at-world-cup-halftime-show:Shakira:poly | 120755 | 120000 |
+| weather:qingdao:30°C:poly | 32172 | 30000 |
+| worldcup:what-songs-will-be-played-at-the-world-cup-halftime-show-20260704165911487:Champions (IShowSpeed):poly | 30500 | 30000 |
+
+_... and 4800 more._
+
+</details>
+
+<details>
+<summary>CPU / memory</summary>
+
+- CPU (avg over this run's window, one-core=100%): **44.04%**
+- Memory (current): **243.3 MiB**
+
+</details>
+
+</details>
+
+<!-- siglab-hour-body-end -->
+</details>
+
+<!-- siglab-hour:2026-07-14T10 -->
+<details>
 <summary><strong>2026-07-14 10:00 HKT — 4 report run(s), 326 trade(s) this hour, total pnl 7.0287</strong></summary>
 
 <!-- siglab-hour-body-start -->
