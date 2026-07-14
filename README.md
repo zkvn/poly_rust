@@ -151,12 +151,14 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **`../btc_5mins/bot/backtest.py`'s `_replay_all` has the identical TIMEOUT/halt gap this repo
-  just fixed — found and checked 2026-07-14, not fixed (explicitly out of scope for `poly_rust`).**
-  Line ~1490 only counts `LOSS`/`STOPLOSS` toward `losses_rev`/`losses_hp`, same as the Rust bug
-  fixed in `trader/doc/incident_eth_timeout_halt_gap_2026-07-14.md` — a losing `TIMEOUT` in a
-  `bt2.py` sweep never trips the halt there either. Flagging for the user's own attention on that
-  project; not touched here per direction to only check, not fix, the sibling.
+- ~~`../btc_5mins/bot/backtest.py`'s `_replay_all` has the identical TIMEOUT/halt gap this repo
+  just fixed~~ — **fixed 2026-07-14 in `btc_5mins`** (same day, same fix: `TIMEOUT` now counts
+  toward `losses_rev`/`losses_hp` only when its `pnl < 0`), ported to `_replay_all` and both
+  njit/cuda sweep kernels there. See `btc_5mins/CLAUDE.md` "Sweep engine parity across cycle
+  lengths" 2026-07-14 follow-up for the writeup, including a rounding-boundary parity bug the
+  kernel port hit and fixed along the way (raw-vs-rounded pnl comparison near zero) that this
+  repo's own `Outcome::is_loss_for_halt` fix didn't need to worry about (Rust's fix operates on
+  the already-computed `TradeRecord.pnl`, not a pre-rounding intermediate).
 
 - **`trader/src/config.rs`/`config_log.rs` have 4 pre-existing test failures from config drift —
   found 2026-07-14 while verifying an unrelated halt fix, not fixed.** `load_and_resolve_btc`,
