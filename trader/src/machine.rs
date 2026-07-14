@@ -64,6 +64,7 @@ pub struct Machine {
     cycle_open_binance: f64,
     pub last_binance: f64,
     cycle_start_ts: f64,
+    cycle_end_ts: f64,
     cycle_slug: String,
     // Cached config
     sl: f64,     // strategy-specific absolute SL floor (0 = disabled)
@@ -78,6 +79,15 @@ pub struct Machine {
 fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
+
+/// Seconds before cycle-end at which a still-open position is force-closed, labeled
+/// `Outcome::Unwind` regardless of whether the take-profit price was actually reached.
+/// Added 2026-07-14 so a position entered late in a cycle can no longer ride to a natural
+/// WIN/LOSS cycle-close — `unwind_time`'s elapsed-*holding*-time cap alone doesn't cover
+/// that case (an entry with less than `unwind_time` left in the cycle would otherwise still
+/// resolve via `cycle_close`). `siglab`/`backtest.rs` path only — `worker.rs` (the live
+/// driver) is untouched; see `siglab/doc/incident_same_entry_ts_2026-07-14.md`.
+const FORCE_UNWIND_BEFORE_CYCLE_END_SECS: f64 = 10.0;
 
 impl Machine {
     pub fn new_reversal(p: &AssetParams) -> Self {
@@ -105,6 +115,7 @@ impl Machine {
             cycle_open_binance: 0.0,
             last_binance: 0.0,
             cycle_start_ts: 0.0,
+            cycle_end_ts: 0.0,
             cycle_slug: String::new(),
             sl: p.sl_reversal,
             sl_pnl: p.sl_pnl_rev,
@@ -150,6 +161,7 @@ impl Machine {
             cycle_open_binance: 0.0,
             last_binance: 0.0,
             cycle_start_ts: 0.0,
+            cycle_end_ts: 0.0,
             cycle_slug: String::new(),
             sl: p.sl_high_prob,
             sl_pnl: p.sl_pnl_hp,
@@ -184,6 +196,7 @@ impl Machine {
         self.cycle_open_binance = ctx.open_binance;
         self.last_binance = ctx.open_binance;
         self.cycle_start_ts = ctx.start_ts;
+        self.cycle_end_ts = ctx.end_ts;
         self.cycle_slug = slug.to_string();
 
         self.state = if entry_suppressed {
@@ -236,7 +249,14 @@ impl Machine {
             return self.emit(h, Outcome::Unwind, tp_exit, pnl);
         }
 
-        // 4. Max holding time (checked last, after every other exit condition —
+        // 4. Force-unwind near cycle end (checked before the elapsed-holding-time
+        // timeout below — guarantees no position rides to a natural WIN/LOSS
+        // cycle-close; see FORCE_UNWIND_BEFORE_CYCLE_END_SECS's doc comment).
+        if let Some(rec) = self.check_cycle_end_unwind(&h, tick.ts, exit_price) {
+            return Some(rec);
+        }
+
+        // 5. Max holding time (checked last, after every other exit condition —
         // matches worker.rs's live ordering and the original Python
         // _replay_cycle order; see trader/doc/plan_unwind_time_2026-07-08.md).
         if let Some(rec) = self.check_timeout(&h, tick.ts, exit_price) {
@@ -264,11 +284,34 @@ impl Machine {
             } else {
                 self.latest_poly.dn()
             };
+            if let Some(rec) = self.check_cycle_end_unwind(&h, tick.ts, exit_price) {
+                return Some(rec);
+            }
             return self.check_timeout(&h, tick.ts, exit_price);
         }
 
         self.try_enter(tick.ts);
         None
+    }
+
+    /// Force-close a held position once fewer than `FORCE_UNWIND_BEFORE_CYCLE_END_SECS`
+    /// remain before the cycle ends, at whatever the current market price is — labeled
+    /// `Outcome::Unwind` even when the take-profit price was never actually reached; see
+    /// that constant's doc comment for why. Checked before `check_timeout` on both the
+    /// poly and binance paths.
+    fn check_cycle_end_unwind(
+        &mut self,
+        h: &HoldingData,
+        now: f64,
+        exit_price: f64,
+    ) -> Option<TradeRecord> {
+        if self.cycle_end_ts <= 0.0 || self.cycle_end_ts - now > FORCE_UNWIND_BEFORE_CYCLE_END_SECS
+        {
+            return None;
+        }
+        let shares = self.trade_size / h.token_price;
+        let pnl = round4(shares * exit_price - self.trade_size);
+        self.emit(h.clone(), Outcome::Unwind, exit_price, pnl)
     }
 
     /// Force-close a held position once it's been open >= `unwind_time`, at
@@ -560,16 +603,83 @@ mod tests {
         let p = btc_params(); // unwind_time_rev defaults to 0.0 (disabled)
         let mut m = enter_down_position(&p);
 
+        // Far past entry (would have timed out at any reasonable unwind_time), but still
+        // inside the cycle and outside the FORCE_UNWIND_BEFORE_CYCLE_END_SECS window
+        // (cycle ends at 1300.0 — see ctx(1_000.0)/enter_down_position) — isolates
+        // "unwind_time=0 disables the elapsed-holding-time check" from the separate,
+        // always-on cycle-end force-unwind tested below.
         let rec = m.on_poly(PolyTick {
-            ts: 1250.0 + 10_000.0, // far past any reasonable threshold
+            ts: 1280.0,
             up: 0.35,
             dn: 0.65,
         });
         assert!(
             rec.is_none(),
-            "unwind_time=0.0 must disable the timeout check entirely"
+            "unwind_time=0.0 must disable the elapsed-holding-time timeout check"
         );
         assert!(m.is_holding());
+    }
+
+    /// A position still open inside `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` of cycle-end must
+    /// force-close labeled `Unwind`, at the current price, regardless of `unwind_time` (even
+    /// disabled, as here) — added 2026-07-14 so late-cycle entries can no longer ride to a
+    /// natural WIN/LOSS cycle-close; see FORCE_UNWIND_BEFORE_CYCLE_END_SECS's doc comment.
+    #[test]
+    fn force_unwinds_within_10s_of_cycle_end_even_with_timeout_disabled() {
+        let p = btc_params(); // unwind_time_rev defaults to 0.0 (disabled)
+        let mut m = enter_down_position(&p);
+
+        // cycle ends at 1300.0 (ctx(1_000.0)/enter_down_position); 1291.0 is inside the 10s
+        // window.
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1291.0,
+                up: 0.35,
+                dn: 0.65,
+            })
+            .expect("must force-unwind within 10s of cycle end");
+        assert_eq!(rec.outcome, Outcome::Unwind);
+        assert!((rec.exit_price - 0.65).abs() < 1e-9);
+        assert!(!m.is_holding());
+    }
+
+    /// Same rule, reached via a binance-only tick (no fresh poly tick) — mirrors
+    /// `timeout_force_closes_on_binance_only_tick`'s coverage of the analogous case for the
+    /// elapsed-holding-time check.
+    #[test]
+    fn force_unwinds_within_10s_of_cycle_end_on_binance_only_tick() {
+        let p = btc_params();
+        let mut m = enter_down_position(&p);
+
+        let rec = m
+            .on_binance(BinanceTick {
+                ts: 1291.0,
+                price: 59_900.0,
+            })
+            .expect("must force-unwind within 10s of cycle end on a binance-only tick");
+        assert_eq!(rec.outcome, Outcome::Unwind);
+        assert!(!m.is_holding());
+    }
+
+    /// The force-unwind is checked before the elapsed-holding-time timeout, so within the
+    /// last 10s of the cycle the outcome is always Unwind, never Timeout, even when both
+    /// conditions are simultaneously eligible.
+    #[test]
+    fn force_unwind_takes_priority_over_timeout_near_cycle_end() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0; // also eligible to fire on this same tick
+        let mut m = enter_down_position(&p);
+
+        // entry_ts=1240 (enter_down_position); ts=1291 is both >= entry_ts+30 (timeout-
+        // eligible) and within 10s of cycle end (1300.0) — force-unwind must win.
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1291.0,
+                up: 0.35,
+                dn: 0.65,
+            })
+            .expect("expected an exit");
+        assert_eq!(rec.outcome, Outcome::Unwind);
     }
 
     #[test]

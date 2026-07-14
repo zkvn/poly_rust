@@ -1,18 +1,23 @@
 //! Signal-summary report, written as Markdown with collapsible sections nested two levels
-//! deep: one `<details>` per real HKT hour (newest first), each containing one `<details>`
-//! per report-writer run that landed within that hour (there can be several now that runs
-//! fire every `--report-interval-secs`, e.g. every 15 min instead of hourly), each of which
-//! contains its own collapsible "Trades" section broken out into one collapsible table per
-//! market. File name is `signal_report_{YYYY-MM-DD}.md` (HKT date) — a new file starts each
-//! day, and every run within a day updates the *same* file, either by nesting a new run
-//! inside the still-open current-hour section or by starting a fresh hour section (which
-//! also collapses the previous hour's section, since only the current hour stays expanded
-//! by default).
+//! deep: one `<details>` per real HKT hour (newest first, headed by a real `### {hour}`
+//! Markdown heading), each containing one `<details>` per report-writer run that landed
+//! within that hour (there can be several now that runs fire every
+//! `--report-interval-secs`, e.g. every 15 min instead of hourly). Trades are *not* split
+//! per run — one "Trades this hour" section, merged across every trade logged since the
+//! start of the real HKT hour, sits at the top of the hour's body and is regenerated fresh
+//! on every write (2026-07-14, explicit request); each nested run section covers only
+//! market-state/staleness/CPU snapshots for its own `window_secs` window. File name is
+//! `signal_report_{YYYY-MM-DD}.md` (HKT date) — a new file starts each day, and every run
+//! within a day updates the *same* file, either by nesting a new run inside the
+//! still-open current-hour section or by starting a fresh hour section (which also
+//! collapses the previous hour's section, since only the current hour stays expanded by
+//! default).
 //!
 //! The hour/run boundary is tracked with plain HTML comments (`<!-- siglab-hour:... -->`,
-//! `<!-- siglab-hour-body-start/end -->`, `<!-- siglab-run -->`) rather than by parsing the
-//! `<details>` tree — much simpler than generic bracket-matching, and safe since these exact
-//! strings never otherwise appear in rendered content.
+//! `<!-- siglab-hour-body-start/end -->`, `<!-- siglab-run -->`,
+//! `<!-- siglab-hour-trades-start/end -->`, `<!-- siglab-config-start/end -->`) rather than
+//! by parsing the `<details>` tree — much simpler than generic bracket-matching, and safe
+//! since these exact strings never otherwise appear in rendered content.
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -38,6 +43,13 @@ const RUN_MARKER: &str = "<!-- siglab-run -->\n";
 // section always lives right after it.
 const CONFIG_MARKER_START: &str = "<!-- siglab-config-start -->\n";
 const CONFIG_MARKER_END: &str = "<!-- siglab-config-end -->\n";
+// Same replace-wholesale pattern as CONFIG_MARKER_*, but scoped inside one hour's body:
+// wraps the hour-merged trades section so every write regenerates it fresh from every trade
+// logged so far this hour, instead of stacking one separate trades table per 15-min run
+// (2026-07-14, explicit request — the file is still written every
+// `--report-interval-secs`, just no longer split that way).
+const HOUR_TRADES_MARKER_START: &str = "<!-- siglab-hour-trades-start -->\n";
+const HOUR_TRADES_MARKER_END: &str = "<!-- siglab-hour-trades-end -->\n";
 
 /// One staleness event, timestamped so the report can filter to "this run's window".
 #[derive(Debug, Clone)]
@@ -104,18 +116,6 @@ fn recent_trades(trade_log_path: &Path, since_unix: f64) -> Vec<SiglabTradeRecor
         .collect()
 }
 
-/// Human label for a report-writer run's trade window, e.g. "past 15 min" / "past 1h".
-fn window_label(window_secs: f64) -> String {
-    let secs = window_secs.round() as i64;
-    if secs > 0 && secs % 3600 == 0 {
-        format!("past {}h", secs / 3600)
-    } else if secs > 0 && secs % 60 == 0 {
-        format!("past {} min", secs / 60)
-    } else {
-        format!("past {secs}s")
-    }
-}
-
 /// Renders a unix timestamp as an HKT datetime string, to millisecond precision. Truncating
 /// to whole seconds (the previous behavior) made genuinely-distinct trades a fraction of a
 /// second apart look identical in the rendered report — part of what made the correlated-
@@ -134,29 +134,54 @@ fn datetime_hkt(ts: f64) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
+#[derive(Default)]
+struct MarketStrategyAgg {
+    trades: u32,
+    pnl: f64,
+    sl: u32,
+    timeout: u32,
+    unwind: u32,
+}
+
 /// Aggregated PnL by (market, strategy), shown *above* the per-market trade tables — this
 /// answers "how did each market/strategy combo do," the per-market tables below answer "what
 /// happened." Note this aggregates by `strategy` (`"reversal"`/`"high_prob"`), not by the
 /// finer-grained `variant_id` — with 18 reversal variants often firing together on the same
 /// dip (they share the same underlying price move, just different thresholds), a
 /// per-variant summary here would mostly repeat near-identical rows.
+///
+/// `sl`/`timeout`/`unwind` are the only exits reachable since the 2026-07-14
+/// `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` change (a still-open position can no longer ride to
+/// a natural WIN/LOSS cycle-close) — a `WIN`/`LOSS` row would still count toward `trades`
+/// and `total pnl` but not toward any of these 3 columns, which is deliberate: they should
+/// be rare-to-nonexistent going forward, not a 4th column that's usually zero.
 fn render_trade_summary(trades: &[SiglabTradeRecord]) -> String {
     let mut out = String::from("#### Summary: PnL by market and strategy\n\n");
-    let mut agg: HashMap<(String, String), (u32, f64)> = HashMap::new();
+    let mut agg: HashMap<(String, String), MarketStrategyAgg> = HashMap::new();
     for t in trades {
         let entry = agg
             .entry((t.market.clone(), t.strategy.clone()))
-            .or_insert((0, 0.0));
-        entry.0 += 1;
-        entry.1 += t.pnl;
+            .or_default();
+        entry.trades += 1;
+        entry.pnl += t.pnl;
+        match t.outcome.as_str() {
+            "STOPLOSS" => entry.sl += 1,
+            "TIMEOUT" => entry.timeout += 1,
+            "UNWIND" => entry.unwind += 1,
+            _ => {}
+        }
     }
     let mut rows: Vec<_> = agg.into_iter().collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
-    out.push_str("| market | strategy | trades | total pnl |\n|---|---|---|---|\n");
-    for ((market, strategy), (count, total_pnl)) in &rows {
+    out.push_str(
+        "| market | strategy | trades | sl | timeout | unwind | total pnl |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for ((market, strategy), a) in &rows {
         out.push_str(&format!(
-            "| {market} | {strategy} | {count} | {total_pnl:.4} |\n"
+            "| {market} | {strategy} | {} | {} | {} | {} | {:.4} |\n",
+            a.trades, a.sl, a.timeout, a.unwind, a.pnl
         ));
     }
     let grand_total: f64 = trades.iter().map(|t| t.pnl).sum();
@@ -196,13 +221,17 @@ fn render_market_trade_table(rows: &[&SiglabTradeRecord]) -> String {
     out
 }
 
-/// The whole "Trades" block for one run: an outer collapsible section containing the
-/// market/strategy PnL summary, then one collapsible table per market (sorted
-/// alphabetically), each individually collapsible so a run with many quiet weather/World
-/// Cup buckets doesn't force-render dozens of tables at once.
-fn render_trades_section(trades: &[SiglabTradeRecord], label: &str) -> String {
+/// The whole hour-level "Trades" block: merged across every run so far this real HKT hour
+/// (not split into one sub-section per 15-min run) — an outer collapsible section containing
+/// the market/strategy PnL summary, then one collapsible table per market (sorted
+/// alphabetically), each individually collapsible so an hour with many quiet weather/World
+/// Cup buckets doesn't force-render dozens of tables at once. Regenerated fresh on every
+/// write (see `HOUR_TRADES_MARKER_START/END` in `write_hourly_report`) rather than
+/// accumulated per-run — the file is still written every `--report-interval-secs` (15 min in
+/// production), it just no longer stacks one trades table per run within the hour.
+fn render_hour_trades_section(trades: &[SiglabTradeRecord]) -> String {
     let mut out = format!(
-        "<details>\n<summary>Trades ({label}): {} trade(s)</summary>\n\n",
+        "<details>\n<summary>Trades this hour: {} trade(s)</summary>\n\n",
         trades.len()
     );
     if trades.is_empty() {
@@ -290,13 +319,14 @@ fn render_grouped_snapshot_section(
     out
 }
 
-/// One report-writer run's section (nested inside its hour's `<details>`): trades, market
-/// state snapshots, staleness health, CPU/memory — everything `write_hourly_report` used to
-/// emit as its single top-level block, now one level deeper.
-#[allow(clippy::too_many_arguments)]
+/// One report-writer run's section (nested inside its hour's `<details>`): market state
+/// snapshots, staleness health, CPU/memory for this run's own `window_secs` window — trades
+/// are *not* rendered here (moved to the hour level, merged across the whole hour rather
+/// than split per run — see `render_hour_trades_section`/`HOUR_TRADES_MARKER_START` in
+/// `write_hourly_report`); this run's own new-trade count is still shown in the summary line
+/// as a quick "what just happened" signal.
 fn render_run_section(
     run_label: &str,
-    trade_window_label: &str,
     snapshots: &SharedSnapshots,
     trade_log_path: &Path,
     stale_log: &SharedStaleLog,
@@ -308,7 +338,7 @@ fn render_run_section(
     let since_unix = now_unix - window_secs;
     let now_ms = (now_unix * 1000.0) as i64;
 
-    let trades = recent_trades(trade_log_path, since_unix);
+    let new_trade_count = recent_trades(trade_log_path, since_unix).len();
     let snaps: Vec<_> = snapshots
         .lock()
         .map(|m| m.values().cloned().collect())
@@ -329,16 +359,13 @@ fn render_run_section(
 
     let mut out = String::new();
     let summary = format!(
-        "{run_label} HKT — {} crypto market(s), {} weather bucket(s), {} World Cup bucket(s), {} trade(s), {} stale event(s)",
+        "{run_label} HKT — {} crypto market(s), {} weather bucket(s), {} World Cup bucket(s), {new_trade_count} new trade(s), {} stale event(s)",
         snaps.iter().filter(|s| s.kind == "crypto").count(),
         snaps.iter().filter(|s| s.kind == "weather").count(),
         snaps.iter().filter(|s| s.kind == "worldcup").count(),
-        trades.len(),
         stale_events.len(),
     );
     out.push_str(&format!("<details>\n<summary>{summary}</summary>\n\n"));
-
-    out.push_str(&render_trades_section(&trades, trade_window_label));
 
     // ── Crypto market state ──
     let mut crypto: Vec<_> = snaps.iter().filter(|s| s.kind == "crypto").collect();
@@ -420,28 +447,22 @@ fn fmt_opt(x: Option<f64>) -> String {
 }
 
 /// Config-table section, wrapped in `CONFIG_MARKER_START/END` so `write_hourly_report` can
-/// replace it wholesale on every write rather than let it go stale — reflects whatever
-/// `config/markets.toml` currently says. Added after the correlated-variant-firing incident
-/// made clear how easy it is to lose track of which of the 18 reversal variants maps to
-/// which (low, high) pair purely by reading trade rows; see
-/// `doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`.
-fn render_config_section(cfg: &SiglabConfig) -> String {
+/// replace it wholesale on every write rather than let it go stale — reflects whatever the
+/// three siglab config files currently say. Added after the correlated-variant-firing
+/// incident made clear how easy it is to lose track of which of the 18 reversal variants
+/// maps to which (low, high) pair purely by reading trade rows; see
+/// `doc/incident_reversal_variant_correlated_timestamps_2026-07-14.md`. Deliberately no
+/// markets/durations table — `config/markets.toml`'s `[[market]]`/`[[hourly_market]]` list
+/// changes rarely and is already documented in `siglab/README.md`; this section is about the
+/// *strategy* parameters that actually explain trade behavior.
+fn render_config_section(
+    cfg: &SiglabConfig,
+    weather_cities: &[String],
+    worldcup_events: &[String],
+) -> String {
     let mut out = format!("{CONFIG_MARKER_START}### Strategy config\n\n");
 
-    out.push_str("<details>\n<summary>Crypto markets & durations</summary>\n\n");
-    out.push_str("| asset | duration | period (s) |\n|---|---|---|\n");
-    for m in &cfg.markets {
-        out.push_str(&format!(
-            "| {} | {} | {} |\n",
-            m.asset, m.suffix, m.period_secs
-        ));
-    }
-    for m in &cfg.hourly_markets {
-        out.push_str(&format!("| {} | hourly-et | 3600 |\n", m.asset));
-    }
-    out.push_str("\n</details>\n\n");
-
-    out.push_str("<details>\n<summary>Strategy variants</summary>\n\n");
+    out.push_str("<details>\n<summary>Crypto reversal variants</summary>\n\n");
     out.push_str(
         "| variant | strategy | assets | reversal_low_threshold | reversal | sl_pnl_rev | \
          unwind_pnl_rev | unwind_time_rev (s) | price_high_rev | delta_pct_rev | \
@@ -472,18 +493,43 @@ fn render_config_section(cfg: &SiglabConfig) -> String {
     }
     out.push_str("\n</details>\n\n");
 
+    out.push_str(&format!(
+        "<details>\n<summary>Weather cities ({})</summary>\n\n| city |\n|---|\n",
+        weather_cities.len()
+    ));
+    for city in weather_cities {
+        out.push_str(&format!("| {city} |\n"));
+    }
+    out.push_str("\n</details>\n\n");
+
+    out.push_str(&format!(
+        "<details>\n<summary>World Cup events ({})</summary>\n\n| event |\n|---|\n",
+        worldcup_events.len()
+    ));
+    for event in worldcup_events {
+        out.push_str(&format!("| {event} |\n"));
+    }
+    out.push_str("\n</details>\n\n");
+
     out.push_str(
         "Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid via \
          `bucket_reversal.rs::reversal_grid()` (fixed `sl_pnl=0.3`/`unwind_pnl=0.15`/\
-         `max_hold=30s`), not this config file — see that module's doc comment.\n\n",
+         `max_hold=25s`), not `config/markets.toml` — see that module's doc comment. Crypto \
+         reversal variants additionally force-close (labeled `UNWIND`) within 10s of the \
+         market's own cycle-end regardless of holding time — weather/World Cup buckets have \
+         no cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s \
+         doc comment).\n\n",
     );
 
     out.push_str(CONFIG_MARKER_END);
     out
 }
 
-/// Renders one hour's whole `<details>` block (marker comment + summary + `inner`, which is
-/// the concatenation of that hour's `RUN_MARKER`-prefixed run blocks, newest first).
+/// Renders one hour's whole `<details>` block (marker comment + a `###` section header —
+/// same style as `### Strategy config` — + summary + `inner`, which is the concatenation of
+/// that hour's `RUN_MARKER`-prefixed run blocks, newest first). The `###` heading lives
+/// outside/before the `<details>` so it's a real jump-to-able Markdown heading, not just
+/// collapsible-summary text.
 fn render_hour_block(
     hour_key: &str,
     hour_label: &str,
@@ -494,13 +540,120 @@ fn render_hour_block(
 ) -> String {
     format!(
         "{HOUR_MARKER_PREFIX}{hour_key} -->\n\
+         ### {hour_label} HKT\n\n\
          <details open>\n\
-         <summary><strong>{hour_label} HKT — {run_count} report run(s), {hour_trade_count} trade(s) this hour, total pnl {hour_pnl:.4}</strong></summary>\n\n\
+         <summary><strong>{run_count} report run(s), {hour_trade_count} trade(s) this hour, total pnl {hour_pnl:.4}</strong></summary>\n\n\
          {HOUR_BODY_START}\
          {inner}\
          {HOUR_BODY_END}\
          </details>\n\n"
     )
+}
+
+/// The report file's fixed leading text — shared by `write_hourly_report` (live) and
+/// `regenerate_from_trade_log` (one-off backfill) so both produce byte-identical headers;
+/// `write_hourly_report`'s `existing.strip_prefix(&header)` continuation check depends on
+/// that.
+fn report_header(date: &str) -> String {
+    format!(
+        "# siglab signal report — {date}\n\n\
+         Auto-generated by siglab, newest hour first — each hour is one collapsible section.\n\
+         Trades are merged across the whole hour (not split per report-writer run) and\n\
+         regenerated fresh on every write; market-state/staleness/CPU snapshots stay one\n\
+         collapsible sub-section per run (there can be several now that runs fire every\n\
+         `--report-interval-secs`, e.g. every 15 min). See\n\
+         `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
+         `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md` for what this harness does\n\
+         and does not claim. Weather and World Cup markets trade via a self-contained\n\
+         `bucket_reversal.rs` reversal engine (18 variants per bucket, no delta/Gamma/resolve —\n\
+         see that file's doc comment), separate from crypto's `trader::machine::Machine`.\n\n"
+    )
+}
+
+/// One-off: rebuild `report_dir/signal_report_{date}.md` entirely from the trade log's
+/// ground truth, grouped by real HKT date/hour, using the exact same rendering functions as
+/// the live writer — added 2026-07-14 to backfill existing reports into this session's new
+/// format (merged-per-hour trades, config table, `### {hour}` headings, sl/timeout/unwind
+/// summary columns) without needing to parse the old Markdown. Historical market-state/
+/// staleness/CPU snapshots aren't recoverable from the trade log alone (they were never
+/// persisted anywhere else), so each regenerated hour carries a note instead of fabricating
+/// them; the live process's next natural write still extends whichever hour is current
+/// normally (`write_hourly_report`'s continuation logic doesn't require a run marker to be
+/// present in a past, no-longer-written-to hour).
+pub fn regenerate_from_trade_log(
+    trade_log_path: &Path,
+    report_dir: &Path,
+    cfg: &SiglabConfig,
+    weather_cities: &[String],
+    worldcup_events: &[String],
+) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(report_dir).context("create report dir")?;
+    let all_trades = recent_trades(trade_log_path, 0.0);
+
+    let mut by_date_hour: std::collections::BTreeMap<(String, String), Vec<SiglabTradeRecord>> =
+        std::collections::BTreeMap::new();
+    for t in all_trades {
+        let Some(dt) = Utc
+            .timestamp_opt(t.logged_at.trunc() as i64, 0)
+            .single()
+            .map(|d| d.with_timezone(&hkt()))
+        else {
+            continue;
+        };
+        let date = dt.format("%Y-%m-%d").to_string();
+        let hour = dt.format("%H").to_string();
+        by_date_hour.entry((date, hour)).or_default().push(t);
+    }
+
+    let mut hours_by_date: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (date, hour) in by_date_hour.keys() {
+        hours_by_date
+            .entry(date.clone())
+            .or_default()
+            .push(hour.clone());
+    }
+
+    let regenerated_note = "_Regenerated from the trade log (2026-07-14 format backfill) — \
+        historical market-state/staleness/CPU snapshots aren't recoverable from trade data \
+        alone and are omitted for this hour; hours written by the live process carry them \
+        as usual._\n\n";
+
+    let mut written = Vec::new();
+    for (date, hours) in hours_by_date.iter().rev() {
+        let mut hours_sorted = hours.clone();
+        hours_sorted.sort();
+        hours_sorted.reverse(); // newest hour first within the file
+
+        let mut body = String::new();
+        for (i, hour) in hours_sorted.iter().enumerate() {
+            let trades = &by_date_hour[&(date.clone(), hour.clone())];
+            let hour_pnl: f64 = trades.iter().map(|t| t.pnl).sum::<f64>() + 0.0;
+            let hour_key = format!("{date}T{hour}");
+            let hour_label = format!("{date} {hour}:00");
+            let inner = format!(
+                "{HOUR_TRADES_MARKER_START}{}{HOUR_TRADES_MARKER_END}{regenerated_note}",
+                render_hour_trades_section(trades)
+            );
+            let block =
+                render_hour_block(&hour_key, &hour_label, &inner, 0, trades.len(), hour_pnl);
+            // Only the newest hour in the file stays expanded — render_hour_block always
+            // emits `<details open>`, so collapse every older one explicitly.
+            if i == 0 {
+                body.push_str(&block);
+            } else {
+                body.push_str(&block.replacen("<details open>\n", "<details>\n", 1));
+            }
+        }
+
+        let path = report_dir.join(format!("signal_report_{date}.md"));
+        let mut f = std::fs::File::create(&path).with_context(|| format!("write {path:?}"))?;
+        f.write_all(report_header(date).as_bytes())?;
+        f.write_all(render_config_section(cfg, weather_cities, worldcup_events).as_bytes())?;
+        f.write_all(body.as_bytes())?;
+        written.push(path);
+    }
+    Ok(written)
 }
 
 /// Writes (inserting) this run's section into today's report file — either nested inside
@@ -511,6 +664,8 @@ fn render_hour_block(
 pub fn write_hourly_report(
     report_dir: &Path,
     cfg: &SiglabConfig,
+    weather_cities: &[String],
+    worldcup_events: &[String],
     snapshots: &SharedSnapshots,
     trade_log_path: &Path,
     stale_log: &SharedStaleLog,
@@ -520,19 +675,9 @@ pub fn write_hourly_report(
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(report_dir).context("create report dir")?;
     let path = report_path(report_dir);
-    let date = now_hkt().format("%Y-%m-%d");
+    let date = now_hkt().format("%Y-%m-%d").to_string();
 
-    let header = format!(
-        "# siglab signal report — {date}\n\n\
-         Auto-generated by siglab, newest hour first — each hour is one collapsible section\n\
-         containing every report-writer run that landed within it, and each run's trades are\n\
-         broken out into one collapsible table per market. See\n\
-         `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
-         `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md` for what this harness does\n\
-         and does not claim. Weather and World Cup markets trade via a self-contained\n\
-         `bucket_reversal.rs` reversal engine (18 variants per bucket, no delta/Gamma/resolve —\n\
-         see that file's doc comment), separate from crypto's `trader::machine::Machine`.\n\n"
-    );
+    let header = report_header(&date);
 
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let body = if let Some(stripped) = existing.strip_prefix(&header) {
@@ -543,8 +688,8 @@ pub fn write_hourly_report(
         String::new()
     };
     // Strip out any previously-written config section — it's always regenerated fresh
-    // below from the current `cfg` rather than left stale from whenever the file was
-    // first created today.
+    // below from the current config files rather than left stale from whenever the file
+    // was first created today.
     let body = match (body.find(CONFIG_MARKER_START), body.find(CONFIG_MARKER_END)) {
         (Some(start), Some(end)) if end >= start => {
             let mut b = body[..start].to_string();
@@ -558,11 +703,9 @@ pub fn write_hourly_report(
     let hour_key = now.format("%Y-%m-%dT%H").to_string();
     let hour_label = now.format("%Y-%m-%d %H:00").to_string();
     let run_label = now.format("%Y-%m-%d %H:%M").to_string();
-    let trade_window_label = window_label(window_secs);
 
     let run_block = render_run_section(
         &run_label,
-        &trade_window_label,
         snapshots,
         trade_log_path,
         stale_log,
@@ -582,6 +725,27 @@ pub fn write_hourly_report(
     // `Iterator::sum()` folds from `-0.0` for `f64`, so an empty/zero-sum window prints as
     // "-0.0000" unless normalized — `+ 0.0` flips a negative zero back to positive.
     let hour_pnl: f64 = hour_trades.iter().map(|t| t.pnl).sum::<f64>() + 0.0;
+    let hour_trades_html = format!(
+        "{HOUR_TRADES_MARKER_START}{}{HOUR_TRADES_MARKER_END}",
+        render_hour_trades_section(&hour_trades)
+    );
+
+    // Strip out the hour's own previously-written trades block from `inner` (it's always
+    // regenerated fresh above from every trade logged so far this hour) before re-nesting
+    // the remaining (market-state/staleness/cpu-only) run blocks.
+    let strip_old_hour_trades = |inner: &str| -> String {
+        match (
+            inner.find(HOUR_TRADES_MARKER_START),
+            inner.find(HOUR_TRADES_MARKER_END),
+        ) {
+            (Some(start), Some(end)) if end >= start => {
+                let mut s = inner[..start].to_string();
+                s.push_str(&inner[end + HOUR_TRADES_MARKER_END.len()..]);
+                s
+            }
+            _ => inner.to_string(),
+        }
+    };
 
     let marker = format!("{HOUR_MARKER_PREFIX}{hour_key} -->\n");
     let new_body = if body.starts_with(&marker) {
@@ -591,9 +755,9 @@ pub fn write_hourly_report(
             .zip(body.find(HOUR_BODY_END));
         match bounds {
             Some((body_start, body_end)) if body_end >= body_start => {
-                let inner_old = &body[body_start..body_end];
+                let inner_old = strip_old_hour_trades(&body[body_start..body_end]);
                 let run_count = inner_old.matches(RUN_MARKER).count() + 1;
-                let new_inner = format!("{RUN_MARKER}{run_block}{inner_old}");
+                let new_inner = format!("{hour_trades_html}{RUN_MARKER}{run_block}{inner_old}");
                 let after_end_marker = body_end + HOUR_BODY_END.len();
                 let close_tag = "</details>\n\n";
                 let hour_block_end = if body[after_end_marker..].starts_with(close_tag) {
@@ -621,7 +785,7 @@ pub fn write_hourly_report(
                 let fresh = render_hour_block(
                     &hour_key,
                     &hour_label,
-                    &format!("{RUN_MARKER}{run_block}"),
+                    &format!("{hour_trades_html}{RUN_MARKER}{run_block}"),
                     1,
                     hour_trades.len(),
                     hour_pnl,
@@ -637,7 +801,7 @@ pub fn write_hourly_report(
         let fresh = render_hour_block(
             &hour_key,
             &hour_label,
-            &format!("{RUN_MARKER}{run_block}"),
+            &format!("{hour_trades_html}{RUN_MARKER}{run_block}"),
             1,
             hour_trades.len(),
             hour_pnl,
@@ -647,7 +811,7 @@ pub fn write_hourly_report(
 
     let mut f = std::fs::File::create(&path).with_context(|| format!("write {path:?}"))?;
     f.write_all(header.as_bytes())?;
-    f.write_all(render_config_section(cfg).as_bytes())?;
+    f.write_all(render_config_section(cfg, weather_cities, worldcup_events).as_bytes())?;
     f.write_all(new_body.as_bytes())?;
     Ok(path)
 }
@@ -744,7 +908,7 @@ mod tests {
             mk_trade("XRP-5m", "reversal_0.2_0.55", "reversal", 100.0, 0.2),
             mk_trade("XRP-15m", "reversal_0.3_0.6", "reversal", 50.0, 0.3),
         ];
-        let section = render_trades_section(&trades, "past 15 min");
+        let section = render_hour_trades_section(&trades);
         // Two distinct per-market collapsible tables, one per market.
         assert!(section.contains("<summary>XRP-15m — 2 trade(s), total pnl 0.4000</summary>"));
         assert!(section.contains("<summary>XRP-5m — 1 trade(s), total pnl 0.2000</summary>"));
@@ -763,7 +927,7 @@ mod tests {
             1_700_000_000.0,
             0.5,
         )];
-        let section = render_trades_section(&trades, "past 15 min");
+        let section = render_hour_trades_section(&trades);
         assert!(section.contains("entry (HKT)"));
         assert!(section.contains("exit (HKT)"));
         assert!(section.contains("holding (s)"));
@@ -782,22 +946,34 @@ mod tests {
         let summary = render_trade_summary(&trades);
         // Both reversal trades on XRP-5m should collapse into one aggregated row (2 trades,
         // total 0.3), not two separate rows — this is the point of aggregating by
-        // (market, strategy) rather than by the finer-grained variant_id.
-        assert!(summary.contains("| XRP-5m | reversal | 2 | 0.3000 |"));
-        assert!(summary.contains("| XRP-5m | high_prob | 1 | -0.0500 |"));
+        // (market, strategy) rather than by the finer-grained variant_id. mk_trade's
+        // outcome is fixed to "WIN", so the sl/timeout/unwind columns are all 0 here —
+        // covered separately by sl_timeout_unwind_counts_are_broken_out_by_outcome below.
+        assert!(summary.contains("| XRP-5m | reversal | 2 | 0 | 0 | 0 | 0.3000 |"));
+        assert!(summary.contains("| XRP-5m | high_prob | 1 | 0 | 0 | 0 | -0.0500 |"));
         assert!(summary.contains("Total pnl: 0.2500"));
     }
 
     #[test]
-    fn empty_trades_render_gracefully() {
-        assert!(render_trades_section(&[], "past 15 min").contains("No trades fired"));
+    fn sl_timeout_unwind_counts_are_broken_out_by_outcome() {
+        let mut sl = mk_trade("XRP-5m", "v", "reversal", 100.0, -0.1);
+        sl.outcome = "STOPLOSS".to_string();
+        let mut timeout = mk_trade("XRP-5m", "v", "reversal", 110.0, 0.01);
+        timeout.outcome = "TIMEOUT".to_string();
+        let mut unwind = mk_trade("XRP-5m", "v", "reversal", 120.0, 0.15);
+        unwind.outcome = "UNWIND".to_string();
+        let mut win = mk_trade("XRP-5m", "v", "reversal", 130.0, 1.0);
+        win.outcome = "WIN".to_string();
+
+        let summary = render_trade_summary(&[sl, timeout, unwind, win]);
+        // 4 trades total (WIN counts toward `trades` but not sl/timeout/unwind — see that
+        // column set's doc comment).
+        assert!(summary.contains("| XRP-5m | reversal | 4 | 1 | 1 | 1 | 1.0600 |"));
     }
 
     #[test]
-    fn window_label_formats_common_intervals() {
-        assert_eq!(window_label(900.0), "past 15 min");
-        assert_eq!(window_label(3600.0), "past 1h");
-        assert_eq!(window_label(90.0), "past 90s");
+    fn empty_trades_render_gracefully() {
+        assert!(render_hour_trades_section(&[]).contains("No trades fired"));
     }
 
     fn sample_cfg() -> SiglabConfig {
@@ -840,14 +1016,20 @@ mod tests {
     }
 
     #[test]
-    fn config_section_lists_markets_and_variant_grid() {
-        let section = render_config_section(&sample_cfg());
+    fn config_section_lists_variant_grid_and_weather_worldcup() {
+        let weather = vec!["hong-kong".to_string()];
+        let worldcup = vec!["world-cup-winner".to_string()];
+        let section = render_config_section(&sample_cfg(), &weather, &worldcup);
         assert!(section.starts_with(CONFIG_MARKER_START));
         assert!(section.trim_end().ends_with(CONFIG_MARKER_END.trim_end()));
-        assert!(section.contains("BTC"));
-        assert!(section.contains("5m"));
         assert!(section.contains("reversal_0.2_0.55"));
         assert!(section.contains("0.55"));
+        assert!(section.contains("hong-kong"));
+        assert!(section.contains("world-cup-winner"));
+        assert!(
+            !section.contains("duration"),
+            "the markets/durations table was dropped 2026-07-14, must not reappear"
+        );
     }
 
     #[test]
@@ -861,11 +1043,29 @@ mod tests {
         let cfg = sample_cfg();
 
         let path = write_hourly_report(
-            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
         )
         .unwrap();
         write_hourly_report(
-            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
         )
         .unwrap();
 
@@ -893,7 +1093,16 @@ mod tests {
         };
 
         let path1 = write_hourly_report(
-            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
         )
         .unwrap();
         let after_first = std::fs::read_to_string(&path1).unwrap();
@@ -902,7 +1111,16 @@ mod tests {
         assert_eq!(after_first.matches("<details open>").count(), 1);
 
         let path2 = write_hourly_report(
-            report_dir, &cfg, &snapshots, &trade_log, &stale_log, None, None, 900.0,
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
         )
         .unwrap();
         let after_second = std::fs::read_to_string(&path2).unwrap();
@@ -910,5 +1128,85 @@ mod tests {
         assert_eq!(after_second.matches(HOUR_MARKER_PREFIX).count(), 1);
         assert_eq!(after_second.matches(RUN_MARKER).count(), 2);
         assert_eq!(after_second.matches("<details open>").count(), 1);
+    }
+
+    /// The core of this session's item 5: trades from an earlier run in the same hour must
+    /// still show up in the hour-level trades section after a second write, merged (not
+    /// duplicated, not dropped) into one table rather than split into a separate section per
+    /// run.
+    #[test]
+    fn trades_merge_across_runs_within_the_same_hour_not_split_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path();
+        let trade_log = dir.path().join("trades.jsonl");
+        let snapshots: SharedSnapshots = Arc::new(Mutex::new(HashMap::new()));
+        let stale_log = new_stale_log();
+        let cfg = SiglabConfig {
+            markets: vec![],
+            hourly_markets: vec![],
+            variants: vec![],
+        };
+        let now = Utc::now().timestamp() as f64;
+
+        std::fs::write(
+            &trade_log,
+            format!(
+                "{{\"logged_at\":{now},\"market_kind\":\"crypto\",\"variant_id\":\"v1\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{now},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"TIMEOUT\",\"pnl\":0.1}}\n"
+            ),
+        )
+        .unwrap();
+        let path1 = write_hourly_report(
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
+        )
+        .unwrap();
+        let after_first = std::fs::read_to_string(&path1).unwrap();
+        assert!(after_first.contains("v1"));
+        assert_eq!(after_first.matches(HOUR_TRADES_MARKER_START).count(), 1);
+
+        // A second trade arrives, then a second run within the same hour.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&trade_log)
+            .unwrap();
+        use std::io::Write as _;
+        writeln!(
+            f,
+            "{{\"logged_at\":{now},\"market_kind\":\"crypto\",\"variant_id\":\"v2\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{now},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"UNWIND\",\"pnl\":0.1}}"
+        )
+        .unwrap();
+        let path2 = write_hourly_report(
+            report_dir,
+            &cfg,
+            &[],
+            &[],
+            &snapshots,
+            &trade_log,
+            &stale_log,
+            None,
+            None,
+            900.0,
+        )
+        .unwrap();
+        let after_second = std::fs::read_to_string(&path2).unwrap();
+
+        assert!(
+            after_second.contains("v1") && after_second.contains("v2"),
+            "both runs' trades must appear, merged"
+        );
+        assert_eq!(
+            after_second.matches(HOUR_TRADES_MARKER_START).count(),
+            1,
+            "must be one merged trades section, not one per run"
+        );
+        assert_eq!(after_second.matches(RUN_MARKER).count(), 2);
     }
 }

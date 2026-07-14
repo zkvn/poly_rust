@@ -186,6 +186,16 @@ issue applies there independently — see the TODO below.
 
 Full writeups in `doc/incident_ws_2026-07-13.md` unless noted.
 
+### 2026-07-14 — Same-market variants sharing entry_ts flagged as suspicious — **investigated, not a bug**
+Two specific trades (BTC-15m 12:22:35, ETH-5m 11:47:18 — several `reversal_0.4_*` variants
+firing together) checked against `price_feed`'s independently-recorded CLOB/Binance data.
+Confirmed genuine: for BTC, the shared `delta_pct_rev=0.0008` momentum gate (identical across
+all 18 variants) cleared at the exact recorded entry instant, ~20ms of real Binance-tick
+latency, while price had already cleared every threshold 6-7 minutes earlier — releasing every
+already-qualified variant at once, at the real market price. `entry_price_ts` (this session's
+other fix) confirms both fired off a live poly tick, not a stale cached price. Full writeup:
+`doc/incident_same_entry_ts_2026-07-14.md`.
+
 ### 2026-07-14 — Reversal variants logged correlated entry timestamps across different markets — **fixed**
 `Machine::try_enter` stamped `entry_ts` with whichever tick (poly or Binance) triggered the
 check, not the timestamp of the poly price actually observed. Since every duration-task for

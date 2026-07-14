@@ -173,8 +173,17 @@ coin_name = "bnb"
 # trader/src/signal/saw_low.rs for the exact window semantics this relies on.
 #
 # sl_pnl_rev=0.3 and unwind_pnl_rev=0.15 fixed across all 18 per request (previously varied
-# 0.15-0.40 per asset). delta_pct_rev is a single shared value (0.0008) since these variants
-# are no longer asset-specific — previously ranged 0.0006-0.0010 by asset.
+# 0.15-0.40 per asset). delta_pct_rev is a single shared value (0.0003, lowered from 0.0008
+# 2026-07-14 — confirmed via siglab/doc/incident_same_entry_ts_2026-07-14.md that delta_pct_rev
+# is the actual binding gate behind several same-tick multi-variant entries; a looser gate
+# clears sooner, reducing (not eliminating) how often it's the rate-limiting factor) since
+# these variants are no longer asset-specific — previously ranged 0.0006-0.0010 by asset.
+#
+# unwind_time_rev=25.0 (lowered from 30.0, 2026-07-14) is the max-*holding-time* cap; separately,
+# `Machine` (trader/src/machine.rs) now force-closes any open position at cycle_end_ts-10s
+# regardless of holding time, labeled Outcome::Unwind — added 2026-07-14 so a position can no
+# longer ride to a natural WIN/LOSS cycle-close; STOPLOSS/TIMEOUT/UNWIND become the only
+# reachable exits. siglab/backtest.rs path only — worker.rs (live bot) is untouched.
 #
 # CAVEAT: this is an exploratory grid, not a calibrated one (no bt2/bt3 sweep backing these
 # 18 combos specifically) — the point of running all 18 live is to see which of them (if
@@ -196,7 +205,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -206,7 +215,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.2_0.6"
@@ -217,7 +226,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -227,7 +236,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.2_0.65"
@@ -238,7 +247,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -248,7 +257,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.2_0.7"
@@ -259,7 +268,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -269,7 +278,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.2_0.75"
@@ -280,7 +289,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -290,7 +299,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.2_0.8"
@@ -301,7 +310,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -311,7 +320,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.3_0.55"
@@ -322,7 +331,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -332,7 +341,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.3_0.6"
@@ -343,7 +352,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -353,7 +362,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.3_0.65"
@@ -364,7 +373,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -374,7 +383,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.3_0.7"
@@ -385,7 +394,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -395,7 +404,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.3_0.75"
@@ -406,7 +415,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -416,7 +425,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.3_0.8"
@@ -427,7 +436,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -437,7 +446,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.4_0.55"
@@ -448,7 +457,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -458,7 +467,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.4_0.6"
@@ -469,7 +478,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -479,7 +488,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.4_0.65"
@@ -490,7 +499,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -500,7 +509,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.4_0.7"
@@ -511,7 +520,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -521,7 +530,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.4_0.75"
@@ -532,7 +541,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -542,7 +551,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 [[variant]]
 id = "reversal_0.4_0.8"
@@ -553,7 +562,7 @@ max_buy_price = 0.95
 spread_premium_limit = 1.05
 spread_discount_limit = 0.95
 max_price_age_secs = 2.0
-delta_pct_rev = 0.0008
+delta_pct_rev = 0.0003
 delta_pct_hp = 0.0004
 price_high_rev = 0.90
 trade_size_usdc = 1.0
@@ -563,7 +572,7 @@ reversal_start_time = 999999  # effectively unlimited — see header comment
 sl_reversal = 0
 unwind_pnl_rev = 0.15
 sl_pnl_rev = 0.3
-unwind_time_rev = 30.0
+unwind_time_rev = 25.0
 
 # high_prob variants removed 2026-07-13 per explicit request to simplify to reversal-only,
 # pure-CLOB-price-action strategies. (Previously: high_prob_btc/eth/doge, one per asset.)

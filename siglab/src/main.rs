@@ -99,6 +99,13 @@ struct Args {
     /// operational visibility for an otherwise-unattended process (DeepSeek review #10).
     #[arg(long, default_value_t = 300)]
     heartbeat_secs: u64,
+
+    /// One-off: rebuild every signal_report_*.md in --report-dir from --log's trade-log
+    /// ground truth (report::regenerate_from_trade_log), then exit immediately — no WS
+    /// connections, no live harness. Used to backfill existing reports into a new rendering
+    /// format; see that function's doc comment.
+    #[arg(long)]
+    regenerate_reports_only: bool,
 }
 
 fn append_jsonl(path: &PathBuf, rec: &SiglabTradeRecord) -> Result<()> {
@@ -135,6 +142,18 @@ async fn main() -> Result<()> {
         worldcup_cfg.events.len(),
         args.worldcup_config
     );
+
+    if args.regenerate_reports_only {
+        let paths = report::regenerate_from_trade_log(
+            &args.log,
+            &args.report_dir,
+            &cfg,
+            &weather_cfg.cities,
+            &worldcup_cfg.events,
+        )?;
+        eprintln!("[siglab] regenerated {} report(s): {paths:?}", paths.len());
+        return Ok(());
+    }
 
     let http = http_client()?;
     let clob = clob_client();
@@ -336,6 +355,8 @@ async fn main() -> Result<()> {
     // ── hourly report writer ──
     let report_task = {
         let cfg = cfg.clone();
+        let weather_cities = weather_cfg.cities.clone();
+        let worldcup_events = worldcup_cfg.events.clone();
         let snapshots = snapshots.clone();
         let stale_log = stale_log.clone();
         let trade_log_path = args.log.clone();
@@ -359,6 +380,8 @@ async fn main() -> Result<()> {
                 match report::write_hourly_report(
                     &report_dir,
                     &cfg,
+                    &weather_cities,
+                    &worldcup_events,
                     &snapshots,
                     &trade_log_path,
                     &stale_log,

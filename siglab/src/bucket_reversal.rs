@@ -10,7 +10,7 @@
 //! - **No cycle, no resolution, no Gamma.** There is no `CycleContext`, no "cycle closing,"
 //!   and no concept of the market's real (Yes/No) outcome anywhere in this file. Every
 //!   position is closed purely by observed price action or elapsed time — stop-loss,
-//!   take-profit, or a fixed 30-second max hold — so it's always resolved (one way or
+//!   take-profit, or a fixed 25-second max hold — so it's always resolved (one way or
 //!   another) long before the real-world outcome would even be knowable. This is
 //!   deliberate: it sidesteps the "these buckets are mutually exclusive, so how do we know
 //!   the true Yes/No outcome" problem entirely, rather than solving it.
@@ -33,7 +33,7 @@ pub struct ReversalParams {
 /// crypto's grid varied per asset; this and the crypto grid are now both uniform).
 pub const SL_PNL: f64 = 0.3;
 pub const UNWIND_PNL: f64 = 0.15;
-pub const MAX_HOLD_SECS: f64 = 30.0;
+pub const MAX_HOLD_SECS: f64 = 25.0; // lowered from 30.0 2026-07-14, matches crypto grid
 pub const TRADE_SIZE_USDC: f64 = 1.0;
 
 fn fmt_threshold(x: f64) -> String {
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn timeout_closes_after_30_seconds_at_current_price() {
+    fn timeout_closes_after_25_seconds_at_current_price() {
         let mut e = BucketReversalEngine::new(
             "v".to_string(),
             ReversalParams {
@@ -265,10 +265,10 @@ mod tests {
         );
         e.on_tick(0.15, 0.0);
         e.on_tick(0.6, 100.0); // entry at ts=100, price=0.6
-        // 29s later, no SL/TP crossed, no timeout yet.
-        assert!(e.on_tick(0.65, 129.0).is_none());
-        // 30s later — timeout fires at whatever the current price is.
-        let closed = e.on_tick(0.65, 130.0).unwrap();
+        // 24s later, no SL/TP crossed, no timeout yet.
+        assert!(e.on_tick(0.65, 124.0).is_none());
+        // 25s later — timeout fires at whatever the current price is.
+        let closed = e.on_tick(0.65, 125.0).unwrap();
         assert_eq!(closed.outcome, "TIMEOUT");
         assert!((closed.exit_price - 0.65).abs() < 1e-9);
     }
