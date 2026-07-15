@@ -186,17 +186,6 @@ on the remote before the nightly sync runs.
   repo's own `Outcome::is_loss_for_halt` fix didn't need to worry about (Rust's fix operates on
   the already-computed `TradeRecord.pnl`, not a pre-rounding intermediate).
 
-- **`trader/src/config.rs`/`config_log.rs` have 4 pre-existing test failures from config drift —
-  found 2026-07-14 while verifying an unrelated halt fix, not fixed.** `load_and_resolve_btc`,
-  `default_fallback`, `unwind_time_falls_back_to_default_and_resolves_asset_override`
-  (`config.rs`), and `write_and_read_roundtrip` (`config_log.rs`) all assert hardcoded parameter
-  values (`delta_pct_rev`, `halt_rev`, `unwind_time_rev`, ...) that predate `strategy_20260713.toml`
-  and no longer match what `config::load_latest` actually resolves today — the same "test drift"
-  pattern the `load_and_resolve_btc` test's own comment says was already fixed once, on
-  2026-07-09, after `strategy_20260708.toml` landed. Confirmed pre-existing on `main` before the
-  halt fix (reproduces via `git stash`), not caused by it. Needs the hardcoded expectations
-  refreshed against the current config, same as the 2026-07-09 fix did.
-
 - **Live trader's heartbeat cadence (30s) is too coarse to forensically resolve a `SawLowSignal`
   sub-threshold dip — found 2026-07-12, not fixed.** While auditing whether Rust's DOGE
   `reversal` engine should have caught a 09:33:40 entry the Python bot (`btc_5mins`) took
@@ -923,6 +912,22 @@ resumes normally at the next clean boundary, instead of fabricating a reference 
 locally (dummy-keyed dry run against live NATS data, twice) and live on the Oracle deploy that
 shipped this fix, which itself landed 12s into a cycle and correctly suppressed. Full writeup:
 `trader/doc/fix_live_deploy_2026-07-15.md`.
+
+### Config fixture-drift tests refreshed for strategy_20260715.toml (2026-07-15, fixed)
+
+Closes the README TODO flagged 2026-07-14: `config::tests::load_and_resolve_btc`,
+`default_fallback`, `unwind_time_falls_back_to_default_and_resolves_asset_override`
+(`config.rs`), and `config_log::tests::write_and_read_roundtrip` all call `load_latest`,
+which reads whichever `strategy_*.toml` is newest right now, and assert hardcoded resolved
+values that go stale the moment a live config change lands — the same drift class already
+fixed once on 2026-07-09. The same-day `strategy_20260715.toml` update (switched to
+`btc_5mins studies/reversal_hourly/summary.md`'s "By win_rate" table, `trade_assets` →
+BTC/BNB/SOL) tipped all 4 over: hardcoded params no longer matched, two tests lost their
+BTC-falls-back-to-default premise entirely (BTC gained its own overrides), and the
+`trade_assets` membership check still expected `ETH`. Fixed: refreshed the hardcoded values,
+switched the two fallback-path tests from BTC to SOL (which now genuinely has no override,
+where BTC no longer does). `cargo test` green (199 passed), `fmt`/`clippy` clean. Full
+writeup: `trader/doc/fix_config_test_drift_2026-07-15.md`.
 
 ### `TradeRecord`/`HoldingData` gained `entry_price_ts` — additive, compiled/tested, not deployed (2026-07-14, added)
 
