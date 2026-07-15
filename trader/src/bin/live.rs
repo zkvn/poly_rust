@@ -415,6 +415,34 @@ fn apply_control(slot: &mut AssetSlot, event: ControlEvent) {
     persist(slot);
 }
 
+/// Builds a warning suffix listing any slot that's still halted purely due to
+/// the loss-streak counter (`halt_rev`/`halt_prob`) after a `/resume` —
+/// `/resume` only ever clears the manual/drawdown gate and deliberately never
+/// touches this one (§8), so an unqualified "Resumed" reply would otherwise
+/// falsely claim success. See `trader/doc/incident_unable_to_resume_2026-07-15.md`.
+fn loss_streak_still_halted_note<'a>(slots: impl Iterator<Item = &'a AssetSlot>) -> Option<String> {
+    let still: Vec<String> = slots
+        .filter(|s| s.worker.loss_streak_halted())
+        .map(|s| {
+            format!(
+                "{}/{} ({}/{})",
+                s.worker.asset,
+                s.worker.strategy_name,
+                s.worker.halt_losses(),
+                s.worker.halt_max()
+            )
+        })
+        .collect();
+    if still.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "\n⚠️ still halted (loss-streak): {} — /reset_losses to clear now, or wait for the daily reset.",
+            still.join(", ")
+        ))
+    }
+}
+
 /// Same as `apply_control`, for the one `BalanceEvent` variant — `Worker::on_balance` also always
 /// returns exactly `[Action::Persist]`.
 fn apply_balance_halt(slot: &mut AssetSlot) {
@@ -612,7 +640,27 @@ impl Driver<'_> {
         for slot in &slots {
             let name = &slot.worker.asset;
             let halted = slot.worker.is_halted();
-            let light = if halted { "🟡 halted" } else { "🟢 active" };
+            // Surfaces *why* it's halted — `/resume` only clears `suppressed`,
+            // never `loss-streak` (that needs `/reset_losses` or the daily
+            // reset), so an operator seeing just "🟡 halted" after a `/resume`
+            // has no way to tell the two apart. See
+            // trader/doc/incident_unable_to_resume_2026-07-15.md.
+            let light = if !halted {
+                "🟢 active".to_string()
+            } else {
+                let mut reasons = Vec::new();
+                if slot.worker.manually_suppressed() {
+                    reasons.push("suppressed".to_string());
+                }
+                if slot.worker.loss_streak_halted() {
+                    reasons.push(format!(
+                        "loss-streak {}/{}",
+                        slot.worker.halt_losses(),
+                        slot.worker.halt_max()
+                    ));
+                }
+                format!("🟡 halted ({})", reasons.join(" + "))
+            };
             // `low`/`high` are the strategy's entry trigger band — reversal_low_threshold/
             // reversal for reversal (aka "unwind" — the reversal+take-profit-unwind
             // strategy), price_low/price_high for high_prob.
@@ -1683,7 +1731,30 @@ async fn main() -> Result<()> {
                             apply_control(slot, ControlEvent::Resume);
                         }
                         balance_guard.reset_baseline();
-                        Some(format!("▶️ Resumed all assets ({}).", args.asset.join(", ")))
+                        let mut msg = format!("▶️ Resumed all assets ({}).", args.asset.join(", "));
+                        if let Some(note) = loss_streak_still_halted_note(assets.iter()) {
+                            msg.push_str(&note);
+                        }
+                        Some(msg)
+                    }
+                    Command::ResetLosses { asset } if asset.is_empty() => {
+                        for slot in assets.iter_mut() {
+                            apply_control(slot, ControlEvent::ResetLosses);
+                        }
+                        Some(format!("🔄 Reset loss-streak halt counter for all assets ({}).", args.asset.join(", ")))
+                    }
+                    Command::ResetLosses { asset } => {
+                        let matched: Vec<&mut AssetSlot> = assets.iter_mut()
+                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset))
+                            .collect();
+                        if matched.is_empty() {
+                            Some(format!("this driver doesn't manage {asset} — trading {}", args.asset.join(", ")))
+                        } else {
+                            for slot in matched {
+                                apply_control(slot, ControlEvent::ResetLosses);
+                            }
+                            Some(format!("🔄 Reset loss-streak halt counter for {asset}."))
+                        }
                     }
                     // A named asset may own more than one strategy slot (e.g. ETH:
                     // high_prob + reversal). With no strategy given, halt/resume both
@@ -1733,7 +1804,18 @@ async fn main() -> Result<()> {
                                 Some(s) => format!("{asset}/{s}"),
                                 None => asset.clone(),
                             };
-                            Some(format!("▶️ Resumed {label}."))
+                            let mut msg = format!("▶️ Resumed {label}.");
+                            let scoped = assets.iter().filter(|s| {
+                                s.worker.asset.eq_ignore_ascii_case(&asset)
+                                    && match &strategy {
+                                        Some(st) => s.worker.strategy_name.eq_ignore_ascii_case(st),
+                                        None => true,
+                                    }
+                            });
+                            if let Some(note) = loss_streak_still_halted_note(scoped) {
+                                msg.push_str(&note);
+                            }
+                            Some(msg)
                         }
                     }
                     Command::Invalid(msg) => Some(msg),
@@ -2399,6 +2481,65 @@ mod halt_persist_tests {
         assert!(slot.worker.is_halted());
         let on_disk = load_persisted_slot(&path).expect("balance halt must have persisted to disk");
         assert!(on_disk.worker.entry_suppressed);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Regression test for trader/doc/incident_unable_to_resume_2026-07-15.md:
+    /// `/reset_losses` — the command actually meant to clear a tripped
+    /// loss-streak halt — must persist immediately, the same as `/halt` and
+    /// `/resume` already do (`apply_control_halt_persists_immediately`).
+    #[test]
+    fn apply_control_reset_losses_persists_immediately() {
+        let path = scratch_state_path("reset_losses");
+        let _ = std::fs::remove_file(&path);
+        let mut slot = test_slot("BTC", path.clone());
+        slot.worker.restore_halt(false, 2, None); // halt_rev=2 in test_params -> tripped
+        assert!(slot.worker.is_halted(), "sanity: loss-streak halt engaged");
+
+        apply_control(&mut slot, ControlEvent::ResetLosses);
+
+        assert!(!slot.worker.is_halted());
+        let on_disk = load_persisted_slot(&path).expect("reset_losses must have persisted to disk");
+        assert_eq!(
+            on_disk.worker.halt_losses, 0,
+            "on-disk halt_losses must be zeroed immediately"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Reproduces the incident's actual symptom end-to-end at the slot level:
+    /// a loss-streak halt survives repeated `/resume`s (the bug report's
+    /// "/resume, /resume btc multiple times, /status still shows halted"),
+    /// and `loss_streak_still_halted_note` — the helper the Telegram reply
+    /// uses — must say so instead of the reply lying about success.
+    #[test]
+    fn resume_reply_note_flags_a_still_active_loss_streak_halt() {
+        let path = scratch_state_path("note");
+        let _ = std::fs::remove_file(&path);
+        let mut slot = test_slot("BTC", path.clone());
+        slot.worker.restore_halt(true, 2, None); // manual halt + tripped loss-streak
+
+        for _ in 0..3 {
+            apply_control(&mut slot, ControlEvent::Resume);
+            assert!(
+                slot.worker.is_halted(),
+                "loss-streak halt must survive repeated /resume, matching the incident report"
+            );
+        }
+
+        let note = loss_streak_still_halted_note(std::iter::once(&slot))
+            .expect("note must flag the still-active loss-streak halt");
+        assert!(note.contains("BTC/reversal"));
+        assert!(note.contains("/reset_losses"));
+
+        apply_control(&mut slot, ControlEvent::ResetLosses);
+        assert!(!slot.worker.is_halted());
+        assert!(
+            loss_streak_still_halted_note(std::iter::once(&slot)).is_none(),
+            "note must go away once the loss-streak halt actually clears"
+        );
 
         std::fs::remove_file(&path).unwrap();
     }

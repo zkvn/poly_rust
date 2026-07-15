@@ -358,6 +358,16 @@ impl HaltTracker {
         self.losses
     }
 
+    /// Manually zero the consecutive-loss counter — the `/reset_losses`
+    /// control command's effect. Independent of both `entry_suppressed`
+    /// (cleared by `/resume`) and `reset_if_new_session`'s daily rollover;
+    /// this is the only other way to clear an engaged loss-streak halt
+    /// before `reset_hour` comes around. See
+    /// `trader/doc/incident_unable_to_resume_2026-07-15.md`.
+    pub(crate) fn reset_losses(&mut self) {
+        self.losses = 0;
+    }
+
     pub(crate) fn last_session(&self) -> Option<NaiveDate> {
         self.last_session
     }

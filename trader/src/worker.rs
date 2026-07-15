@@ -189,6 +189,12 @@ pub enum Event {
 pub enum ControlEvent {
     Halt,
     Resume,
+    /// Zeroes the per-strategy consecutive-loss counter (`halt_rev`/
+    /// `halt_prob`) — the `/reset_losses` command's effect. Distinct from
+    /// `Resume`, which only clears `entry_suppressed` and deliberately never
+    /// touches this counter (§8) — see
+    /// `trader/doc/incident_unable_to_resume_2026-07-15.md`.
+    ResetLosses,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -532,6 +538,31 @@ impl Worker {
     /// `halt_reset_hour_hp` HKT each day).
     pub fn is_halted(&self) -> bool {
         self.entry_suppressed || self.halt.is_halted()
+    }
+
+    /// True specifically because the manual/drawdown/gamma-unresolved gate
+    /// (`entry_suppressed`) is set — the flag `/resume` clears. Distinct from
+    /// `loss_streak_halted`, which `/resume` never touches — see
+    /// `trader/doc/incident_unable_to_resume_2026-07-15.md`.
+    pub fn manually_suppressed(&self) -> bool {
+        self.entry_suppressed
+    }
+
+    /// True specifically because the per-strategy consecutive-loss halt
+    /// (`halt_rev`/`halt_prob`) has tripped — cleared only by `/reset_losses`
+    /// or the daily `halt_reset_hour_rev`/`_hp` rollover, never by `/resume`.
+    pub fn loss_streak_halted(&self) -> bool {
+        self.halt.is_halted()
+    }
+
+    /// Current consecutive-loss count / configured threshold, for status and
+    /// control-reply display alongside `loss_streak_halted`.
+    pub fn halt_losses(&self) -> i64 {
+        self.halt.losses()
+    }
+
+    pub fn halt_max(&self) -> i64 {
+        self.halt.max()
     }
 
     pub fn has_open_position(&self) -> bool {
@@ -1429,6 +1460,7 @@ impl Worker {
         match event {
             ControlEvent::Halt => self.entry_suppressed = true,
             ControlEvent::Resume => self.entry_suppressed = false,
+            ControlEvent::ResetLosses => self.halt.reset_losses(),
         }
         // No state change — halt/resume never touch an in-flight position.
         // `Action::Persist` still fires so `entry_suppressed` reaches disk
@@ -2179,6 +2211,79 @@ mod tests {
         assert!(!w.is_halted(), "/resume must still clear the halt");
     }
 
+    /// Reproduces trader/doc/incident_unable_to_resume_2026-07-15.md: with
+    /// `halt_rev=1` (2026-07-13/07-15 config), a single stop-loss trips the
+    /// loss-streak halt via `record_trade`, not `/halt`. `/resume` only ever
+    /// clears `entry_suppressed` (§8) — it must NOT silently clear the
+    /// loss-streak counter too, no matter how many times it's sent — that
+    /// would defeat the point of a separate risk-halt.
+    #[test]
+    fn resume_does_not_clear_a_loss_streak_halt() {
+        let mut p = btc_params();
+        p.halt_rev = 1;
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.restore_halt(false, 1, None); // 1 loss this session, halt_rev=1 -> tripped
+        assert!(w.is_halted(), "sanity: loss-streak halt should be engaged");
+        assert!(!w.manually_suppressed());
+        assert!(w.loss_streak_halted());
+
+        for _ in 0..3 {
+            w.step(Event::Control(ControlEvent::Resume));
+            assert!(
+                w.is_halted(),
+                "/resume must never clear a loss-streak halt on its own, however many times it's sent"
+            );
+        }
+    }
+
+    /// Companion to `resume_does_not_clear_a_loss_streak_halt`: `/reset_losses`
+    /// is the command actually meant to clear this gate (per `HELP_TEXT`), and
+    /// must not disturb an unrelated manual `/halt` sitting alongside it.
+    #[test]
+    fn reset_losses_clears_loss_streak_but_not_manual_halt() {
+        let mut p = btc_params();
+        p.halt_rev = 1;
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.restore_halt(true, 1, None); // manual halt AND a tripped loss-streak
+        assert!(w.manually_suppressed());
+        assert!(w.loss_streak_halted());
+        assert!(w.is_halted());
+
+        w.step(Event::Control(ControlEvent::ResetLosses));
+        assert!(
+            !w.loss_streak_halted(),
+            "/reset_losses must clear the loss-streak counter"
+        );
+        assert_eq!(w.halt_losses(), 0);
+        assert!(
+            w.manually_suppressed(),
+            "/reset_losses must not touch an unrelated manual halt"
+        );
+        assert!(
+            w.is_halted(),
+            "still halted overall — the manual gate is still up until /resume"
+        );
+
+        w.step(Event::Control(ControlEvent::Resume));
+        assert!(
+            !w.is_halted(),
+            "clearing both gates in turn must fully un-halt the worker"
+        );
+    }
+
+    /// `/reset_losses` on an already-clear loss streak (nothing to reset) must
+    /// be a harmless no-op, not e.g. push the counter negative.
+    #[test]
+    fn reset_losses_is_a_no_op_when_not_halted() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        assert!(!w.is_halted());
+
+        w.step(Event::Control(ControlEvent::ResetLosses));
+        assert!(!w.is_halted());
+        assert_eq!(w.halt_losses(), 0);
+    }
+
     /// trader/doc/incident_no_reset_notification_2026-07-08.md: `/halt`,
     /// `/resume`, and the balance-drawdown halt used to return no actions at
     /// all, so a halt/resume only reached `live_state_*.json` whenever the
@@ -2200,6 +2305,10 @@ mod tests {
         );
         assert_eq!(
             w.step(Event::Balance(BalanceEvent::DrawdownHalt)),
+            vec![Action::Persist]
+        );
+        assert_eq!(
+            w.step(Event::Control(ControlEvent::ResetLosses)),
             vec![Action::Persist]
         );
     }
