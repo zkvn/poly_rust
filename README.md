@@ -151,6 +151,23 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`machine.rs`'s `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` (backtest-only early-close) vs
+  `worker.rs` (live, no such rule) is a real, recurring source of Live-vs-BT `OUTCOME DIFF` —
+  found 2026-07-15 while implementing the recon config-pinning fix, not fixed.** Any live
+  trade entered in a cycle's final ~10-20s that holds to natural WIN/LOSS resolution will
+  backtest-replay as an early `Unwind` instead (`machine.rs` force-closes at whatever price is
+  showing once <10s remain before cycle end, added 2026-07-14 for an unrelated `siglab`
+  same-entry-timestamp fix, deliberately not ported to `worker.rs`) — confirmed on the
+  2026-07-15 08:55 BTC WIN row (`trader/doc/audit_recon_2026-07-15.md` §5: entry price matched
+  live exactly after the config-pinning fix, but outcome still diverged, WIN live vs Unwind
+  BT). The 2026-07-14 23:04:36 BTC STOPLOSS row very likely shares the same cause (entered at
+  T-39s) but wasn't independently re-verified tick-by-tick — flagging both the general pattern
+  and that specific unconfirmed row so neither gets lost. Closing this for real would mean
+  either porting an equivalent late-cycle force-close to `worker.rs` (a real behavior change,
+  needs its own review) or teaching `classify_mismatch_reason` to recognize "entered inside
+  the force-unwind window" as its own reason label instead of surfacing as an unexplained
+  `OUTCOME DIFF`.
+
 - **`scripts/deploy_trader.sh`'s header comment describes a stale tmux-based restart —
   found 2026-07-15 while deploying the `/reset_losses` halt fix, not fixed.** It says
   the script "gracefully stops the old trader process... and kills its tmux session...
