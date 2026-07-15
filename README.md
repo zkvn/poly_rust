@@ -151,6 +151,24 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **Backtest reconciliation has no visibility into the loss-streak halt (`halt_rev`/
+  `HaltTracker`) — found 2026-07-15 investigating two BTC trades with no BT row at all, not
+  fixed.** `trade_reconcile.py::build_halt_windows`'s `_HALT_OPEN_PATTERNS` only recognizes
+  balance-drawdown, Gamma-unresolved, and manual `/halt` — not the loss-streak halt's own
+  `🟡 <asset> HALTED` (engage) / `🟢 <asset> HALT RESET` / `🔄 Reset loss-streak halt counter`
+  (today's new `/reset_losses`) Telegram lines. Worse, the *backtest binary itself* has no way
+  to replay past a manual `/reset_losses` at all — its single continuous-day `HaltTracker` trips
+  on whatever it independently simulates (which can differ from live's real trade history) and
+  only clears at the daily `halt_reset_hour_rev` rollover, so once tripped it silently
+  suppresses every later entry that day. Concretely: BTC's real 08:59:40 loss-streak halt was
+  cleared live via `/reset_losses` at 16:49:44, but the backtest's *own* simulated 08:25
+  stop-loss (a cycle live never traded) tripped its *own* halt with no way to un-trip it,
+  producing `BT DID NOT FIRE`/`unexplained` for two real BTC trades at 16:54:46 and 17:24:52
+  that afternoon — confirmed by disabling halt entirely and watching both fire. Same *class* of
+  gap as the "Backtest reconciliation halt-state-drift gap" item below, but for the loss-streak
+  mechanism rather than the manual one, and newly load-bearing now that `/reset_losses`
+  actually works. Full writeup: `trader/doc/incident_recon_btc_reversal_2026-07-15.md`.
+
 - **`machine.rs`'s `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` (backtest-only early-close) vs
   `worker.rs` (live, no such rule) is a real, recurring source of Live-vs-BT `OUTCOME DIFF` —
   found 2026-07-15 while implementing the recon config-pinning fix, not fixed.** Any live
