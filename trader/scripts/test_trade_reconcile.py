@@ -618,6 +618,108 @@ class SafeRunBacktestReconciliationTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class RenderStrategyConfigTests(unittest.TestCase):
+    """Which strategy_*.toml is live and its key params — surfaced at the top
+    of the report (see write_markdown_summary's section ordering)."""
+
+    SAMPLE_TOML = """
+ts = "2026-07-15T00:00:00+08:00"
+source = "test source note"
+trade_assets = ["BTC", "BNB"]
+
+[strategies]
+default = ["reversal"]
+
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+[reversal]
+default = 0.50
+
+[reversal_low_threshold]
+default = 0.40
+BTC = 0.30
+
+[delta_pct_rev]
+default = 0.0003
+BNB = 0.0008
+
+[sl_reversal]
+default = 0.10
+
+[sl_pnl_rev]
+default = 0.30
+BNB = 0.50
+
+[unwind_pnl_rev]
+default = 0.25
+
+[unwind_time_rev]
+default = 20.0
+"""
+
+    def _render(self, toml_text: str) -> str:
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            (config_dir / "strategy_20260715.toml").write_text(toml_text)
+            lines: list = []
+            mod.render_strategy_config(lines, config_dir)
+            return "\n".join(lines)
+
+    def test_renders_top_level_facts(self):
+        text = self._render(self.SAMPLE_TOML)
+        self.assertIn("## Strategy Config", text)
+        self.assertIn("strategy_20260715.toml", text)
+        self.assertIn("BTC, BNB", text)  # trade assets
+        self.assertIn("reversal", text)  # strategies
+        self.assertIn("| halt_rev / halt_prob | 1 / 1 |", text)
+        self.assertIn("| halt_reset_hour (rev / hp) | 2 / 8 HKT |", text)
+
+    def test_per_asset_table_resolves_overrides_and_defaults(self):
+        text = self._render(self.SAMPLE_TOML)
+        # BTC: reversal_low_threshold overridden (0.30), delta_pct_rev on default (0.0003)
+        self.assertIn("| BTC | 0.5000 | 0.3000 | 0.00030 |", text)
+        # BNB: delta_pct_rev and sl_pnl_rev both overridden
+        self.assertIn("| BNB | 0.5000 | 0.4000 | 0.00080 |", text)
+        self.assertIn("0.5000 |", text)  # BNB's overridden sl_pnl_rev
+
+    def test_source_note_is_collapsible(self):
+        text = self._render(self.SAMPLE_TOML)
+        self.assertIn("<summary>Notes (meta.source)</summary>", text)
+        self.assertIn("test source note", text)
+
+    def test_no_config_files_degrades_gracefully(self):
+        with tempfile.TemporaryDirectory() as d:
+            lines: list = []
+            mod.render_strategy_config(lines, Path(d))
+            text = "\n".join(lines)
+        self.assertIn("## Strategy Config", text)
+        self.assertIn("No strategy_*.toml found", text)
+
+    def test_picks_lexicographically_latest_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            (config_dir / "strategy_20260101.toml").write_text(
+                'ts = "old"\ntrade_assets = ["ETH"]\n[strategies]\ndefault = ["high_prob"]\n'
+            )
+            (config_dir / "strategy_20260715.toml").write_text(self.SAMPLE_TOML)
+            lines: list = []
+            mod.render_strategy_config(lines, config_dir)
+            text = "\n".join(lines)
+        self.assertIn("strategy_20260715.toml", text)
+        self.assertIn("BTC, BNB", text)
+        self.assertNotIn("ETH", text)
+
+
 class RenderDataQualityTests(unittest.TestCase):
     """price_feed/doc/incident_collector_data_loss_2026-07-12.md's proposed observer."""
 
@@ -735,8 +837,8 @@ class MakeSectionsCollapsibleTests(unittest.TestCase):
         text = "\n".join(out)
         self.assertEqual(out.count("<details>"), 2)
         self.assertEqual(out.count("</details>"), 2)
-        self.assertIn("<summary><strong>Data Quality</strong></summary>", text)
-        self.assertIn("<summary><strong>Performance</strong></summary>", text)
+        self.assertIn("<summary><h2>Data Quality</h2></summary>", text)
+        self.assertIn("<summary><h2>Performance</h2></summary>", text)
         # preamble before the first '## ' stays outside any <details> block
         self.assertLess(out.index("> summary line"), out.index("<details>"))
         # original header text is preserved inside the block (anchors still work)
@@ -775,9 +877,13 @@ class MakeSectionsCollapsibleTests(unittest.TestCase):
             )
             text = path.read_text()
         self.assertIn("<details>", text)
-        self.assertIn("<summary><strong>Data Quality</strong></summary>", text)
+        self.assertIn("<summary><h2>Data Quality</h2></summary>", text)
         self.assertIn("## Data Quality", text)
-        self.assertIn("<summary><strong>Backtest Reconciliation</strong></summary>", text)
+        self.assertIn("<summary><h2>Backtest Reconciliation</h2></summary>", text)
+        # Data Quality is rendered last (after Backtest Reconciliation) —
+        # Strategy Config, by contrast, is always first.
+        self.assertLess(text.index("## Strategy Config"), text.index("## Backtest Reconciliation"))
+        self.assertLess(text.index("## Backtest Reconciliation"), text.index("## Data Quality"))
 
 
 if __name__ == "__main__":

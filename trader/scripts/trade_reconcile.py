@@ -1048,6 +1048,99 @@ def _fmt_pnl(v) -> str:
     return f"{v:+.4f}" if v is not None else "—"
 
 
+def _cfg_table(cfg: dict, key: str) -> dict:
+    """A `[key]` table in strategy_*.toml is always {"default": x, ASSET: y, ...} —
+    return it as-is, or wrap a bare scalar (top-level key, no per-asset table) in
+    {"default": x} so callers have one shape to deal with."""
+    val = cfg.get(key)
+    if isinstance(val, dict):
+        return val
+    return {"default": val}
+
+
+def _cfg_asset(cfg: dict, key: str, asset: str):
+    tbl = _cfg_table(cfg, key)
+    return tbl.get(asset, tbl.get("default"))
+
+
+def _fmt_cfgval(v, decimals: int = 4) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, float):
+        return f"{v:.{decimals}f}"
+    return str(v)
+
+
+def render_strategy_config(lines: list, config_dir: Path) -> None:
+    """Which strategy_*.toml is actually live right now, and its key
+    trade-affecting parameters — surfaced at the top of the report since every
+    other section (Performance, Backtest Reconciliation) is only meaningful in
+    light of whatever config produced it. Same file-selection as Rust's
+    `config::load_latest` (`resolve_trade_assets`) — lexicographically latest
+    in `config_dir`."""
+    lines.append("## Strategy Config")
+    lines.append("")
+
+    try:
+        files = sorted(config_dir.glob("strategy_*.toml"))
+        if not files:
+            lines.append(f"*No strategy_*.toml found in {config_dir}.*")
+            lines.append("")
+            return
+        latest = files[-1]
+        with open(latest, "rb") as f:
+            cfg = tomllib.load(f)
+    except Exception as e:
+        lines.append(f"*Could not load strategy config: {e}*")
+        lines.append("")
+        return
+
+    trade_assets = cfg.get("trade_assets", [])
+    strategies = cfg.get("strategies", {}).get("default", [])
+
+    lines.append(f"**Active file:** `{latest.name}`  (`meta.ts` {cfg.get('ts', '—')})")
+    lines.append("")
+    lines.extend([
+        "| | Value |", "|---|---|",
+        f"| Trade assets | {', '.join(trade_assets) or '—'} |",
+        f"| Strategies | {', '.join(strategies) or '—'} |",
+        f"| halt_rev / halt_prob | {_fmt_cfgval(_cfg_asset(cfg, 'halt_rev', 'default'), 0)} / "
+        f"{_fmt_cfgval(_cfg_asset(cfg, 'halt_prob', 'default'), 0)} |",
+        f"| halt_reset_hour (rev / hp) | {_fmt_cfgval(_cfg_asset(cfg, 'halt_reset_hour_rev', 'default'), 0)} / "
+        f"{_fmt_cfgval(_cfg_asset(cfg, 'halt_reset_hour_hp', 'default'), 0)} HKT |",
+    ])
+    lines.append("")
+
+    if trade_assets:
+        lines.extend([
+            "### Reversal Params (traded assets)", "",
+            "| Asset | reversal | low_thresh | delta_pct_rev | sl_reversal | sl_pnl_rev | "
+            "unwind_pnl_rev | unwind_time_rev |",
+            "|---|---|---|---|---|---|---|---|",
+        ])
+        for asset in trade_assets:
+            lines.append(
+                f"| {asset} | {_fmt_cfgval(_cfg_asset(cfg, 'reversal', asset))} | "
+                f"{_fmt_cfgval(_cfg_asset(cfg, 'reversal_low_threshold', asset))} | "
+                f"{_fmt_cfgval(_cfg_asset(cfg, 'delta_pct_rev', asset), 5)} | "
+                f"{_fmt_cfgval(_cfg_asset(cfg, 'sl_reversal', asset))} | "
+                f"{_fmt_cfgval(_cfg_asset(cfg, 'sl_pnl_rev', asset))} | "
+                f"{_fmt_cfgval(_cfg_asset(cfg, 'unwind_pnl_rev', asset))} | "
+                f"{_fmt_cfgval(_cfg_asset(cfg, 'unwind_time_rev', asset), 1)} |"
+            )
+        lines.append("")
+
+    source = cfg.get("source")
+    if source:
+        lines.append("<details>")
+        lines.append("<summary>Notes (meta.source)</summary>")
+        lines.append("")
+        lines.append(source)
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+
 def render_data_quality(lines: list, result: dict) -> None:
     """price_feed/doc/incident_collector_data_loss_2026-07-12.md's proposed observer,
     rendered every day so a repeat of that incident (2+ days of silent ~85% data loss) shows
@@ -1134,6 +1227,30 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
 
     lines.append("### Live vs BT")
     lines.append("")
+    if live_vs_bt_rows:
+        lines.extend([
+            "| Time | Asset | Strategy | Side | Entry Time | Entry Px | Exit Px | Cycle Δ% | Entry Δ% | "
+            "Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status | Reason |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        ])
+        for r in live_vs_bt_rows:
+            lines.append(
+                f"| {r['time']} | {r['asset']} | {r['strategy']} | {r['side']} | "
+                f"{r.get('entry_time', '—')} | {_fmt_price(r.get('entry_price'))} | "
+                f"{_fmt_price(r.get('exit_price'))} | {_fmt_pct(r.get('cycle_delta_pct'))} | "
+                f"{_fmt_pct(r.get('entry_delta_pct'))} | "
+                f"{r['outcome']} | {r['pnl']:+.4f} | {r.get('bt_outcome') or '—'} | "
+                f"{_fmt_pnl(r.get('bt_pnl'))} | {_fmt_pnl(r.get('diff_pnl'))} | {r['status']} | "
+                f"{r.get('reason', '—')} |"
+            )
+        lines.append("")
+    else:
+        lines.append("*No live trades in window to reconcile against the backtest.*")
+        lines.append("")
+
+    lines.append("<details>")
+    lines.append("<summary>Notes</summary>")
+    lines.append("")
     lines.append(
         "**Entry Time** is T-seconds-before-cycle-close at the moment of entry "
         "(same convention as worker.rs's live \"T-Ns\" heartbeat logs). "
@@ -1157,26 +1274,8 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
         "cycle live was actually suppressed for is a confident explanation)."
     )
     lines.append("")
-    if live_vs_bt_rows:
-        lines.extend([
-            "| Time | Asset | Strategy | Side | Entry Time | Entry Px | Exit Px | Cycle Δ% | Entry Δ% | "
-            "Live Outcome | Live PnL | BT Outcome | BT PnL | Diff PnL | Status | Reason |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-        ])
-        for r in live_vs_bt_rows:
-            lines.append(
-                f"| {r['time']} | {r['asset']} | {r['strategy']} | {r['side']} | "
-                f"{r.get('entry_time', '—')} | {_fmt_price(r.get('entry_price'))} | "
-                f"{_fmt_price(r.get('exit_price'))} | {_fmt_pct(r.get('cycle_delta_pct'))} | "
-                f"{_fmt_pct(r.get('entry_delta_pct'))} | "
-                f"{r['outcome']} | {r['pnl']:+.4f} | {r.get('bt_outcome') or '—'} | "
-                f"{_fmt_pnl(r.get('bt_pnl'))} | {_fmt_pnl(r.get('diff_pnl'))} | {r['status']} | "
-                f"{r.get('reason', '—')} |"
-            )
-        lines.append("")
-    else:
-        lines.append("*No live trades in window to reconcile against the backtest.*")
-        lines.append("")
+    lines.append("</details>")
+    lines.append("")
 
     lines.append("### BT vs Live (cycles live missed)")
     lines.append("")
@@ -1334,7 +1433,7 @@ def _make_sections_collapsible(lines: list) -> list:
         if line.startswith("## "):
             close_section()
             out.append("<details>")
-            out.append(f"<summary><strong>{line[3:].strip()}</strong></summary>")
+            out.append(f"<summary><h2>{line[3:].strip()}</h2></summary>")
             out.append("")
             out.append(line)
             open_section = True
@@ -1407,10 +1506,10 @@ def write_markdown_summary(
     elif dq_checked:
         lines.append(
             f"> **Data quality:** {len(dq_flagged)}/{dq_checked} asset-hours flagged"
-            + (" — see below" if dq_flagged else " — no gaps 🎯")
+            + (" — see bottom" if dq_flagged else " — no gaps 🎯")
         )
     lines.append("")
-    render_data_quality(lines, dq)
+    render_strategy_config(lines, CONFIG_DIR)
 
     if not perf_stats:
         lines.append("> **No trades in this window.** The bot was not active during this period.")
@@ -1613,6 +1712,12 @@ def write_markdown_summary(
         lines.append("")
         lines.append("*Unavailable this run — see recon_cron.log for the reason.*")
         lines.append("")
+
+    # Rendered last — the blockquote one-liner at the top of the report already
+    # surfaces the headline number, so the detailed gap table (200+ rows during
+    # an incident) doesn't force scrolling past it to reach the sections that
+    # matter on a normal day.
+    render_data_quality(lines, dq)
 
     lines = _make_sections_collapsible(lines)
 
