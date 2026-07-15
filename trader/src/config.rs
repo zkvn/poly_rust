@@ -240,26 +240,28 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // strategy_20260708.toml full-history top-win-rate recalibration — BTC has no
-        // per-asset override for any of these (updated 2026-07-09 test drift fix; the
-        // previous hardcoded values dated back to strategy_20260705.toml and silently
-        // stopped matching when 20260708's recalibration landed the same day, per the
-        // README TODO entry), so every field below resolves to its "default" entry.
+        // strategy_20260715.toml same-day update (reversal_hourly "By win_rate"
+        // table — updated 2026-07-15 test drift fix). BTC now has explicit
+        // overrides for reversal/delta_pct_rev/unwind_time_rev; everything else
+        // below resolves via the shared "default" entry (unwind_pnl_rev now
+        // converges to 0.10 for every asset under this selection method, so it
+        // has no per-asset override at all).
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
-            "BTC reversal = 0.55 (default)"
+            "BTC reversal = 0.55 (override)"
         );
         assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
-        assert_eq!(p.halt_rev, 2);
+        assert!((p.delta_pct_rev - 0.0004).abs() < 1e-9);
+        assert_eq!(p.halt_rev, 1);
         assert_eq!(p.halt_reset_hour_rev, 2);
-        assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
-        assert!((p.sl_pnl_rev - 0.40).abs() < 1e-9);
+        assert!((p.unwind_pnl_rev - 0.10).abs() < 1e-9);
+        assert!((p.sl_pnl_rev - 0.30).abs() < 1e-9);
         assert!((p.unwind_pnl_hp - 0.07).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.35).abs() < 1e-9);
-        // unwind_time_rev has per-asset overrides (ETH=28.0, DOGE=30.0); BTC uses
-        // the 26.0 default. unwind_time_hp is flat 30.0 for all assets.
-        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
+        // unwind_time_rev has per-asset overrides (BTC=20.0, XRP=20.0); BTC uses
+        // its own 20.0 override, not the 25.0 default. unwind_time_hp is flat
+        // 30.0 for all assets.
+        assert!((p.unwind_time_rev - 20.0).abs() < 1e-9);
         assert!((p.unwind_time_hp - 30.0).abs() < 1e-9);
         // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
         // README's Gamma-halt section) — flat defaults, no per-asset override yet.
@@ -274,10 +276,12 @@ mod tests {
     fn unwind_time_falls_back_to_default_and_resolves_asset_override() {
         let mut toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // Default fallback (no BTC-specific entry in the real config — updated
-        // 2026-07-09, BTC's default changed from 30.0 to 26.0 in strategy_20260708.toml).
-        let p = toml.resolve("BTC").expect("resolve BTC");
-        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
+        // Default fallback (no SOL-specific entry in the real config — updated
+        // 2026-07-15, strategy_20260715.toml's same-day update gave BTC/XRP their
+        // own unwind_time_rev overrides, so SOL is now the asset that falls back
+        // to the 25.0 default).
+        let p = toml.resolve("SOL").expect("resolve SOL");
+        assert!((p.unwind_time_rev - 25.0).abs() < 1e-9);
         // Asset-specific override takes priority over default when present.
         toml.unwind_time_rev.insert("ETH".to_string(), 12.0);
         let p = toml.resolve("ETH").expect("resolve ETH");
@@ -292,11 +296,12 @@ mod tests {
     fn default_fallback() {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // BTC uses default delta_pct_rev (updated 2026-07-09: ETH gained its own
-        // override, 0.0008, in strategy_20260708.toml, so it no longer falls back —
-        // BTC is now the asset that demonstrates the fallback path).
-        let p = toml.resolve("BTC").expect("resolve BTC");
-        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
+        // SOL uses default delta_pct_rev (updated 2026-07-15: BTC gained its own
+        // override, 0.0004, in strategy_20260715.toml's same-day update, so it no
+        // longer falls back — SOL is now the asset that demonstrates the fallback
+        // path).
+        let p = toml.resolve("SOL").expect("resolve SOL");
+        assert!((p.delta_pct_rev - 0.0003).abs() < 1e-9);
     }
 
     #[test]
