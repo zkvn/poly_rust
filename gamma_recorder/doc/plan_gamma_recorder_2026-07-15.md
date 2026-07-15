@@ -1,47 +1,53 @@
-# Plan — official market-resolution recorder (Gamma outcomes)
+# Plan — `gamma_recorder`: independent Polymarket Gamma-API results recorder
 
 ## Bottom line up front
 
-Add a **new `price_feed` subcommand** (not a new crate): `price_feed resolve`, living in a new
-`price_feed/src/resolutions.rs` module. It has two modes sharing one Gamma-fetch/upsert code path:
+**New standalone crate**, `gamma_recorder/`, sibling to `price_feed/`, `trader/`, `siglab/` at
+repo root — **not** a subcommand of `price_feed`, and **zero code changes to `price_feed/` or
+`trader/`** (revised from the 2026-07-14 draft of this plan, which proposed folding it into
+`price_feed` as a new subcommand — the user wants full independence instead, both because
+`price_feed`/`trader` must stay untouched and because this module is expected to grow beyond
+just up-down market resolutions into other Gamma data over time).
 
-1. `--backfill --from <date> --to <date>` — one-shot: bulk-paginate Gamma's `/events` list
-   endpoint (closed=true, crypto tag, date range) rather than one HTTP call per market, and
-   upsert every `{asset}-updown-{5m,15m,4h}-{slot}` event found into a local store.
-2. No flags (long-running daemon) — as each tracked (asset, duration) slot closes, wait 5 min,
-   poll Gamma for that one slug, retry on a backoff until resolved or a deadline, upsert the
-   result. A periodic housekeeping sweep retries any row still `UNRESOLVED` after its deadline.
+First concrete feature — official up-down market resolutions — has two modes sharing one
+Gamma-fetch/upsert code path:
 
-**Storage: SQLite** (`price_feed/resolutions.db`), not Parquet/CSV/JSON/TOML — see §3 for why.
-One table, primary key `(asset, duration, slot)`, upserted in place.
+1. `--backfill --from 2026-06-12 --to <today>` — one-shot: bulk-paginate Gamma's `/events` list
+   endpoint, upsert every matching `{asset}-updown-{5m,15m,4h}-{slot}` event found.
+2. No flags (long-running daemon) — records each tracked market's resolution ~5 min after its
+   slot closes, with retry/backoff and gap reconciliation (§7).
 
-This is a plan for review — nothing implemented yet.
+**Storage: SQLite** (`gamma_recorder/data/gamma.db`), not Parquet/CSV/JSON/TOML — see §3.
+
+**Must be validated locally in Docker with CPU/memory monitoring before it ever touches
+Oracle** — see §11. This is a plan for review — nothing implemented yet.
 
 ---
 
 ## 1. Motivation
 
-Two consumers want real Polymarket resolution outcomes, not a proxy:
+- **Continuous backtest validation** (potential future consumer, out of scope for this module —
+  see §10). `trader/src/backtest.rs` currently derives a cycle's outcome purely from recorded
+  price data (`Machine::cycle_close()` compares `last_binance` against `cycle_open_binance`) —
+  a reasonable proxy, but not what Polymarket actually settles against. A local table of
+  ground-truth outcomes would let a backtest continuously diff its price-based outcome against
+  the real one, if and when someone wires that up later.
+- **Daily recon** (potential future consumer, also out of scope here). `trade_reconcile.py`'s
+  Gamma Cross-Check section currently calls Gamma live, once per trade, every recon run.
+- **Room to grow beyond up-down resolutions.** The user may want this module to record other
+  Gamma API results later (e.g. weather/World Cup event data, volume/liquidity snapshots, other
+  market metadata) — hence a fully independent crate with its own `Cargo.toml`/binary/deploy
+  story, rather than coupling this to `price_feed`'s release cycle. Concretely: each new Gamma
+  data type gets its own subcommand + table when it's actually needed, not a speculative
+  abstraction layer built now for data types that don't exist yet (per this repo's own
+  "don't design for hypothetical future requirements" convention) — the independence of the
+  *crate* is what buys the room to grow; the *code* stays as simple as the one concrete feature
+  being built.
 
-- **Continuous backtest validation.** `trader/src/backtest.rs` currently derives a cycle's
-  outcome purely from recorded price data — `Machine::cycle_close()` compares `last_binance`
-  against `cycle_open_binance`. That's a reasonable proxy but it is **not** what Polymarket
-  actually settles against (Chainlink BTC/USD stream via UMA, per the resolution text on the
-  market itself — confirmed live, see §2). Any divergence (feed gaps, an oracle edge case, a
-  tie exactly at the boundary) currently has no way to surface — the backtest just silently
-  trusts its own proxy. A local table of ground-truth outcomes lets the backtest (or a
-  dedicated recon check) continuously diff its price-based outcome against the real one across
-  the whole history, and flag drift automatically as new data lands, rather than a one-off audit.
-- **Daily recon** (`trader/scripts/trade_reconcile.py`'s Gamma Cross-Check section) currently
-  calls `fetch_gamma_outcome(slug)` live, once per trade, against `gamma-api.polymarket.com`
-  during every recon run — network-dependent, slow at scale, and re-fetches the same slug if
-  recon is re-run. Once this table exists, recon can look outcomes up locally first and only
-  fall back to a live Gamma call for slugs too recent to be in the table yet (see §7).
-
-## 2. Confirmed Gamma response shape (live-checked 2026-07-14)
+## 2. Confirmed Gamma response shape + official docs (checked 2026-07-14/15)
 
 `GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-<slot>` →
-`events[0].markets[0]` has (fields actually seen, not assumed):
+`events[0].markets[0]` has (fields actually observed, not assumed):
 
 ```json
 {
@@ -55,55 +61,60 @@ Two consumers want real Polymarket resolution outcomes, not a proxy:
 }
 ```
 
-- **Resolution check uses either signal, not `umaResolutionStatus` alone** (revised after live
-  spot-checks — see "Claude Thoughts on DeepSeek Review" below): `umaResolutionStatus ==
-  "resolved"` **or** `outcomePrices` containing a value ≥0.99. Live-checked the most-recently-closed
-  5m slot across all 7 assets ~4 minutes after close: BTC/ETH/SOL/DOGE/XRP/BNB already show both
-  signals resolved, but **HYPE's `umaResolutionStatus` stayed `None` even though `outcomePrices`
-  was already decisive** (`["0.0005","0.9995"]`) — gating on `umaResolutionStatus` alone would
-  never resolve HYPE rows. `trade_reconcile.py::fetch_gamma_outcome` already uses the
-  `outcomePrices` threshold today (not `umaResolutionStatus`); keeping both as an OR preserves
-  that proven path and adds the stronger signal for assets that populate it.
-- `closedTime`, when present, is used for `resolved_at_ts` — for these `automaticallyResolved: true`
-  Chainlink-settled markets it's consistently close+20s (verified live, not "whenever we happened
-  to poll"). Falls back to "timestamp of the first poll that saw a decisive/resolved signal" for
-  rows where `closedTime` is absent (the HYPE case above).
-- The bulk list form (`?tag_id=102127&closed=true&limit=100&offset=N`) returns paginated events
-  across all crypto assets/durations in one call — confirmed working live. This is what backfill
-  should use instead of one request per historical slot (see §5 for why that matters).
+**Official rate limit** (docs.polymarket.com/quickstart/introduction/rate-limits, fetched
+2026-07-15): Gamma's `/events` endpoint is limited to **500 requests / 10 seconds**, and the
+documented behavior on exceeding it is *throttling* (requests delayed/queued), not an outright
+rejection — no 429 is documented, but treat one as possible and back off on it anyway (cheap
+insurance, §6). This is the number the backfill's inter-page sleep is sized against (§6).
+
+**Resolution check uses either signal, not `umaResolutionStatus` alone**: `umaResolutionStatus
+== "resolved"` **or** `outcomePrices` containing a value ≥0.99. Live-checked the
+most-recently-closed 5m slot across all 7 assets ~4 minutes after close: BTC/ETH/SOL/DOGE/XRP/BNB
+already show both signals resolved, but **HYPE's `umaResolutionStatus` stayed `None` even though
+`outcomePrices` was already decisive** (`["0.0005","0.9995"]`) — gating on `umaResolutionStatus`
+alone would never resolve HYPE rows. `trade_reconcile.py::fetch_gamma_outcome` (unrelated code,
+not touched by this plan — see §10) already uses the `outcomePrices` threshold today; matching
+that signal here too, on top of the stronger one where it's available, is what makes HYPE work.
+
+`closedTime`, when present, is used for `resolved_at_ts` — for these `automaticallyResolved: true`
+Chainlink-settled markets it's consistently close+20s (verified live). Falls back to "timestamp
+of the first poll that saw a decisive/resolved signal" for rows where `closedTime` is absent (the
+HYPE case).
+
+**Bulk pagination** (`?tag_id=102127&closed=true&limit=100&offset=N`, offset-based, confirmed
+live) returns the *full* market object per event, same field set as the single-slug endpoint —
+not a slimmed-down summary. Confirmed the endpoint isn't limited to updown markets (a default-order
+page surfaced an unrelated 2025 quarterly market), so the exact `order`/date-range params to land
+reliably on updown-market pages are an implementation-time detail, not a blocker — the load-bearing
+assumption (bulk call ⇒ full fields, no per-market follow-up needed) holds.
 
 ## 3. Storage format: SQLite, not Parquet/CSV/JSON/TOML
 
-What this table actually needs to do, sized realistically: ~7 assets × (288 five-min + 96
-fifteen-min + 6 four-hour) ≈ **2,730 new rows/day**, all history since price_feed started
-recording (~2026-06-12) is on the order of 100–150k rows total. Small, forever. The access
-pattern is point lookups/upserts by `(asset, duration, slot)` from **two different languages**
-(Rust backtest binary, Python recon script), with a row's life cycle
-`UNRESOLVED → resolved` (i.e. **update-in-place**, not pure append).
+~7 assets × (288 five-min + 96 fifteen-min + 6 four-hour) ≈ **2,730 new rows/day**; full history
+back to 2026-06-12 is on the order of 100–150k rows. Small, forever. Access pattern is point
+lookups/upserts by `(asset, duration, slot)`, with a row's life cycle `UNRESOLVED → resolved`
+(update-in-place, not pure append) — and, per §1, likely more tables of a similar shape for other
+Gamma data types later.
 
 | Format | Fit | Why / why not |
 |---|---|---|
-| **Parquet** | Poor | Immutable columnar — no row-level upsert. Marking a pending row resolved would mean the same tmp-file/hourly-reseal dance `collect.rs` already does for high-volume tick data, except here it's keyed point-updates on a tiny table, not a natural time-ordered append stream. Real complexity for zero benefit at this row count. |
-| **CSV** | Poor | Append is fine; upsert isn't — flipping one row from pending to resolved means a full-file rewrite (or duplicate rows + "last one wins" logic downstream), and a reader mid-read during that rewrite can see a truncated file. No index for point lookups. |
-| **JSON** | Poor | Same append/upsert/rewrite-race problem as CSV, plus no index — every lookup means loading and scanning the whole file. |
+| **Parquet** | Poor | Immutable columnar — no row-level upsert; would need the same tmp-file/reseal dance `price_feed/src/collect.rs` uses for high-volume tick data, for no benefit at this row count. |
+| **CSV** | Poor | No upsert/index; flipping a row from pending to resolved means a full-file rewrite, with a rewrite-race risk for anything reading concurrently. |
+| **JSON** | Poor | Same append/upsert/rewrite-race problem as CSV, no index. |
 | **TOML** | Wrong shape | Not designed for many repeated tabular records at all. |
-| **SQLite** | **Recommended** | Purpose-built for exactly this: indexed point lookups, real `UPSERT`, and — with WAL mode — safe concurrent reads from other processes while one writer appends/updates. Both languages read it natively: Python's `sqlite3` is stdlib (zero new dependency, lighter than the `pandas`/`pyarrow` recon already carries for parquet); Rust needs `rusqlite` (new dependency — **flagging**: no crate in this repo currently uses SQLite anywhere, this would be the first). |
+| **SQLite** | **Recommended** | Indexed point lookups, real `UPSERT`, and — with WAL mode — safe concurrent reads from other processes while one writer appends/updates. `rusqlite` (Rust) with the `bundled` feature needs no system SQLite; Python's `sqlite3` is stdlib. Both are read-only consumers of a file this crate owns exclusively — no dependency either direction. |
 
-**Consumption model matches the existing `raw/*.parquet` convention**, not a new one: `trader`
-already reads `price_feed/raw/*.parquet` directly with its own parquet loader — it does **not**
-depend on the `price_feed` crate to do so (confirmed: no root-level Cargo workspace; `siglab`
-path-depends on `trader`, but `trader` and `price_feed` are fully independent crates). Treat
-`resolutions.db` the same way: a plain data artifact on disk, opened independently by whichever
-consumer needs it (`trader`'s backtest binary via `rusqlite`, `trade_reconcile.py` via stdlib
-`sqlite3`) — no new crate-to-crate dependency introduced.
+One database file, one table per Gamma data type (`market_resolutions` is the only one specced
+here); a later data type gets its own table in the same file rather than a new database, since
+they'd share the same writer process and deploy story anyway.
 
 ## 4. Schema
 
 ```sql
 CREATE TABLE market_resolutions (
     asset            TEXT    NOT NULL,   -- 'BTC','ETH','SOL','DOGE','XRP','BNB','HYPE'
-    duration         TEXT    NOT NULL,   -- '5m' | '15m' | '4h' (matches make_slug's suffix)
-    slot             INTEGER NOT NULL,   -- unix seconds, == current_slot_for(interval)
+    duration         TEXT    NOT NULL,   -- '5m' | '15m' | '4h'
+    slot             INTEGER NOT NULL,   -- unix seconds, floor(ts / interval) * interval
     slug             TEXT    NOT NULL,
     condition_id     TEXT,
     open_ts          INTEGER NOT NULL,   -- == slot
@@ -123,250 +134,216 @@ CREATE INDEX idx_market_resolutions_unresolved ON market_resolutions (outcome)
 CREATE INDEX idx_market_resolutions_history ON market_resolutions (asset, duration, close_ts);
 ```
 
-`WITHOUT ROWID` since the natural key is already unique and compact — avoids a redundant
-autoincrement rowid for a table that's purely keyed lookups. The partial index keeps the
-housekeeping sweep's "find rows still pending" query cheap even once the table has 100k+ rows.
-The second index supports the range queries backtest/recon actually want ("all BTC-5m
-resolutions between date X and Y"), which the primary key alone (point lookups by exact slot)
-doesn't serve well.
+`WITHOUT ROWID` since the natural key is already unique and compact. The partial index keeps the
+housekeeping sweep's "find rows still pending" query cheap past 100k+ rows. The second index
+supports range queries ("all BTC-5m resolutions between date X and Y") that a future consumer
+would want and the primary key alone doesn't serve.
 
-## 5. New module vs. new crate
+## 5. Crate layout — fully independent, no shared code with `price_feed`/`trader`
 
-**Recommend: new module inside the existing `price_feed` crate**, new `Cmd::Resolve` subcommand
-alongside `Markets`/`Collect` in `main.rs`, not a standalone crate/binary.
+```
+gamma_recorder/
+  Cargo.toml           # own deps: reqwest, serde_json, chrono, tokio, clap, rusqlite (bundled)
+  Cross.toml           # aarch64 cross-compile config, mirrors price_feed/Cross.toml
+  Dockerfile           # local test image, mirrors trader/Dockerfile's pattern
+  src/
+    main.rs            # clap CLI: Cmd::Resolve { backfill, from, to }
+    gamma.rs            # Gamma HTTP client: fetch-by-slug, fetch-page (bulk), signal-resolved logic
+    slots.rs            # slot/slug math — asset+interval -> slug, e.g. "{asset}-updown-{suffix}-{slot}"
+    db.rs               # schema/migrations, upsert, sweep queries
+  systemd/
+    poly-gamma-recorder.service
+  doc/
+    plan_gamma_recorder_2026-07-15.md   # this file
+```
 
-Why:
-- `make_slug`/`current_slot_for` (`collect.rs:55,95`) **must** stay byte-identical to whatever
-  the resolution recorder uses to compute a slot's slug — they're the same naming scheme by
-  construction. Reusing the functions directly (make them `pub(crate)`) guarantees that; a
-  separate crate would have to duplicate them and could drift.
-- Already has every dependency needed: `reqwest`, `serde_json`, `chrono`, `tokio`. A new crate
-  would re-declare all four with independent version pins — a maintenance/drift risk for no
-  reason (`Cargo.toml` already shown to have exactly these).
-- **New dependency: `rusqlite`**, in `price_feed/Cargo.toml` (the writer) — not just `trader`'s
-  (the reader), which the first draft of this plan missed. Use the `bundled` feature so the
-  aarch64 cross-compile (`cross build --target aarch64-unknown-linux-gnu`) links a vendored
-  SQLite instead of depending on a `libsqlite3-dev`-equivalent being present in the `cross`
-  Docker image — otherwise the Oracle cross-compile step breaks.
-- Same deploy story: cross-compiled aarch64 via `cross`, rsynced to Oracle, run as another
-  `Restart=always` systemd unit — identical to how `collect` is already deployed (see root
-  `README.md` → "Build and deploy"). Adding a subcommand is zero new deploy-pipeline surface;
-  a new crate would be a second binary artifact to build/ship/monitor.
-- Downside, for completeness: couples the resolution recorder's release cadence to
-  `price_feed`'s build. Acceptable — `Markets` and `Collect` already share this without issue.
+`slots.rs` **duplicates** the tiny slot/slug formula already in `price_feed/src/collect.rs`
+(`make_slug`/`current_slot_for`) rather than importing it — the two crates share zero code by
+design. This is a deliberate, small, low-risk duplication: the formula is Polymarket's own public
+market-naming convention (`{asset}-updown-{suffix}-{slot}`, `slot = floor(unix_ts / interval) *
+interval`), not an internal implementation detail that could silently drift between the two
+crates — if Polymarket ever changed it, both copies would need updating in lockstep regardless of
+which crate owns the "canonical" version. Worth a one-line comment in both files cross-referencing
+each other so a future reader isn't surprised to find the same three lines twice.
+
+No root Cargo workspace exists today (`price_feed`, `trader`, `siglab` are already three
+independent crates — `siglab` path-depends on `trader`, but nothing depends on `price_feed`), so
+adding a fourth independent crate is the established pattern, not a new one.
 
 ## 6. Backfill mode
 
-**Don't** do one Gamma call per historical `(asset, duration, slot)` — at 7 assets × ~390
-slots/day since 2026-06-12 (~33 days as of today), that's on the order of **90k+ individual
-HTTP calls**, most of which would be pointless (e.g. an asset not yet tracked on a given day, or
-a slot that was skipped). Instead:
-
 - Paginate `GET /events?tag_id=102127&closed=true&start_date_min=<from>&start_date_max=<to>&limit=100&offset=N`
-  (confirmed live to return full market objects per page, §2) — walk pages until an empty page,
-  parsing every event's `slug` against `^(asset)-updown-(5m|15m|4h)-(\d+)$`, upserting matches.
-  Exact ordering/date-range params to land reliably on updown-market pages (rather than mixed-in
-  unrelated event types, seen live during verification) are an implementation-time detail to pin
-  down, not a blocker — the core assumption (bulk call ⇒ full fields, no per-market follow-up)
-  is confirmed.
-- Add a small delay between pages (e.g. 200–500ms) and exponential backoff on a 429, since a full
-  historical walk is hundreds of pages back-to-back and Gamma's rate limits for this aren't known.
-- Derive the tracked asset list **dynamically** (e.g. from `raw*/` directory names at startup)
-  rather than a hardcoded 7-asset list, so a newly-added asset isn't silently dropped from
-  backfill.
-- Pin down each per-asset earliest sealed date by scanning `raw*/` filenames rather than
-  hardcoding one repo-wide start date — `HYPE_hl_2026-06-13.parquet` etc. show all 7 assets
-  already present from day one in this repo's data (~2026-06-12/13), but that's a fact to
-  re-derive at implementation time, not bake in as a constant.
-- `--from`/`--to` flags let this be re-run for a narrower window (e.g. re-backfill one bad day)
-  without re-walking the whole history.
-- Idempotent by construction — `INSERT ... ON CONFLICT (asset, duration, slot) DO UPDATE`, so
-  re-running backfill over an already-populated range is safe and just confirms/refreshes rows.
+  (confirmed live to return full market objects, §2) — walk pages until an empty page, parsing
+  every event's `slug` against `^(asset)-updown-(5m|15m|4h)-(\d+)$`, upserting matches.
+- **Sleep between pages** — official limit is 500 req/10s (§2), so correctness doesn't strictly
+  require throttling at all at this call volume, but the user asked for generous spacing to avoid
+  any HTTP issues in practice, so default to **500ms between page requests** (≈2 req/s, ~40x
+  under the documented budget) rather than cutting it close. Add exponential backoff (start 2s,
+  double, cap at ~60s) on any non-2xx response before retrying the same page. At ~500ms/page,
+  backfilling June 12 → today (order of a few hundred to ~1,000 pages once the right filter params
+  are pinned down at implementation time, §2) takes on the order of minutes, not hours — acceptable
+  for a one-shot.
+- Derive the tracked asset list **dynamically** from `price_feed/raw*/` directory names at
+  startup (read-only filesystem scan — not a code dependency on `price_feed`) rather than a
+  hardcoded 7-asset list, so a newly-added asset isn't silently dropped from backfill.
+- Pin down each per-asset earliest sealed date the same way (scanning `price_feed/raw*/`
+  filenames) rather than hardcoding a start date. Confirmed live: all 7 assets already have data
+  from day one (~2026-06-12/13) — good enough as the default `--from`, per the user's
+  confirmation that "backfill from June is fine" — but re-derive per-asset rather than assume
+  every future asset also started on that date.
+- `--from`/`--to` flags allow re-running over a narrower window (e.g. re-backfill one bad day)
+  without re-walking the whole history. Idempotent by construction —
+  `INSERT ... ON CONFLICT (asset, duration, slot) DO UPDATE` — so re-running over an
+  already-populated range is safe.
 - If the table is empty on startup of the continuous mode, trigger a full backfill for the
-  configured date range automatically first, rather than falling back to one-call-per-slot catch
-  up (see §7).
+  configured date range automatically first, rather than falling back to one-call-per-slot catch-up.
 
 ## 7. Continuous-update mode
 
-**One retry mechanism, not two** (revised — the first draft had a dedicated per-market retry
-loop *and* an independent periodic sweep, which could both poll the same still-pending slug in
-the same window). Just the sweep:
+One retry mechanism, not two competing ones (a dedicated per-market retry loop *and* an
+independent sweep would risk both polling the same still-pending slug in the same window):
 
-- When a slot rolls over (`current_slot_for(interval)`, same as `collect.rs`), insert a
-  `pending` placeholder row for it (`outcome='UNRESOLVED'`, `last_checked_ts=NULL`) at
-  `close_ts + 5 min` — no per-market timer/task, just a row that now exists to be picked up.
+- When a slot rolls over (own `slots.rs` math, §5), insert a `pending` placeholder row
+  (`outcome='UNRESOLVED'`, `last_checked_ts=NULL`) — no per-market timer/task, just a row that now
+  exists to be picked up.
 - A single periodic sweep (e.g. every 30s) queries the partial index (§4) for
   `outcome='UNRESOLVED' AND (last_checked_ts IS NULL OR last_checked_ts < now - retry_interval)`,
-  polls Gamma for each, and upserts on a decisive signal (§2's "either signal" rule) or just
-  bumps `check_attempts`/`last_checked_ts` if still pending. Past a deadline (proposed: 15 min
-  past close — comfortably past the ~20s-to-4min settlement times observed live for 6/7 assets,
-  see "Claude Thoughts" below; HYPE resolves by price threshold well within this too), the row
-  simply stays `UNRESOLVED` and keeps getting swept at the retry interval rather than a separate
-  timeout state — cheap at this row volume, and avoids a second code path for "gave up."
-- **Startup/periodic gap reconciliation** (new — the sweep above only revisits rows that already
-  exist; a full process outage spanning a slot close means **no row is ever created** for it, so
-  the sweep alone would never discover the gap). On startup, and folded into the same periodic
-  pass, for each tracked `(asset, duration)` diff "every expected slot from the last slot seen in
-  the DB up to now" against rows actually present, and insert missing ones as fresh `UNRESOLVED`
-  placeholders before the normal sweep logic picks them up. This is what makes a crash/restart
-  lose nothing — only an in-memory timer would have been lost, and there isn't one anymore.
+  polls Gamma for each, and upserts on a decisive signal (§2's "either signal" rule) or bumps
+  `check_attempts`/`last_checked_ts` if still pending. No hard timeout state — a row simply stays
+  `UNRESOLVED` and keeps getting swept at the retry interval, which is cheap at this row volume and
+  avoids a second code path for "gave up." (6/7 assets resolve within ~20s–4min of close, live
+  confirmed; HYPE resolves by the price-threshold signal well within the same window, so in
+  practice nothing lingers long.)
+- **Startup/periodic gap reconciliation**: the sweep above only revisits rows that already exist —
+  a full process outage spanning a slot close means **no row is ever created** for it, so the
+  sweep alone would never discover the gap. On startup, and folded into the same periodic pass,
+  for each tracked `(asset, duration)` diff "every expected slot from the last slot seen in the DB
+  up to now" against rows actually present, and insert missing ones as fresh `UNRESOLVED`
+  placeholders before the normal sweep picks them up. This is what makes a crash/restart lose
+  nothing — there's no in-memory timer to lose in the first place.
 
-## 8. Where it runs / deploy
+## 8. Retention
 
-Gamma reads are plain HTTPS GETs — confirmed **not** geoblocked (the geoblock only affects CLOB
-*order-placement* POSTs; GETs for balance/market-data are unaffected everywhere, see
-`[[infra_network]]`). Recommend running it on **Oracle**, alongside `collect`, as its own
-systemd unit (`price_feed resolve`, no flags) — keeps one writer for `resolutions.db`, consistent
-with `collect` already owning `raw/`. Writer opens the DB with `PRAGMA journal_mode=WAL`.
-`sync_oracle.sh` gets one addition: rather than rsyncing the live file directly (a WAL-mode DB can
-have committed-but-not-yet-checkpointed writes; a reader on the other end could see a stale or
-inconsistent copy), run `sqlite3 resolutions.db "VACUUM INTO '/tmp/resolutions_snapshot.db'"` on
-Oracle first for a consistent, fully-checkpointed copy, then rsync that snapshot down alongside
-the existing `raw*/` folders, same cron. Every consumer — Rust or Python, local or on Oracle —
-opens its copy **read-only** (`SQLITE_OPEN_READ_ONLY` / `sqlite3.connect('file:...?mode=ro',
-uri=True)`) so nothing but the one intended writer process can ever touch the file.
+**Keep every row forever** — per the user's confirmation, `UNRESOLVED` rows (or any row) are
+cheap at this volume and useful as a "known gap" audit trail; no expiry/pruning logic.
 
-The one-shot `--backfill` can be run manually from either box (or the dev machine) since it's
-read-mostly-GETs too — run it once against Oracle's `resolutions.db` after deploy, before
-switching on the continuous mode.
+## 9. Where it runs / deploy
 
-## 9. Consumers
+Gamma reads are plain HTTPS GETs — not geoblocked (the geoblock only affects CLOB
+*order-placement* POSTs; GETs are unaffected everywhere, see `[[infra_network]]`). Runs on
+**Oracle** as its own systemd unit (`poly-gamma-recorder.service`, running `gamma_recorder
+resolve`), independent of `poly-collector` — separate binary, separate working directory
+(`~/apps/poly_rust/gamma_recorder/`), separate log. Writer opens `gamma.db` with
+`PRAGMA journal_mode=WAL`.
 
-- **`trader/src/backtest.rs`**: add a small `rusqlite`-based reader (new dependency in
-  `trader/Cargo.toml`, `bundled` feature for the same cross-compile reason as §5) that looks up
-  `(asset, duration, slot)` and compares against the existing price-based `Machine::cycle_close()`
-  outcome — surface a mismatch count/list rather than changing what the backtest itself simulates
-  against (the price-based proxy is still what a live trader actually saw in real time; the
-  resolutions table is the audit, not a replacement). The comparison must distinguish "proxy
-  produced no outcome at all" (e.g. a price-feed gap — not a real disagreement) from "proxy said
-  Up, real resolution said Down" — only the latter counts as a mismatch, otherwise every
-  data-quality gap in `raw/` would inflate the mismatch count and bury genuine divergences.
-- **`trade_reconcile.py`**'s Gamma Cross-Check section: try `resolutions.db` first
-  (`sqlite3` stdlib, no new dependency, opened read-only per §8), fall back to the existing live
-  `fetch_gamma_outcome(slug)` only for slugs not yet in the table (too recent, or a row still
-  `UNRESOLVED`). Net effect: recon gets faster and Gamma-outage-resilient for the common case
-  (older, already-resolved trades), while keeping the live-fetch fallback for genuinely fresh
-  ones. Needs a new config value for the DB path, and must fall back to the existing live-fetch
-  behavior (with a logged warning, not a crash) if the synced DB file isn't present yet — e.g. a
-  fresh checkout, or local dev before the first sync has run.
+Syncing a copy to local: rather than rsyncing the live file directly (a WAL-mode DB can have
+committed-but-not-yet-checkpointed writes; a reader could see a stale/inconsistent copy), run
+`sqlite3 gamma.db "VACUUM INTO '/tmp/gamma_snapshot.db'"` on Oracle first for a consistent,
+checkpointed copy, then rsync that snapshot down — its own small script
+(`gamma_recorder/scripts/sync_oracle.sh`), independent of `price_feed/scripts/sync_oracle.sh`.
+Any future consumer opens its copy **read-only**.
 
-## 10. Open questions for user
+The one-shot `--backfill` can be run from either box or the dev machine (read-mostly GETs) — run
+it once against Oracle's `gamma.db` after deploy, before switching on the continuous mode.
 
-1. **Retention** — keep `UNRESOLVED` rows forever (rare, small volume) or expire/drop after some
-   period if Gamma truly never resolves (e.g. a market that got archived/voided)? Proposed:
-   keep forever, they're cheap and useful as a "known gap" audit trail.
-2. **Backfill start date** — confirm ~2026-06-12 (earliest sealed `raw/` data) is the right
-   floor, or if there's value going back further (Gamma likely has resolution history predating
-   this repo's own price recording, but there'd be no price data to reconcile against, so no
-   backtest use for it — only relevant if recon ever wants pre-price_feed history, which seems
-   unlikely).
-3. **`trader/Cargo.toml` picking up `rusqlite`** — fine as a new dependency, or prefer trader
-   shell out to a tiny Python/CLI helper instead to avoid adding a new Rust dependency there?
-   Leaning toward `rusqlite` directly (keeps the mismatch-check in the same binary as the
-   backtest it's auditing), but flagging since it's a new pattern for this codebase.
+## 10. Non-goals / explicitly out of scope for this plan
+
+- **No changes to `price_feed/` or `trader/` code, ever, in this plan.** Reading the resulting
+  `gamma.db` from a backtest or from `trade_reconcile.py` is a plausible future use (§1) but a
+  separate decision for later — this plan builds the recorder and stops there.
+- No integration with `trader/src/backtest.rs`'s outcome logic, no new dependency in
+  `trader/Cargo.toml`, no changes to `trade_reconcile.py`'s Gamma Cross-Check section.
+- No other Gamma data types built now (weather/World Cup/volume snapshots etc.) — noted in §1 as
+  future room to grow, not designed or built here.
+
+## 11. Local validation plan — Docker + CPU/memory monitoring, before Oracle ever sees this
+
+**Required gate before any Oracle deploy**, per the user's instruction. Mirrors the existing
+`trader/Dockerfile` "local test image" pattern (same x86-64 arch as the dev host, fast build, used
+to validate before touching Oracle — see root `README.md` → "Build and deploy" and
+`[[infra_network]]`).
+
+1. **Build**: `gamma_recorder/Dockerfile`, multi-stage (`rust:1-bookworm` builder →
+   `debian:bookworm-slim` runtime + `ca-certificates`), same shape as `trader/Dockerfile`.
+   `docker build -t gamma_recorder:local gamma_recorder/`.
+2. **Backfill soak test**, resource-constrained on purpose to catch runaway usage rather than
+   hide it behind a generous limit:
+   ```bash
+   docker run --rm --memory=512m --cpus=1 \
+     -v "$(pwd)/gamma_recorder/data:/data" \
+     gamma_recorder:local resolve --backfill --from 2026-06-12 --to <today> --db /data/gamma.db
+   ```
+   Run `docker stats` (or `docker stats --no-stream` polled every few seconds into a log) in
+   parallel for the full run; capture peak/steady-state CPU% and memory. Expect flat, low memory
+   (streaming page-by-page upserts, no in-memory accumulation of the full result set) and CPU
+   dominated by network wait, not compute.
+3. **Correctness spot-check**: after backfill, pick ~10–20 random `(asset, duration, slot)` rows
+   from `gamma.db` spanning different days/assets/durations, re-fetch each slug live from Gamma,
+   and confirm the stored `outcome`/`resolved_at_ts` match. Also confirm row counts per
+   `(asset, duration)` are in the right ballpark for the date range (e.g. ~288/day for 5m).
+4. **Continuous-mode soak test**: run `gamma_recorder:local resolve` (no flags) against a fresh or
+   the backfilled DB for a sustained period (propose ≥60 min, covering multiple 5m/15m rollovers
+   and at least one 4h one if the window allows) under the same `--memory`/`--cpus` constraint,
+   with `docker stats` logging throughout. Watch specifically for:
+   - Memory climbing over time (would indicate the sweep or gap-reconciliation query is
+     accumulating something instead of being properly bounded/paged).
+   - CPU spiking in a pattern that doesn't match the 30s sweep cadence (would indicate a busy-loop
+     bug).
+   - The gap-reconciliation logic firing spuriously on every pass instead of only when a genuine
+     gap exists (cheap to check: log line count for "inserted N missing rows" should be ~0 during
+     a healthy continuous run with no artificial outage).
+5. **Only after (2)–(4) pass** does cross-compiling (`cross build --release --target
+   aarch64-unknown-linux-gnu`, mirroring `price_feed/Cross.toml`) and rsyncing to Oracle happen.
 
 ---
 
 # DeepSeek Comments
 
-Sent the plan as-is to `deepseek-v4-pro` for a critical pre-implementation review. Full response
-condensed to the substantive points (some overlapping sub-points merged):
-
-1. **`price_feed` itself needs `rusqlite` too** (it's the writer) — the plan only mentioned adding
-   it to `trader/Cargo.toml`. Flagged that `rusqlite` compiles/links native SQLite, so the
-   aarch64 cross-compile for Oracle needs the `bundled` feature (or a `libsqlite3-dev` toolchain
-   dependency), or the build pipeline breaks.
-2. **Bulk `/events` backfill endpoint might return slim/summarized market objects**, not the full
-   field set (`outcomePrices`, `umaResolutionStatus`, `closedTime`, `clobTokenIds`) — said this
-   was a "must-verify before coding," since if true the backfill strategy collapses back into the
-   ~90k-call-per-slot problem it's meant to avoid.
-3. **No rate-limiting/backoff mentioned for backfill pagination** — hundreds of pages hitting
-   Gamma back-to-back risks 429s; wants a polite delay + exponential backoff on throttling.
-4. **Startup catch-up gap in the continuous mode**: the housekeeping sweep only revisits existing
-   `UNRESOLVED` rows — if the resolver process is down when a slot closes, **no row is ever
-   created** for that slot, so the sweep has nothing to find and it's lost forever, not just
-   delayed. Wants an explicit "diff expected slots vs. rows present" reconciliation on startup
-   (and periodically), not just the DB-row sweep.
-5. **Retry-loop / housekeeping-sweep overlap**: the per-market 30s retry loop and the 30-min
-   sweep could both poll the same still-pending slug in the same window, wasting calls. Wants
-   one retry path, not two.
-6. **`closedTime` may not be the real resolution time** — argued it's plausibly just the market's
-   betting-close time (traditional UMA questions can take much longer than 20s to actually
-   settle/resolve after close), and that blindly storing it as `resolved_at_ts` could be
-   measuring the wrong thing entirely.
-7. **5-minute-after-close poll delay might be too early** — reasoned that UMA resolution can lag
-   close by "seconds to several minutes," and that the plan's justification (borrowed from the
-   live trader's deadline doc) didn't actually establish real resolution latency.
-8. Smaller points, all reasonable and adopted without needing verification: add
-   `(asset, duration, close_ts)` range index for "give me a window" queries; open the local
-   synced DB copy read-only in every consumer; snapshot via `VACUUM INTO` before rsync rather than
-   copying the live file; derive the tracked asset list dynamically (e.g. from `raw*/` directory
-   names) instead of hardcoding 7 assets so a newly-added asset isn't silently dropped from
-   backfill; distinguish "proxy outcome is `None`" from "proxy disagrees with real outcome" in the
-   backtest mismatch check, so price-feed gaps aren't miscounted as real divergences; add a DB-path
-   config + graceful (non-crashing) fallback in `trade_reconcile.py` if the synced DB isn't there
-   yet; basic upsert/error logging for future debugging.
+*(pending — sending the revised plan to DeepSeek next)*
 
 # Claude Thoughts on DeepSeek Review
 
-Went back to the live Gamma API to check the two claims that would actually change the design
-(#2 and #6/#7 above) rather than taking them on faith — both are falsifiable and this is a plan
-doc, not a place to guess.
+*(pending)*
 
-**#2 (bulk endpoint returns slim objects) — checked live, DeepSeek was wrong.**
-`GET /events?tag_id=102127&closed=true&limit=1` returns the *full* market object — same ~70
-fields as the single-slug endpoint, including `outcomePrices`, `umaResolutionStatus`,
-`closedTime`, and `clobTokenIds` all present and populated. Confirmed the events on that endpoint
-aren't limited to updown markets either (first page under default ordering surfaced an unrelated
-quarterly BTC market from 2025), so §6's backfill still needs the right `closed`/date-range/`order`
-query params to land on the right pages efficiently — noting that as an implementation-time detail
-to pin down, not a blocker. The core assumption (bulk call ⇒ full fields, no per-market follow-up
-needed) holds.
+---
 
-**#6/#7 (`closedTime` timing, 5-min delay) — checked live, more nuanced than either of us assumed.**
-Fetched the most-recently-closed 5m slot for all 7 assets **~4 minutes after close**:
+# Appendix — DeepSeek review of the 2026-07-14 draft (superseded design)
 
-| Asset | `umaResolutionStatus` | `closedTime` vs `endDate` | `outcomePrices` |
-|---|---|---|---|
-| BTC/ETH/SOL/DOGE/XRP/BNB | `resolved` | close + 20s, identical across all 6 | `["0","1"]` or `["1","0"]` — fully decisive |
-| HYPE | `None` (missing) | `None` | `["0.0005","0.9995"]` — decisive by threshold, but the status field never populated |
+The prior draft of this plan proposed folding this into `price_feed` as a new subcommand,
+reusing `price_feed`'s `make_slug`/`current_slot_for` directly and adding `rusqlite` to both
+`price_feed/Cargo.toml` and `trader/Cargo.toml` for a backtest-integration consumer. That
+architecture is superseded by the independent-crate design above (§5, §10) per the user's
+explicit direction — `price_feed`/`trader` are not to be touched at all. The review findings
+below are preserved because most of them are architecture-independent and already folded into
+this draft (§2's either-signal fix, §6's rate-limiting, §7's single-retry-path and gap
+reconciliation, §4's range index, §9's `VACUUM INTO` snapshot recipe); they're kept here for a
+paper trail rather than repeated in the main body.
 
-So DeepSeek's instinct to distrust a single "looks resolved" signal was right, but for a different
-reason than it gave: **`closedTime` really is a close-to-real settlement timestamp for these
-specific markets** — they're `automaticallyResolved: true` against a Chainlink stream, not a
-disputed UMA question, so 6 of 7 assets are already fully resolved (both `umaResolutionStatus` and
-a decisive `outcomePrices`) within ~20 seconds of close, and 5 minutes is not too early for those.
-**HYPE is the actual problem**, and not the one either of us flagged: its `umaResolutionStatus`
-field stays `None` even once the price has clearly settled, so a design that gates purely on
-`umaResolutionStatus == "resolved"` (as §2 originally proposed, "better than the outcomePrices
-threshold") would **never resolve HYPE rows** — they'd sit `UNRESOLVED` and get endlessly retried
-by the sweep until the deadline, forever, every cycle. Fix: treat resolution as **either** signal
-(`umaResolutionStatus == "resolved"` **or** `outcomePrices` containing a value ≥0.99), matching
-what `trade_reconcile.py::fetch_gamma_outcome` already does today (threshold-only) — §2's framing
-of `umaResolutionStatus` as strictly superior was wrong and is corrected here. Keep `closedTime`
-as `resolved_at_ts` when present; fall back to "first poll that saw a decisive/resolved signal"
-for rows where it's absent (matches DeepSeek's fallback suggestion in #6, kept for that case).
+Sent the prior plan as-is to `deepseek-v4-pro` for a critical pre-implementation review. Condensed
+to the substantive points:
 
-**Adopted as-is (no further verification needed, reasoning holds on inspection):**
-- #1 (`rusqlite` + `bundled` feature in `price_feed/Cargo.toml` too, not just `trader`'s) — correct,
-  §5 only mentioned the read side.
-- #4 (startup/periodic gap reconciliation, not just an `UNRESOLVED`-row sweep) — correct and a real
-  bug in the original design: a full outage across a slot boundary leaves **no row at all**, which
-  the sweep (keyed on existing rows) can never discover. Folding into §7: on startup and on each
-  housekeeping pass, additionally diff "expected slots for each tracked (asset, duration) from
-  last-seen slot to now" against rows present, inserting `UNRESOLVED` placeholders for gaps before
-  the normal retry logic picks them up.
-- #5 (single retry path) — correct simplification; §7 collapses to one mechanism: the sweep alone,
-  gated by `last_checked_ts` (skip a row if checked more recently than the retry interval), no
-  separate concurrent per-market loop.
-- #3, and all of §8's smaller points — reasonable, low-cost, adopted into §4/§6/§9/§10 without
-  needing live verification.
-
-**Net changes to the plan (§2, §4, §6, §7, §9 above already reflect these):** resolution check is
-now "either signal," not `umaResolutionStatus`-primary; `resolved_at_ts` prefers `closedTime` but
-falls back to observed-poll-time when absent; continuous mode has one retry mechanism (the sweep)
-instead of two; added startup/periodic gap reconciliation against expected slots, not just
-existing rows; added the `rusqlite`/`bundled` cross-compile note for `price_feed`'s own
-`Cargo.toml`; added the `(asset, duration, close_ts)` range index, `VACUUM INTO` snapshot recipe,
-read-only consumer opens, dynamic asset-list derivation, backtest `None`-vs-mismatch distinction,
-and `trade_reconcile.py`'s graceful missing-DB fallback.
+1. The writer crate needs `rusqlite` too, not just the reader — flagged the `bundled` feature
+   requirement for aarch64 cross-compilation. *(Still applies — now just to `gamma_recorder`'s
+   own `Cargo.toml`, §5.)*
+2. Bulk `/events` backfill might return slim/summarized market objects, not full fields — flagged
+   as a must-verify-before-coding risk. *(Checked live: false alarm, full fields present, §2.)*
+3. No rate-limiting/backoff mentioned for backfill pagination. *(Adopted, §6 — now grounded in
+   the official documented 500 req/10s limit rather than guessed.)*
+4. Startup catch-up gap in the continuous mode: the housekeeping sweep only revisits existing
+   `UNRESOLVED` rows; a full outage across a slot boundary leaves no row at all, undiscoverable by
+   the sweep. *(Adopted, §7 — real bug, confirmed and fixed.)*
+5. Retry-loop / housekeeping-sweep overlap could double-poll the same slug. *(Adopted, §7 —
+   collapsed to one mechanism.)*
+6. `closedTime` may not be the real resolution time, could be just close-of-betting.
+   *(Checked live: more nuanced than either DeepSeek or the original plan assumed — see the
+   HYPE finding in §2. `closedTime` is accurate for 6/7 assets; the real gap was HYPE's missing
+   `umaResolutionStatus`, which neither DeepSeek nor the original plan caught.)*
+7. 5-minute-after-close poll delay might be too early. *(Checked live: not too early for 6/7
+   assets — resolution lands within ~20s–4min of close. HYPE's issue was the missing status
+   field, not timing, so this specific critique didn't hold up, but the underlying instinct to
+   distrust a single signal was right for a different reason.)*
+8. Smaller adopted points: `(asset, duration, close_ts)` range index; open synced DB copies
+   read-only; snapshot via `VACUUM INTO` before rsync; derive tracked asset list dynamically
+   instead of hardcoding; distinguish "proxy produced no outcome" from "proxy disagreed with real
+   outcome" in any future backtest consumer (relevant again if that integration ever happens,
+   §10); graceful fallback if a consumer's local DB copy is missing.
