@@ -151,6 +151,15 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`scripts/deploy_trader.sh`'s header comment describes a stale tmux-based restart —
+  found 2026-07-15 while deploying the `/reset_losses` halt fix, not fixed.** It says
+  the script "gracefully stops the old trader process... and kills its tmux session...
+  starts the new binary in a fresh tmux session ('trader')" — but the actual mechanism
+  (`scripts/deploy_oracle.py::deploy_trader`) has gone through
+  `systemctl restart trader-live.service` since at least the 2026-07-03 double-process
+  incident (see that script's own module docstring). Comment-only drift, not a behavior
+  bug; just flagging so it doesn't mislead the next reader.
+
 - ~~`../btc_5mins/bot/backtest.py`'s `_replay_all` has the identical TIMEOUT/halt gap this repo
   just fixed~~ — **fixed 2026-07-14 in `btc_5mins`** (same day, same fix: `TIMEOUT` now counts
   toward `losses_rev`/`losses_hp` only when its `pnl < 0`), ported to `_replay_all` and both
@@ -834,6 +843,20 @@ code). Summary:
 <summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
+
+### BTC stuck halted despite repeated `/resume` (2026-07-15, fixed)
+
+`halt_rev` was tightened `2 → 1` on 2026-07-13, so a single stop-loss now trips the
+per-strategy loss-streak halt immediately — a gate `/resume` intentionally never clears
+(only `/reset_losses` or the daily reset can). `/reset_losses` was fully parsed and
+tested (`commands.rs`, `control.rs`) but never actually wired into `bin/live.rs`'s
+telegram dispatcher — it silently fell through to "not supported." Live BTC halted at
+08:59:40 HKT, survived 3 `/resume` attempts (each replying with an unqualified success)
+plus a restart, still halted 5+ hours later. Fixed: `ControlEvent::ResetLosses` wired
+into the live dispatcher; `/resume`'s reply and `/status`'s halted light now say
+*which* gate is still up instead of staying silent about it. Deployed to Oracle via
+`scripts/deploy_trader.sh`. Full writeup:
+`trader/doc/incident_unable_to_resume_2026-07-15.md`.
 
 ### Mid-cycle restart corrupted `cycle_open_binance` (2026-07-15, fixed)
 
