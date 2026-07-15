@@ -90,6 +90,47 @@ impl SiglabTradeRecord {
         }
     }
 
+    /// For `v_shape.rs`'s engine — same rationale as `from_bucket_engine` below (no
+    /// `trader::types::TradeRecord` to convert from, since `VShapeEngine` never touches
+    /// `trader::machine::Machine` either), but `market_kind` is always `Crypto` (V-shape
+    /// only runs on crypto markets, unlike bucket_reversal which is weather/World-Cup-only)
+    /// and `strategy` is hardcoded `"v_shape"` instead of `"reversal"`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_v_shape_engine(
+        variant_id: &str,
+        asset: &str,
+        market: &str,
+        slug: &str,
+        side_up: bool,
+        entry_ts: f64,
+        entry_price: f64,
+        exit_price: f64,
+        outcome: &str,
+        pnl: f64,
+        logged_at: f64,
+    ) -> Self {
+        Self {
+            logged_at,
+            market_kind: MarketKind::Crypto,
+            variant_id: variant_id.to_string(),
+            asset: asset.to_string(),
+            market: market.to_string(),
+            slug: slug.to_string(),
+            cycle_start: entry_ts,
+            strategy: "v_shape".to_string(),
+            side: if side_up { "UP" } else { "DOWN" }.to_string(),
+            entry_ts,
+            // v_shape.rs has no separate triggering-tick-vs-observation-tick distinction
+            // (single on_tick stream, no binance reference feed) — same value, same
+            // reasoning as from_bucket_engine's entry_price_ts below.
+            entry_price_ts: entry_ts,
+            token_price: entry_price,
+            exit_price,
+            outcome: outcome.to_string(),
+            pnl,
+        }
+    }
+
     /// For `bucket_reversal.rs`'s engine, which has no `trader::types::TradeRecord` to
     /// convert from — it never touches `trader::machine::Machine` at all.
     #[allow(clippy::too_many_arguments)]

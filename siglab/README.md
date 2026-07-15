@@ -1,8 +1,9 @@
 # siglab — multi-market signal live-testing harness
 
-Live-tests many `reversal`/`high_prob` strategy parameter variants against real Polymarket
-ticks across a large, rotating set of markets — crypto (5m/15m/4h/hourly-ET, all durations
-across BTC/ETH/SOL/BNB/XRP/DOGE), weather (51 cities' daily temperature-bucket events), and
+Live-tests many `reversal`/`high_prob`/`v_shape` strategy parameter variants against real
+Polymarket ticks across a large, rotating set of markets — crypto (5m/15m/4h/hourly-ET, all
+durations across BTC/ETH/SOL/BNB/XRP/DOGE), weather (51 cities' daily temperature-bucket
+events), and
 FIFA World Cup markets (62 events: outright winner, award winners, player props) — without
 placing real orders and without recording raw tick data. Paper trade outcomes are logged to
 JSONL; a Markdown report — written every `--report-interval-secs` (900s/15 min in
@@ -18,7 +19,10 @@ core), but never reads or writes anything under `../trader/config`, `../trader/l
 ## What it does and doesn't do
 
 - **Crypto markets**: fully tradeable — real `trader::machine::Machine` instances per
-  `(market, variant)` pair, real Binance reference feed, real entry/exit/PnL simulation.
+  `(market, variant)` pair (real Binance reference feed, real entry/exit/PnL simulation) for
+  the `reversal`/`high_prob` grids, plus a self-contained `v_shape::VShapeEngine` per
+  `(market, variant)` pair for the 8-variant V-shape grid (pure CLOB price action, no
+  Binance/gates — see `src/v_shape.rs`'s doc comment).
 - **Weather and World Cup markets**: **monitoring only** — track live prices and feed
   staleness per outcome bucket, but do **not** run them through `Machine`.
   `Machine::cycle_close()` resolves via Binance-price-momentum, which would fabricate
@@ -87,25 +91,25 @@ Editing any of these has zero effect on `../trader`'s live config, and vice vers
 
 ## Autonomous report + push
 
-The container writes `doc/report/signal_report_{YYYY-MM-DD}_{AM|PM}.md` (HKT date, split
-into an AM (00:00-11:59) and PM (12:00-23:59) file each day — added 2026-07-14 after the
-single-file-per-day report grew to 2.2MB and became unwieldy to open). Each real HKT hour
-is one collapsible top-level `<details>` section, newest hour
-first; every report-writer run that lands within that hour (production writes every 15 min
-— `--report-interval-secs 900`, see `docker-compose.yml`) nests inside it as its own
-collapsible run sub-section, newest run first, rather than starting a new top-level section
-per run. Each run's trades are broken out into a market/strategy PnL summary table plus one
-collapsible table per market (instead of one flat table), so a run touching many quiet
-weather/World Cup buckets doesn't force-render dozens of rows at once. Besides trades, each
-run also carries crypto+weather+worldcup market state, staleness health, and CPU/memory for
-that run's own window. Hour/run boundaries are tracked with plain HTML comment markers
-(`<!-- siglab-hour:... -->` etc. — see `src/report.rs`'s module doc comment) rather than by
-parsing the `<details>` tree. Pre-2026-07-14 reports were migrated in place to this format
-by the one-off `scripts/regenerate_reports.py`; new runs extend the same files going forward
-directly from `src/report.rs`.
+The container writes one folder per real HKT day, `doc/report/{YYYY-MM-DD}/` (added
+2026-07-15, replacing the AM/PM-split flat files — those had already grown unwieldy again
+after the 2026-07-14 split): a `summary_{date}.md` with the strategy config table, a
+whole-day PnL rollup (recomputed fresh from the trade log on every write), and an index
+linking every hour's own file; and one `trades_{date}_{HH}.md` per real HKT hour, holding
+that hour's merged trade tables (market/strategy PnL summary plus one collapsible table per
+market, regenerated fresh on every write rather than split per report-writer run) followed
+by each run that landed within it (production writes every 15 min — `--report-interval-secs
+900`, see `docker-compose.yml`), newest run first, carrying crypto+weather+worldcup market
+state, staleness health, and CPU/memory for that run's own window. Run boundaries within an
+hour's file are tracked with a plain HTML comment marker (`<!-- siglab-run -->` — see
+`src/report.rs`'s module doc comment). Pre-2026-07-15 reports stay in their old flat
+`signal_report_*.md` form (not retroactively migrated); `--regenerate-reports-only`
+(optionally scoped with `--regenerate-since YYYY-MM-DD`) backfills a date range into the new
+per-day-folder layout from the trade log's ground truth — see `src/report.rs`'s
+`regenerate_from_trade_log` doc comment.
 
 A **separate host-side** systemd `--user` timer — not the container itself, which never
-gets git/SSH credentials — commits and pushes that file every 15 minutes:
+gets git/SSH credentials — commits and pushes those files every 15 minutes:
 
 ```bash
 bash siglab/scripts/install_timer.sh   # one-time setup: installs + enables the timer
@@ -313,17 +317,19 @@ siglab/
   src/
     main.rs                 # CLI + task orchestration
     config.rs                # standalone TOML schema
-    market.rs / rotation.rs  # crypto market rotation + Machine wiring
+    market.rs / rotation.rs  # crypto market rotation + Machine + v_shape wiring
+    bucket_reversal.rs        # self-contained reversal engine for weather/World Cup buckets
+    v_shape.rs                # self-contained V-shape engine for crypto markets
     event_monitor.rs          # shared discovery/monitoring core (monitoring-only events)
     weather.rs / worldcup.rs  # thin wrappers over event_monitor for each event source
     staleness.rs              # observe-only staleness telemetry (per-class correlated check)
-    snapshot.rs / report.rs / cgroup.rs   # shared state, hourly MD report, resource sampling
+    snapshot.rs / report.rs / cgroup.rs   # shared state, per-day MD report, resource sampling
     record.rs                 # paper trade-record output type
   doc/
     local_resource_test_2026-07-13.md         # Docker resource baseline + fix history
     incident_ws_2026-07-13.md                  # full incident writeups (summarized above)
     plan_weather_worldcup_trading_2026-07-13.md  # pending-review plan (not started)
-    report/                                    # hourly signal_report_*.md (git-tracked)
+    report/                                    # {date}/summary_{date}.md + trades_{date}_{HH}.md (git-tracked)
 ```
 
 </details>

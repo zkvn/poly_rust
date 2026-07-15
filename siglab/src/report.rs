@@ -21,7 +21,6 @@
 //! since these exact strings never otherwise appear in rendered content.
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -33,9 +32,10 @@ use crate::config::SiglabConfig;
 use crate::record::SiglabTradeRecord;
 use crate::snapshot::SharedSnapshots;
 
-const HOUR_MARKER_PREFIX: &str = "<!-- siglab-hour:";
-const HOUR_BODY_START: &str = "<!-- siglab-hour-body-start -->\n";
-const HOUR_BODY_END: &str = "<!-- siglab-hour-body-end -->\n";
+/// Marks the start of one report-writer run's section within a `trades_{date}_{HH}.md`
+/// file — runs stack newest-first, one file per real HKT hour (so unlike the pre-2026-07-15
+/// AM/PM-split format, there's no longer any need for a separate hour-boundary marker: the
+/// filename itself identifies the hour).
 const RUN_MARKER: &str = "<!-- siglab-run -->\n";
 // Wraps the config-table section so it can be replaced wholesale on every write (reflects
 // whatever `markets.toml` currently says, not whatever it said the first time the file was
@@ -98,18 +98,22 @@ fn now_hkt() -> chrono::DateTime<FixedOffset> {
     Utc::now().with_timezone(&hkt())
 }
 
-/// "AM" for HKT hours 00-11, "PM" for 12-23 — each real HKT day is split into two report
-/// files along this boundary so a single day's file doesn't grow unbounded (2026-07-14,
-/// after the pre-split single-file report hit 2.2MB and became unwieldy to open).
-fn half_of_hour(hour: u32) -> &'static str {
-    if hour < 12 { "AM" } else { "PM" }
+/// `report_dir/{date}/` — one folder per real HKT day (2026-07-15, replacing the
+/// AM/PM-split flat files: even split in two, a single day's file kept growing unwieldy).
+pub fn day_dir(report_dir: &Path, date: &str) -> PathBuf {
+    report_dir.join(date)
 }
 
-pub fn report_path(report_dir: &Path) -> PathBuf {
-    let now = now_hkt();
-    let date = now.format("%Y-%m-%d");
-    let half = half_of_hour(now.hour());
-    report_dir.join(format!("signal_report_{date}_{half}.md"))
+/// `report_dir/{date}/summary_{date}.md` — day-level config + PnL rollup + hour index,
+/// always fully rewritten from the trade log's ground truth on every write (not appended).
+pub fn summary_path(report_dir: &Path, date: &str) -> PathBuf {
+    day_dir(report_dir, date).join(format!("summary_{date}.md"))
+}
+
+/// `report_dir/{date}/trades_{date}_{HH}.md` — one real HKT hour's trade tables + each
+/// report-writer run's market-state/staleness/CPU snapshot, newest run first.
+pub fn trades_path(report_dir: &Path, date: &str, hour: &str) -> PathBuf {
+    day_dir(report_dir, date).join(format!("trades_{date}_{hour}.md"))
 }
 
 /// Reads trade records from `trade_log_path` (JSONL), filtering by `logged_at` (unix
@@ -583,6 +587,26 @@ fn render_config_section(
     }
     out.push_str("\n</details>\n\n");
 
+    out.push_str("<details>\n<summary>Crypto V-shape variants</summary>\n\n");
+    out.push_str(
+        "| variant | high1 | low | high2 | sl_pnl | unwind_pnl | unwind_time (s) | \
+         trade_size ($) |\n\
+         |---|---|---|---|---|---|---|---|\n",
+    );
+    for (id, p) in crate::v_shape::v_shape_grid() {
+        out.push_str(&format!(
+            "| {id} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.0} | {:.2} |\n",
+            p.high1,
+            p.low,
+            p.high2,
+            p.sl_pnl,
+            p.unwind_pnl,
+            crate::v_shape::UNWIND_TIME_SECS,
+            crate::v_shape::TRADE_SIZE_USDC,
+        ));
+    }
+    out.push_str("\n</details>\n\n");
+
     out.push_str(&format!(
         "<details>\n<summary>Weather cities ({})</summary>\n\n| city |\n|---|\n",
         weather_cities.len()
@@ -608,7 +632,12 @@ fn render_config_section(
          reversal variants additionally force-close (labeled `UNWIND`) within 10s of the \
          market's own cycle-end regardless of holding time — weather/World Cup buckets have \
          no cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s \
-         doc comment).\n\n",
+         doc comment). Crypto markets additionally run the 8-variant V-shape grid above via \
+         `v_shape.rs::VShapeEngine` — a self-contained engine like `bucket_reversal.rs` (no \
+         `gates.rs`, no delta_pct/Binance-direction requirement), but unlike that module it \
+         *does* track real cycle boundaries and reuses the same force-unwind-within-10s-of-\
+         cycle-end rule the reversal grid gets from `trader::machine::Machine` (see \
+         `v_shape.rs`'s doc comment).\n\n",
     );
 
     out.push_str(CONFIG_MARKER_END);
@@ -620,67 +649,141 @@ fn render_config_section(
 /// that hour's `RUN_MARKER`-prefixed run blocks, newest first). The `###` heading lives
 /// outside/before the `<details>` so it's a real jump-to-able Markdown heading, not just
 /// collapsible-summary text.
-fn render_hour_block(
-    hour_key: &str,
-    hour_label: &str,
-    inner: &str,
-    run_count: usize,
-    hour_trade_count: usize,
-    hour_pnl: f64,
-) -> String {
+/// `trades_{date}_{hour}.md`'s fixed leading text — shared by `write_hourly_report` (live)
+/// and `regenerate_from_trade_log` (one-off backfill) so both produce byte-identical
+/// headers; `write_hourly_report`'s `existing.strip_prefix(&header)` continuation check
+/// depends on that.
+fn trades_header(date: &str, hour: &str) -> String {
     format!(
-        "{HOUR_MARKER_PREFIX}{hour_key} -->\n\
-         ### {hour_label} HKT\n\n\
-         <details open>\n\
-         <summary><strong>{run_count} report run(s), {hour_trade_count} trade(s) this hour, total pnl {hour_pnl:.4}</strong></summary>\n\n\
-         {HOUR_BODY_START}\
-         {inner}\
-         {HOUR_BODY_END}\
-         </details>\n\n"
+        "# siglab signal report — {date} {hour}:00 HKT\n\n\
+         Auto-generated by siglab. Covers exactly this one real HKT hour: a merged trade-\
+         tables section (regenerated fresh from the trade log on every write, not split per\n\
+         report-writer run) followed by each run's own market-state/staleness/CPU snapshot,\n\
+         newest run first. See `summary_{date}.md` in this same folder for the day's\n\
+         strategy config, whole-day PnL rollup, and an index of every hour.\n\n"
     )
 }
 
-/// The report file's fixed leading text — shared by `write_hourly_report` (live) and
-/// `regenerate_from_trade_log` (one-off backfill) so both produce byte-identical headers;
-/// `write_hourly_report`'s `existing.strip_prefix(&header)` continuation check depends on
-/// that. `half` is `"AM"` or `"PM"` (see `half_of_hour`) — each real HKT day is split into
-/// two files along that boundary (2026-07-14, after the single-file-per-day report grew to
-/// 2.2MB and became unwieldy to open).
-fn report_header(date: &str, half: &str) -> String {
-    let other = if half == "AM" { "PM" } else { "AM" };
+/// `summary_{date}.md`'s fixed leading text.
+fn summary_header(date: &str) -> String {
     format!(
-        "# siglab signal report — {date} {half}\n\n\
-         Auto-generated by siglab, newest hour first — each hour is one collapsible section.\n\
-         Each real HKT day is split into two files, AM (00:00-11:59) and PM (12:00-23:59), to\n\
-         keep file size manageable — see `signal_report_{date}_{other}.md` for the other half.\n\
-         Trades are merged across the whole hour (not split per report-writer run) and\n\
-         regenerated fresh on every write; market-state/staleness/CPU snapshots stay one\n\
-         collapsible sub-section per run (there can be several now that runs fire every\n\
-         `--report-interval-secs`, e.g. every 15 min). See\n\
+        "# siglab signal report — {date}\n\n\
+         Auto-generated by siglab, always fully rewritten from the trade log's ground truth\n\
+         on every write (not appended). Strategy config, whole-day PnL rollup, and an index\n\
+         of every hour's own `trades_{date}_{{HH}}.md` file (trade tables + market-state/\n\
+         staleness/CPU snapshots) live below. See\n\
          `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
          `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md` for what this harness does\n\
          and does not claim. Weather and World Cup markets trade via a self-contained\n\
          `bucket_reversal.rs` reversal engine (18 variants per bucket, no delta/Gamma/resolve —\n\
-         see that file's doc comment), separate from crypto's `trader::machine::Machine`.\n\n"
+         see that file's doc comment), separate from crypto's `trader::machine::Machine`\n\
+         (reversal grid) and `v_shape.rs` (V-shape grid).\n\n"
     )
 }
 
-/// One-off: rebuild `report_dir/signal_report_{date}.md` entirely from the trade log's
-/// ground truth, grouped by real HKT date/hour, using the exact same rendering functions as
-/// the live writer — added 2026-07-14 to backfill existing reports into this session's new
-/// format (merged-per-hour trades, config table, `### {hour}` headings, sl/timeout/unwind
-/// summary columns) without needing to parse the old Markdown. Historical market-state/
-/// staleness/CPU snapshots aren't recoverable from the trade log alone (they were never
-/// persisted anywhere else), so each regenerated hour carries a note instead of fabricating
-/// them; the live process's next natural write still extends whichever hour is current
-/// normally (`write_hourly_report`'s continuation logic doesn't require a run marker to be
-/// present in a past, no-longer-written-to hour).
+/// Strips a previously-written `HOUR_TRADES_MARKER_START/END`-wrapped block out of `body` —
+/// it's always regenerated fresh on every write rather than accumulated, so any old copy
+/// must be removed before splicing in the new one. Returns `body` unchanged if no markers
+/// are found (e.g. a brand new file).
+fn strip_old_hour_trades(body: &str) -> String {
+    match (
+        body.find(HOUR_TRADES_MARKER_START),
+        body.find(HOUR_TRADES_MARKER_END),
+    ) {
+        (Some(start), Some(end)) if end >= start => {
+            let mut s = body[..start].to_string();
+            s.push_str(&body[end + HOUR_TRADES_MARKER_END.len()..]);
+            s
+        }
+        _ => body.to_string(),
+    }
+}
+
+/// Builds `summary_{date}.md`'s full contents (config + whole-day PnL rollup + hour index)
+/// from `day_trades` (every trade logged on `date` so far) — shared by the live writer and
+/// the one-off backfill so both produce identical output. `dir` is this date's folder,
+/// scanned for which `trades_{date}_{HH}.md` files actually exist (see `render_hour_index`).
+fn render_summary_body(
+    date: &str,
+    dir: &Path,
+    cfg: &SiglabConfig,
+    weather_cities: &[String],
+    worldcup_events: &[String],
+    day_trades: &[SiglabTradeRecord],
+) -> String {
+    let mut s = summary_header(date);
+    s.push_str(&render_config_section(cfg, weather_cities, worldcup_events));
+    s.push_str("## Day summary\n\n");
+    s.push_str(&render_trade_summary(day_trades));
+    s.push_str(&render_variant_summary(day_trades));
+    s.push_str(&render_variant_totals_summary(day_trades));
+    s.push_str(&render_hour_index(dir, date, day_trades));
+    s
+}
+
+/// An "Hours" index table: one row per `trades_{date}_{HH}.md` file that actually exists on
+/// disk in `dir` (not just per hour that has trades — a quiet hour still gets a file, with
+/// its run/snapshot data), newest hour first, each linking to that file.
+fn render_hour_index(dir: &Path, date: &str, day_trades: &[SiglabTradeRecord]) -> String {
+    let mut by_hour: HashMap<String, (u32, f64)> = HashMap::new();
+    for t in day_trades {
+        let Some(dt) = Utc
+            .timestamp_opt(t.logged_at.trunc() as i64, 0)
+            .single()
+            .map(|d| d.with_timezone(&hkt()))
+        else {
+            continue;
+        };
+        let entry = by_hour.entry(dt.format("%H").to_string()).or_default();
+        entry.0 += 1;
+        entry.1 += t.pnl;
+    }
+
+    let prefix = format!("trades_{date}_");
+    let mut hours: Vec<String> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter_map(|name| {
+            name.strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(".md"))
+                .map(str::to_string)
+        })
+        .collect();
+    hours.sort();
+    hours.reverse();
+
+    let mut out = String::from("## Hours\n\n| hour | trades | pnl | file |\n|---|---|---|---|\n");
+    for hour in &hours {
+        let (count, pnl) = by_hour.get(hour).copied().unwrap_or((0, 0.0));
+        let pnl = pnl + 0.0; // normalize -0.0, same reasoning as elsewhere in this file
+        out.push_str(&format!(
+            "| {hour}:00 | {count} | {pnl:.4} | [trades_{date}_{hour}.md](trades_{date}_{hour}.md) |\n"
+        ));
+    }
+    out.push('\n');
+    out
+}
+
+/// One-off: rebuild every `report_dir/{date}/summary_{date}.md` +
+/// `report_dir/{date}/trades_{date}_{HH}.md` entirely from the trade log's ground truth,
+/// grouped by real HKT date/hour, using the exact same rendering functions as the live
+/// writer. Historical market-state/staleness/CPU snapshots aren't recoverable from the trade
+/// log alone (they were never persisted anywhere else), so each regenerated hour file
+/// carries a note instead of fabricating them; the live process's next natural write still
+/// extends whichever hour is current normally.
+///
+/// `since_date`, if set, skips any date before it — lets a backfill run be scoped to recent
+/// days instead of reprocessing the trade log's entire history.
 pub fn regenerate_from_trade_log(
     trade_log_path: &Path,
     report_dir: &Path,
     cfg: &SiglabConfig,
     weather_cities: &[String],
     worldcup_events: &[String],
+    since_date: Option<NaiveDate>,
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(report_dir).context("create report dir")?;
     let all_trades = recent_trades(trade_log_path, 0.0);
@@ -695,97 +798,93 @@ pub fn regenerate_from_trade_log(
         else {
             continue;
         };
+        let date_naive = dt.date_naive();
+        if since_date.is_some_and(|since| date_naive < since) {
+            continue;
+        }
         let date = dt.format("%Y-%m-%d").to_string();
         let hour = dt.format("%H").to_string();
         by_date_hour.entry((date, hour)).or_default().push(t);
     }
 
-    // Group by (date, half) rather than just date — each real HKT day is split into an AM
-    // and a PM file (see `half_of_hour`), so the backfill must produce the same two files
-    // the live writer would.
-    let mut hours_by_half: std::collections::BTreeMap<(String, &'static str), Vec<String>> =
+    let mut hours_by_date: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     for (date, hour) in by_date_hour.keys() {
-        let half = half_of_hour(hour.parse::<u32>().unwrap_or(0));
-        hours_by_half
-            .entry((date.clone(), half))
+        hours_by_date
+            .entry(date.clone())
             .or_default()
             .push(hour.clone());
     }
 
-    let regenerated_note = "_Regenerated from the trade log (2026-07-14 format backfill) — \
-        historical market-state/staleness/CPU snapshots aren't recoverable from trade data \
-        alone and are omitted for this hour; hours written by the live process carry them \
-        as usual._\n\n";
+    let regenerated_note = "_Regenerated from the trade log — historical market-state/\
+        staleness/CPU snapshots aren't recoverable from trade data alone and are omitted for \
+        this hour; hours written by the live process carry them as usual._\n\n";
 
     let mut written = Vec::new();
-    for ((date, half), hours) in hours_by_half.iter().rev() {
+    for (date, hours) in hours_by_date.iter().rev() {
+        let dir = day_dir(report_dir, date);
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {dir:?}"))?;
+
         let mut hours_sorted = hours.clone();
         hours_sorted.sort();
-        hours_sorted.reverse(); // newest hour first within the file
+        hours_sorted.reverse(); // newest hour first
 
-        let mut body = String::new();
-        for (i, hour) in hours_sorted.iter().enumerate() {
+        let mut day_trades: Vec<SiglabTradeRecord> = Vec::new();
+        for hour in &hours_sorted {
             let trades = &by_date_hour[&(date.clone(), hour.clone())];
-            let hour_pnl: f64 = trades.iter().map(|t| t.pnl).sum::<f64>() + 0.0;
-            let hour_key = format!("{date}T{hour}");
-            let hour_label = format!("{date} {hour}:00");
-            let inner = format!(
+            day_trades.extend(trades.iter().cloned());
+
+            let path = trades_path(report_dir, date, hour);
+            let body = format!(
                 "{HOUR_TRADES_MARKER_START}{}{HOUR_TRADES_MARKER_END}{regenerated_note}",
                 render_hour_trades_section(trades)
             );
-            let block =
-                render_hour_block(&hour_key, &hour_label, &inner, 0, trades.len(), hour_pnl);
-            // Only the newest hour in the file stays expanded — render_hour_block always
-            // emits `<details open>`, so collapse every older one explicitly.
-            if i == 0 {
-                body.push_str(&block);
-            } else {
-                body.push_str(&block.replacen("<details open>\n", "<details>\n", 1));
-            }
+            std::fs::write(&path, format!("{}{body}", trades_header(date, hour)))
+                .with_context(|| format!("write {path:?}"))?;
+            written.push(path);
         }
 
-        let path = report_dir.join(format!("signal_report_{date}_{half}.md"));
-        let mut f = std::fs::File::create(&path).with_context(|| format!("write {path:?}"))?;
-        f.write_all(report_header(date, half).as_bytes())?;
-        f.write_all(render_config_section(cfg, weather_cities, worldcup_events).as_bytes())?;
-        f.write_all(body.as_bytes())?;
-        written.push(path);
+        let s_path = summary_path(report_dir, date);
+        let s_body = render_summary_body(
+            date,
+            &dir,
+            cfg,
+            weather_cities,
+            worldcup_events,
+            &day_trades,
+        );
+        std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
+        written.push(s_path);
     }
     Ok(written)
 }
 
-/// Parses an `HOUR_MARKER_PREFIX` hour key (e.g. `"2026-07-14T21"`, always HKT) into
-/// `[start, end)` unix-second bounds for that real HKT hour.
-fn hour_bounds(hour_key: &str) -> Result<(f64, f64)> {
-    let (date_str, hour_str) = hour_key
-        .split_once('T')
-        .with_context(|| format!("malformed hour key {hour_key:?}"))?;
+/// `[start, end)` unix-second bounds for the real HKT hour named by `date`/`hour` (as parsed
+/// out of a `trades_{date}_{hour}.md` filename).
+fn hour_bounds(date_str: &str, hour_str: &str) -> Result<(f64, f64)> {
     let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-        .with_context(|| format!("bad date in hour key {hour_key:?}"))?;
+        .with_context(|| format!("bad date {date_str:?}"))?;
     let hour: u32 = hour_str
         .parse()
-        .with_context(|| format!("bad hour in hour key {hour_key:?}"))?;
+        .with_context(|| format!("bad hour {hour_str:?}"))?;
     let naive = date
         .and_hms_opt(hour, 0, 0)
-        .with_context(|| format!("bad hour value in hour key {hour_key:?}"))?;
+        .with_context(|| format!("bad hour value {hour_str:?}"))?;
     let start = hkt()
         .from_local_datetime(&naive)
         .single()
-        .with_context(|| format!("ambiguous/invalid local time for hour key {hour_key:?}"))?;
+        .with_context(|| format!("ambiguous/invalid local time {date_str} {hour_str}"))?;
     let start_ts = start.timestamp() as f64;
     Ok((start_ts, start_ts + 3600.0))
 }
 
 /// One-off maintenance: re-renders just the merged "Trades this hour" table (the span
-/// between `HOUR_TRADES_MARKER_START/END`) of every hour block in every
-/// `signal_report_*.md` under `report_dir`, from `trade_log_path`'s ground truth — used to
-/// backfill a rendering change (e.g. a new summary table/column) into hours the live
-/// process already wrote and closed. Unlike `regenerate_from_trade_log`, this does **not**
-/// touch anything else in the file — each hour's real market-state/staleness/CPU snapshots
-/// (not recoverable from the trade log alone) are left exactly as the live process wrote
-/// them. Added 2026-07-15 to backfill the new `render_variant_totals_summary` table without
-/// discarding that data.
+/// between `HOUR_TRADES_MARKER_START/END`) of every `trades_{date}_{HH}.md` under every
+/// date subfolder of `report_dir`, from `trade_log_path`'s ground truth — used to backfill a
+/// rendering change (e.g. a new summary table/column) into hours the live process already
+/// wrote and closed. Unlike `regenerate_from_trade_log`, this does **not** touch anything
+/// else in the file — each hour's real market-state/staleness/CPU snapshots (not recoverable
+/// from the trade log alone) are left exactly as the live process wrote them.
 pub fn refresh_hour_trades_tables(
     trade_log_path: &Path,
     report_dir: &Path,
@@ -793,72 +892,67 @@ pub fn refresh_hour_trades_tables(
     let all_trades = recent_trades(trade_log_path, 0.0);
     let mut written = Vec::new();
 
-    for entry in std::fs::read_dir(report_dir).context("read report dir")? {
-        let path = entry.context("read report dir entry")?.path();
-        let is_report = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("signal_report_") && n.ends_with(".md"));
-        if !is_report {
+    let Ok(day_entries) = std::fs::read_dir(report_dir) else {
+        return Ok(written);
+    };
+    for day_entry in day_entries {
+        let day_path = day_entry.context("read report dir entry")?.path();
+        if !day_path.is_dir() {
             continue;
         }
+        let Some(date) = day_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let prefix = format!("trades_{date}_");
 
-        let content = std::fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
-        let mut new_content = String::with_capacity(content.len());
-        let mut rest = content.as_str();
-        let mut changed = false;
+        for entry in std::fs::read_dir(&day_path).with_context(|| format!("read {day_path:?}"))? {
+            let path = entry.context("read day dir entry")?.path();
+            let Some(hour) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(&prefix))
+                .and_then(|n| n.strip_suffix(".md"))
+                .map(str::to_string)
+            else {
+                continue;
+            };
 
-        while let Some(hour_pos) = rest.find(HOUR_MARKER_PREFIX) {
-            new_content.push_str(&rest[..hour_pos]);
-            rest = &rest[hour_pos..];
-            let key_start = HOUR_MARKER_PREFIX.len();
-            let marker_end = rest[key_start..]
-                .find(" -->\n")
-                .map(|p| key_start + p + " -->\n".len())
-                .with_context(|| format!("malformed hour marker in {path:?}"))?;
-            let hour_key = &rest[key_start..marker_end - " -->\n".len()];
-            let (start_ts, end_ts) = hour_bounds(hour_key)
-                .with_context(|| format!("hour key {hour_key:?} in {path:?}"))?;
+            let (start_ts, end_ts) = hour_bounds(&date, &hour)
+                .with_context(|| format!("hour {date} {hour} in {path:?}"))?;
             let hour_trades: Vec<SiglabTradeRecord> = all_trades
                 .iter()
                 .filter(|t| t.logged_at >= start_ts && t.logged_at < end_ts)
                 .cloned()
                 .collect();
 
-            match (
-                rest.find(HOUR_TRADES_MARKER_START),
-                rest.find(HOUR_TRADES_MARKER_END),
-            ) {
-                (Some(ts), Some(te)) if te >= ts => {
-                    new_content.push_str(&rest[..ts]);
-                    new_content.push_str(HOUR_TRADES_MARKER_START);
-                    new_content.push_str(&render_hour_trades_section(&hour_trades));
-                    new_content.push_str(HOUR_TRADES_MARKER_END);
-                    changed = true;
-                    rest = &rest[te + HOUR_TRADES_MARKER_END.len()..];
-                }
-                _ => {
-                    // No trades markers in this hour block — leave it untouched, advance past
-                    // the hour marker line so the search loop makes progress.
-                    new_content.push_str(&rest[..marker_end]);
-                    rest = &rest[marker_end..];
-                }
+            let content =
+                std::fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
+            if let (Some(ts), Some(te)) = (
+                content.find(HOUR_TRADES_MARKER_START),
+                content.find(HOUR_TRADES_MARKER_END),
+            ) && te >= ts
+            {
+                let mut new_content = content[..ts].to_string();
+                new_content.push_str(HOUR_TRADES_MARKER_START);
+                new_content.push_str(&render_hour_trades_section(&hour_trades));
+                new_content.push_str(HOUR_TRADES_MARKER_END);
+                new_content.push_str(&content[te + HOUR_TRADES_MARKER_END.len()..]);
+                std::fs::write(&path, &new_content).with_context(|| format!("write {path:?}"))?;
+                written.push(path);
             }
-        }
-        new_content.push_str(rest);
-
-        if changed {
-            std::fs::write(&path, &new_content).with_context(|| format!("write {path:?}"))?;
-            written.push(path);
         }
     }
     Ok(written)
 }
 
-/// Writes (inserting) this run's section into today's report file — either nested inside
-/// the still-current hour's `<details>` (if the last write was in the same real HKT hour)
-/// or as a fresh hour section on top (collapsing the previous hour's section, since only the
-/// current hour stays expanded by default).
+/// Writes this run's report: `trades_{date}_{HH}.md` (this hour's merged trade tables,
+/// regenerated fresh, plus this run's market-state/staleness/CPU snapshot nested on top of
+/// any earlier runs this same hour) and `summary_{date}.md` (fully rewritten every time from
+/// the trade log's ground truth). Returns `(summary_path, trades_path)`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_hourly_report(
     report_dir: &Path,
@@ -871,40 +965,28 @@ pub fn write_hourly_report(
     cgroup_prev: Option<cgroup::Sample>,
     cgroup_now: Option<cgroup::Sample>,
     window_secs: f64,
-) -> Result<PathBuf> {
-    std::fs::create_dir_all(report_dir).context("create report dir")?;
-    let path = report_path(report_dir);
-    let now_for_header = now_hkt();
-    let date = now_for_header.format("%Y-%m-%d").to_string();
-    let half = half_of_hour(now_for_header.hour());
-
-    let header = report_header(&date, half);
-
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let body = if let Some(stripped) = existing.strip_prefix(&header) {
-        stripped.to_string()
-    } else {
-        // Missing file, or an existing file from a previous day/format — start fresh
-        // rather than guess where the header ends.
-        String::new()
-    };
-    // Strip out any previously-written config section — it's always regenerated fresh
-    // below from the current config files rather than left stale from whenever the file
-    // was first created today.
-    let body = match (body.find(CONFIG_MARKER_START), body.find(CONFIG_MARKER_END)) {
-        (Some(start), Some(end)) if end >= start => {
-            let mut b = body[..start].to_string();
-            b.push_str(&body[end + CONFIG_MARKER_END.len()..]);
-            b
-        }
-        _ => body,
-    };
-
+) -> Result<(PathBuf, PathBuf)> {
     let now = now_hkt();
-    let hour_key = now.format("%Y-%m-%dT%H").to_string();
-    let hour_label = now.format("%Y-%m-%d %H:00").to_string();
-    let run_label = now.format("%Y-%m-%d %H:%M").to_string();
+    let date = now.format("%Y-%m-%d").to_string();
+    let hour = now.format("%H").to_string();
+    let dir = day_dir(report_dir, &date);
+    std::fs::create_dir_all(&dir).context("create day dir")?;
 
+    // ── trades_{date}_{HH}.md ──
+    let t_path = trades_path(report_dir, &date, &hour);
+    let header = trades_header(&date, &hour);
+    let existing = std::fs::read_to_string(&t_path).unwrap_or_default();
+    let body = existing
+        .strip_prefix(&header)
+        .map(str::to_string)
+        .unwrap_or_default();
+    // Any existing content here is by construction always this same hour (the filename
+    // encodes date+hour), so there's no "is this a continuation" check to make — just strip
+    // the old merged-trades block (regenerated fresh below) and keep the accumulated
+    // RUN_MARKER-prefixed run blocks.
+    let old_runs = strip_old_hour_trades(&body);
+
+    let run_label = now.format("%Y-%m-%d %H:%M").to_string();
     let run_block = render_run_section(
         &run_label,
         snapshots,
@@ -923,98 +1005,38 @@ pub fn write_hourly_report(
         .with_nanosecond(0)
         .unwrap();
     let hour_trades = recent_trades(trade_log_path, start_of_hour.timestamp() as f64);
-    // `Iterator::sum()` folds from `-0.0` for `f64`, so an empty/zero-sum window prints as
-    // "-0.0000" unless normalized — `+ 0.0` flips a negative zero back to positive.
-    let hour_pnl: f64 = hour_trades.iter().map(|t| t.pnl).sum::<f64>() + 0.0;
     let hour_trades_html = format!(
         "{HOUR_TRADES_MARKER_START}{}{HOUR_TRADES_MARKER_END}",
         render_hour_trades_section(&hour_trades)
     );
 
-    // Strip out the hour's own previously-written trades block from `inner` (it's always
-    // regenerated fresh above from every trade logged so far this hour) before re-nesting
-    // the remaining (market-state/staleness/cpu-only) run blocks.
-    let strip_old_hour_trades = |inner: &str| -> String {
-        match (
-            inner.find(HOUR_TRADES_MARKER_START),
-            inner.find(HOUR_TRADES_MARKER_END),
-        ) {
-            (Some(start), Some(end)) if end >= start => {
-                let mut s = inner[..start].to_string();
-                s.push_str(&inner[end + HOUR_TRADES_MARKER_END.len()..]);
-                s
-            }
-            _ => inner.to_string(),
-        }
-    };
+    let new_body = format!("{hour_trades_html}{RUN_MARKER}{run_block}{old_runs}");
+    std::fs::write(&t_path, format!("{header}{new_body}"))
+        .with_context(|| format!("write {t_path:?}"))?;
 
-    let marker = format!("{HOUR_MARKER_PREFIX}{hour_key} -->\n");
-    let new_body = if body.starts_with(&marker) {
-        let bounds = body
-            .find(HOUR_BODY_START)
-            .map(|p| p + HOUR_BODY_START.len())
-            .zip(body.find(HOUR_BODY_END));
-        match bounds {
-            Some((body_start, body_end)) if body_end >= body_start => {
-                let inner_old = strip_old_hour_trades(&body[body_start..body_end]);
-                let run_count = inner_old.matches(RUN_MARKER).count() + 1;
-                let new_inner = format!("{hour_trades_html}{RUN_MARKER}{run_block}{inner_old}");
-                let after_end_marker = body_end + HOUR_BODY_END.len();
-                let close_tag = "</details>\n\n";
-                let hour_block_end = if body[after_end_marker..].starts_with(close_tag) {
-                    after_end_marker + close_tag.len()
-                } else {
-                    body[after_end_marker..]
-                        .find("</details>")
-                        .map(|p| after_end_marker + p + "</details>".len())
-                        .unwrap_or(after_end_marker)
-                };
-                let remainder = &body[hour_block_end..];
-                let rebuilt = render_hour_block(
-                    &hour_key,
-                    &hour_label,
-                    &new_inner,
-                    run_count,
-                    hour_trades.len(),
-                    hour_pnl,
-                );
-                format!("{rebuilt}{remainder}")
-            }
-            _ => {
-                // Markers present but malformed somehow — don't lose old data, just start a
-                // fresh hour block on top of everything that's already there.
-                let fresh = render_hour_block(
-                    &hour_key,
-                    &hour_label,
-                    &format!("{hour_trades_html}{RUN_MARKER}{run_block}"),
-                    1,
-                    hour_trades.len(),
-                    hour_pnl,
-                );
-                format!("{fresh}{body}")
-            }
-        }
-    } else {
-        // New hour (or first write of the day): collapse the previous hour's section — it's
-        // the only thing in the file ever rendered with `<details open>`, so this is safe
-        // and precise, not a heuristic guess.
-        let collapsed = body.replacen("<details open>\n", "<details>\n", 1);
-        let fresh = render_hour_block(
-            &hour_key,
-            &hour_label,
-            &format!("{hour_trades_html}{RUN_MARKER}{run_block}"),
-            1,
-            hour_trades.len(),
-            hour_pnl,
-        );
-        format!("{fresh}{collapsed}")
-    };
+    // ── summary_{date}.md ──
+    let s_path = summary_path(report_dir, &date);
+    let start_of_day = now
+        .with_hour(0)
+        .unwrap()
+        .with_minute(0)
+        .unwrap()
+        .with_second(0)
+        .unwrap()
+        .with_nanosecond(0)
+        .unwrap();
+    let day_trades = recent_trades(trade_log_path, start_of_day.timestamp() as f64);
+    let s_body = render_summary_body(
+        &date,
+        &dir,
+        cfg,
+        weather_cities,
+        worldcup_events,
+        &day_trades,
+    );
+    std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
 
-    let mut f = std::fs::File::create(&path).with_context(|| format!("write {path:?}"))?;
-    f.write_all(header.as_bytes())?;
-    f.write_all(render_config_section(cfg, weather_cities, worldcup_events).as_bytes())?;
-    f.write_all(new_body.as_bytes())?;
-    Ok(path)
+    Ok((s_path, t_path))
 }
 
 #[cfg(test)]
@@ -1282,6 +1304,11 @@ mod tests {
             !section.contains("duration"),
             "the markets/durations table was dropped 2026-07-14, must not reappear"
         );
+        assert!(
+            section.contains("v_0.7_0.3_0.7_0.3_0.05"),
+            "V-shape grid must be listed alongside the reversal grid"
+        );
+        assert!(section.contains("v_0.7_0.3_0.7_0.6_0.2"));
     }
 
     #[test]
@@ -1294,7 +1321,7 @@ mod tests {
         let stale_log = new_stale_log();
         let cfg = sample_cfg();
 
-        let path = write_hourly_report(
+        let (summary_path, _) = write_hourly_report(
             report_dir,
             &cfg,
             &[],
@@ -1321,17 +1348,20 @@ mod tests {
         )
         .unwrap();
 
-        let content = std::fs::read_to_string(&path).unwrap();
+        // summary_{date}.md is always fully rewritten (not appended), so the config section
+        // trivially can't duplicate — this mostly guards against a future refactor
+        // accidentally switching it to an append-style write.
+        let content = std::fs::read_to_string(&summary_path).unwrap();
         assert_eq!(
             content.matches(CONFIG_MARKER_START).count(),
             1,
-            "config section must be replaced wholesale on every write, not duplicated"
+            "config section must appear exactly once in summary_{{date}}.md"
         );
         assert_eq!(content.matches("reversal_0.2_0.55").count(), 1);
     }
 
     #[test]
-    fn second_run_in_same_hour_nests_inside_one_hour_details() {
+    fn second_run_in_same_hour_nests_into_one_trades_file() {
         let dir = tempfile::tempdir().unwrap();
         let report_dir = dir.path();
         let trade_log = dir.path().join("trades.jsonl");
@@ -1344,7 +1374,7 @@ mod tests {
             variants: vec![],
         };
 
-        let path1 = write_hourly_report(
+        let (_, trades_path1) = write_hourly_report(
             report_dir,
             &cfg,
             &[],
@@ -1357,12 +1387,10 @@ mod tests {
             900.0,
         )
         .unwrap();
-        let after_first = std::fs::read_to_string(&path1).unwrap();
-        assert_eq!(after_first.matches(HOUR_MARKER_PREFIX).count(), 1);
+        let after_first = std::fs::read_to_string(&trades_path1).unwrap();
         assert_eq!(after_first.matches(RUN_MARKER).count(), 1);
-        assert_eq!(after_first.matches("<details open>").count(), 1);
 
-        let path2 = write_hourly_report(
+        let (_, trades_path2) = write_hourly_report(
             report_dir,
             &cfg,
             &[],
@@ -1375,11 +1403,13 @@ mod tests {
             900.0,
         )
         .unwrap();
-        let after_second = std::fs::read_to_string(&path2).unwrap();
-        // Same hour -> still exactly one hour marker/one open details, but two nested runs.
-        assert_eq!(after_second.matches(HOUR_MARKER_PREFIX).count(), 1);
+        assert_eq!(
+            trades_path1, trades_path2,
+            "same real hour must write to the same trades_{{date}}_{{HH}}.md file"
+        );
+        let after_second = std::fs::read_to_string(&trades_path2).unwrap();
+        // Same hour -> two nested runs, still one file.
         assert_eq!(after_second.matches(RUN_MARKER).count(), 2);
-        assert_eq!(after_second.matches("<details open>").count(), 1);
     }
 
     /// The core of this session's item 5: trades from an earlier run in the same hour must
@@ -1407,7 +1437,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let path1 = write_hourly_report(
+        let (_, trades_path1) = write_hourly_report(
             report_dir,
             &cfg,
             &[],
@@ -1420,7 +1450,7 @@ mod tests {
             900.0,
         )
         .unwrap();
-        let after_first = std::fs::read_to_string(&path1).unwrap();
+        let after_first = std::fs::read_to_string(&trades_path1).unwrap();
         assert!(after_first.contains("v1"));
         assert_eq!(after_first.matches(HOUR_TRADES_MARKER_START).count(), 1);
 
@@ -1435,7 +1465,7 @@ mod tests {
             "{{\"logged_at\":{now},\"market_kind\":\"crypto\",\"variant_id\":\"v2\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{now},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"UNWIND\",\"pnl\":0.1}}"
         )
         .unwrap();
-        let path2 = write_hourly_report(
+        let (_, trades_path2) = write_hourly_report(
             report_dir,
             &cfg,
             &[],
@@ -1448,7 +1478,7 @@ mod tests {
             900.0,
         )
         .unwrap();
-        let after_second = std::fs::read_to_string(&path2).unwrap();
+        let after_second = std::fs::read_to_string(&trades_path2).unwrap();
 
         assert!(
             after_second.contains("v1") && after_second.contains("v2"),
@@ -1495,7 +1525,7 @@ mod tests {
             variants: vec![],
         };
 
-        let path = write_hourly_report(
+        let (_, trades_path) = write_hourly_report(
             report_dir,
             &cfg,
             &[],
@@ -1508,7 +1538,7 @@ mod tests {
             900.0,
         )
         .unwrap();
-        let before = std::fs::read_to_string(&path).unwrap();
+        let before = std::fs::read_to_string(&trades_path).unwrap();
         assert!(before.contains("variant_alpha"));
         assert!(!before.contains("variant_beta"));
         // The run-level crypto snapshot row is what refresh must leave untouched.
@@ -1529,12 +1559,79 @@ mod tests {
         .unwrap();
 
         let written = refresh_hour_trades_tables(&trade_log, report_dir).unwrap();
-        assert_eq!(written, vec![path.clone()]);
+        assert_eq!(written, vec![trades_path.clone()]);
 
-        let after = std::fs::read_to_string(&path).unwrap();
+        let after = std::fs::read_to_string(&trades_path).unwrap();
         assert!(after.contains("variant_alpha") && after.contains("variant_beta"));
         assert!(after.contains("PnL by variant (all markets)"));
         // Untouched by the refresh: the run-level crypto snapshot row.
         assert!(after.contains("0.4242"));
+    }
+
+    #[test]
+    fn regenerate_from_trade_log_writes_per_day_folders_and_respects_since_date() {
+        let dir = tempfile::tempdir().unwrap();
+        // report_dir is a subdirectory, not `dir.path()` itself — the test later
+        // `remove_dir_all`s report_dir to prove a fresh regenerate run, and that must not
+        // also delete trade_log (which lives in the same tempdir root).
+        let report_dir = &dir.path().join("reports");
+        let trade_log = dir.path().join("trades.jsonl");
+
+        let day1_ts = 1_700_000_000.0;
+        let day2_ts = day1_ts + 90.0 * 86_400.0; // ~90 days later, definitely a different day
+
+        let day1 = Utc
+            .timestamp_opt(day1_ts as i64, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&hkt())
+            .format("%Y-%m-%d")
+            .to_string();
+        let day2 = Utc
+            .timestamp_opt(day2_ts as i64, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&hkt())
+            .format("%Y-%m-%d")
+            .to_string();
+        assert_ne!(day1, day2);
+
+        std::fs::write(
+            &trade_log,
+            format!(
+                "{{\"logged_at\":{day1_ts},\"market_kind\":\"crypto\",\"variant_id\":\"v1\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{day1_ts},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"TIMEOUT\",\"pnl\":0.1}}\n\
+                 {{\"logged_at\":{day2_ts},\"market_kind\":\"crypto\",\"variant_id\":\"v2\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{day2_ts},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"UNWIND\",\"pnl\":0.2}}\n"
+            ),
+        )
+        .unwrap();
+
+        let cfg = SiglabConfig {
+            markets: vec![],
+            hourly_markets: vec![],
+            variants: vec![],
+        };
+
+        // No filter: both days produced.
+        let written =
+            regenerate_from_trade_log(&trade_log, report_dir, &cfg, &[], &[], None).unwrap();
+        assert!(day_dir(report_dir, &day1).is_dir());
+        assert!(day_dir(report_dir, &day2).is_dir());
+        assert!(written.contains(&summary_path(report_dir, &day1)));
+        assert!(written.contains(&summary_path(report_dir, &day2)));
+
+        let day1_summary = std::fs::read_to_string(summary_path(report_dir, &day1)).unwrap();
+        assert!(day1_summary.contains("v1"));
+        assert!(day1_summary.contains("## Hours"));
+
+        // Rerun from scratch with since_date scoped to day2 only — day1 must be genuinely
+        // skipped, not just already present from the previous run.
+        std::fs::remove_dir_all(report_dir).unwrap();
+        let day2_date = NaiveDate::parse_from_str(&day2, "%Y-%m-%d").unwrap();
+        let written2 =
+            regenerate_from_trade_log(&trade_log, report_dir, &cfg, &[], &[], Some(day2_date))
+                .unwrap();
+        assert!(!day_dir(report_dir, &day1).exists());
+        assert!(day_dir(report_dir, &day2).is_dir());
+        assert!(!written2.contains(&summary_path(report_dir, &day1)));
     }
 }

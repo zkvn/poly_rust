@@ -25,6 +25,7 @@ use trader::marketdata::{PolySub, fetch_meta, now_secs_f64};
 use trader::types::{BinanceTick, CycleContext};
 
 use crate::rotation::Rotation;
+use crate::v_shape::{VShapeEngine, v_shape_grid};
 
 /// Spawn exactly one real Binance `@trade` subscription for `asset` and fan its ticks out
 /// to a broadcast channel — call once per unique asset, then `.subscribe()` once per
@@ -103,7 +104,17 @@ pub async fn run_market(
         })
         .collect();
 
-    if machines.is_empty() {
+    // V-shape variants apply unconditionally to every crypto market (same as the reversal
+    // grid), not driven by `markets.toml` — see `v_shape.rs`'s doc comment. Built once per
+    // market task, same lifetime as `machines`. Stored flat (not `(String, Engine)` pairs,
+    // unlike `machines` above) since `VShapeEngine` carries its own `variant_id` — same
+    // convention `bucket_reversal::BucketReversalEngine`/`event_monitor.rs` already use.
+    let mut v_engines: Vec<VShapeEngine> = v_shape_grid()
+        .into_iter()
+        .map(|(id, p)| VShapeEngine::new(id, p))
+        .collect();
+
+    if machines.is_empty() && v_engines.is_empty() {
         eprintln!("[{market_key}] no variants apply to this asset — task idle, exiting");
         return Ok(());
     }
@@ -111,6 +122,11 @@ pub async fn run_market(
     let (poly_tx, mut poly_rx) = mpsc::unbounded_channel::<trader::types::PolyTick>();
 
     let mut last_binance: f64 = 0.0;
+    // Cached most-recent `up` price, used only as the fallback price for
+    // `VShapeEngine::force_close_if_holding`'s safety-net close at cycle rollover (see the
+    // `ticker.tick()` branch below) — `Machine` doesn't need an equivalent since its own
+    // `cycle_close` resolves via `last_binance` direction, not a cached poly price.
+    let mut last_up: f64 = 0.0;
     let mut current_slug: Option<String> = None;
     let mut current_slot_val: i64 = -1;
     let mut poly_sub: Option<PolySub> = None;
@@ -119,12 +135,13 @@ pub async fn run_market(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     eprintln!(
-        "[{market_key}] starting, {} variant(s): {:?}",
+        "[{market_key}] starting, {} variant(s): {:?}, {} v-shape variant(s)",
         machines.len(),
         machines
             .iter()
             .map(|(id, _)| id.as_str())
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        v_engines.len()
     );
 
     loop {
@@ -159,11 +176,22 @@ pub async fn run_market(
                     dn_price: tick.dn,
                     last_tick_ms: (tick.ts * 1000.0) as i64,
                 });
-                if current_slug.is_some() {
+                last_up = tick.up;
+                if let Some(slug) = current_slug.as_deref() {
                     for (variant_id, m) in machines.iter_mut() {
                         if let Some(rec) = m.on_poly(tick) {
                             let out = SiglabTradeRecord::from_trader(
                                 &rec, MarketKind::Crypto, variant_id, &asset, &market_key, now_secs_f64(),
+                            );
+                            let _ = trade_tx.send(out);
+                        }
+                    }
+                    for e in v_engines.iter_mut() {
+                        if let Some(ct) = e.on_tick(tick.up, tick.ts) {
+                            let out = SiglabTradeRecord::from_v_shape_engine(
+                                &e.variant_id, &asset, &market_key, slug, ct.side_up,
+                                ct.entry_ts, ct.entry_price, ct.exit_price, ct.outcome,
+                                ct.pnl, now_secs_f64(),
                             );
                             let _ = trade_tx.send(out);
                         }
@@ -179,6 +207,21 @@ pub async fn run_market(
                             if let Some(rec) = m.cycle_close() {
                                 let out = SiglabTradeRecord::from_trader(
                                     &rec, MarketKind::Crypto, variant_id, &asset, &market_key, now_secs_f64(),
+                                );
+                                let _ = trade_tx.send(out);
+                            }
+                        }
+                        // Safety net: force-close any still-open v-shape position before
+                        // resetting for the new cycle — see `VShapeEngine::
+                        // force_close_if_holding`'s doc comment for why this should be a
+                        // rare-to-never path.
+                        for e in v_engines.iter_mut() {
+                            let cycle_slug = e.cycle_slug.clone();
+                            if let Some(ct) = e.force_close_if_holding(last_up) {
+                                let out = SiglabTradeRecord::from_v_shape_engine(
+                                    &e.variant_id, &asset, &market_key,
+                                    &cycle_slug, ct.side_up, ct.entry_ts, ct.entry_price,
+                                    ct.exit_price, ct.outcome, ct.pnl, now_secs_f64(),
                                 );
                                 let _ = trade_tx.send(out);
                             }
@@ -199,6 +242,9 @@ pub async fn run_market(
                             };
                             for (_, m) in machines.iter_mut() {
                                 m.cycle_open(&ctx, &slug, false);
+                            }
+                            for e in v_engines.iter_mut() {
+                                e.cycle_open(ctx.end_ts, &slug);
                             }
                             current_slug = Some(slug.clone());
                             current_slot_val = slot;

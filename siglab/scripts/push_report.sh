@@ -1,5 +1,5 @@
 #!/bin/bash
-# Commits and pushes siglab's hourly signal report(s) to git. Run hourly by a systemd
+# Commits and pushes siglab's per-day signal report(s) to git. Run hourly by a systemd
 # --user timer (siglab-report-push.timer, installed by siglab/scripts/install_timer.sh) —
 # NOT by the siglab process itself, and NOT requiring any git/SSH credentials inside the
 # Docker container. The container only writes report files to a bind-mounted repo path
@@ -16,8 +16,11 @@ cd "$REPO_ROOT"
 # production: the very first two hourly timer firings both failed this way because no
 # report had been written yet (siglab writes its first report one full interval after
 # container start, so a freshly (re)started container has a report-free window).
+#
+# Matches both `{date}/summary_{date}.md` and `{date}/trades_{date}_{HH}.md` (2026-07-15
+# per-day-folder layout, replacing the flat `signal_report_*.md` files).
 shopt -s nullglob
-report_files=(siglab/doc/report/signal_report_*.md)
+report_files=(siglab/doc/report/*/*.md)
 if [ ${#report_files[@]} -eq 0 ]; then
   echo "[push_report] no report files exist yet — nothing to push"
   exit 0

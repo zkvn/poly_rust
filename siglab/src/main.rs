@@ -2,7 +2,8 @@
 //!
 //! Subscribes to many rotating Polymarket markets concurrently, drives one
 //! `trader::machine::Machine` per (crypto market, configured variant) pair against live
-//! ticks, and logs paper trade-record outcomes to JSONL. Also drives one
+//! ticks, plus one self-contained `v_shape::VShapeEngine` per (crypto market, grid variant)
+//! pair, and logs paper trade-record outcomes to JSONL. Also drives one
 //! `bucket_reversal::BucketReversalEngine` per (weather/World Cup bucket, grid variant) pair
 //! — a separate, self-contained pure-price-action engine, not `Machine` — see
 //! `bucket_reversal.rs`'s doc comment for why. **No real orders, no parquet/raw tick
@@ -10,13 +11,12 @@
 //! `price_feed` — see `siglab/config.rs`'s doc comment and
 //! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
 //!
-//! Every hour (HKT), writes/updates `{report_dir}/signal_report_{date}_{AM|PM}.md` (split
-//! at the 12:00 HKT boundary — see `report.rs`'s module doc comment) — a
-//! collapsible-sections Markdown summary of the last hour's trades, market state,
-//! staleness health, and CPU/memory usage. A separate host-side script
-//! (`siglab/scripts/push_report.sh`, run by a systemd --user timer, not by this process)
-//! commits and pushes that file hourly, independent of this process needing git/SSH
-//! credentials itself.
+//! Every hour (HKT), writes/updates `{report_dir}/{date}/summary_{date}.md` (day-level
+//! config + PnL rollup + hour index) and `{report_dir}/{date}/trades_{date}_{HH}.md` (that
+//! hour's trade tables + market-state/staleness/CPU snapshots) — see `report.rs`'s module
+//! doc comment. A separate host-side script (`siglab/scripts/push_report.sh`, run by a
+//! systemd --user timer, not by this process) commits and pushes those files hourly,
+//! independent of this process needing git/SSH credentials itself.
 
 mod bucket_reversal;
 mod cgroup;
@@ -28,6 +28,7 @@ mod report;
 mod rotation;
 mod snapshot;
 mod staleness;
+mod v_shape;
 mod weather;
 mod worldcup;
 
@@ -67,7 +68,8 @@ struct Args {
     #[arg(long, default_value = "siglab_trades.jsonl")]
     log: PathBuf,
 
-    /// Directory the hourly signal_report_{date}_{AM|PM}.md files are written into.
+    /// Directory the per-day `{date}/summary_{date}.md` + `{date}/trades_{date}_{HH}.md`
+    /// report files are written into.
     #[arg(long, default_value = "reports")]
     report_dir: PathBuf,
 
@@ -101,15 +103,22 @@ struct Args {
     #[arg(long, default_value_t = 300)]
     heartbeat_secs: u64,
 
-    /// One-off: rebuild every signal_report_*.md in --report-dir from --log's trade-log
-    /// ground truth (report::regenerate_from_trade_log), then exit immediately — no WS
-    /// connections, no live harness. Used to backfill existing reports into a new rendering
-    /// format; see that function's doc comment.
+    /// One-off: rebuild every `{date}/summary_{date}.md` + `{date}/trades_{date}_{HH}.md`
+    /// under --report-dir from --log's trade-log ground truth
+    /// (report::regenerate_from_trade_log), then exit immediately — no WS connections, no
+    /// live harness. Used to backfill existing reports into a new rendering format; see that
+    /// function's doc comment.
     #[arg(long)]
     regenerate_reports_only: bool,
 
-    /// One-off: re-render just the merged "Trades this hour" table in every hour block of
-    /// every signal_report_*.md in --report-dir from --log's ground truth
+    /// Only used with --regenerate-reports-only: skip dates before this one (YYYY-MM-DD,
+    /// HKT). Scopes a backfill run to recent days instead of reprocessing the whole trade
+    /// log's history. Unset = process every date found in the log (previous behavior).
+    #[arg(long)]
+    regenerate_since: Option<String>,
+
+    /// One-off: re-render just the merged "Trades this hour" table in every
+    /// `trades_{date}_{HH}.md` under --report-dir from --log's ground truth
     /// (report::refresh_hour_trades_tables), then exit immediately. Unlike
     /// --regenerate-reports-only, this does NOT discard hours' real market-state/staleness/
     /// CPU snapshots — use this to backfill a trades-table rendering change (new column/
@@ -163,14 +172,26 @@ async fn main() -> Result<()> {
     }
 
     if args.regenerate_reports_only {
+        let since_date = args
+            .regenerate_since
+            .as_deref()
+            .map(|s| {
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    .with_context(|| format!("--regenerate-since {s:?}: not a YYYY-MM-DD date"))
+            })
+            .transpose()?;
         let paths = report::regenerate_from_trade_log(
             &args.log,
             &args.report_dir,
             &cfg,
             &weather_cfg.cities,
             &worldcup_cfg.events,
+            since_date,
         )?;
-        eprintln!("[siglab] regenerated {} report(s): {paths:?}", paths.len());
+        eprintln!(
+            "[siglab] regenerated {} report file(s): {paths:?}",
+            paths.len()
+        );
         return Ok(());
     }
 
@@ -408,7 +429,9 @@ async fn main() -> Result<()> {
                     cgroup_now,
                     interval_secs as f64,
                 ) {
-                    Ok(path) => eprintln!("[siglab] wrote hourly report to {path:?}"),
+                    Ok((summary_path, trades_path)) => {
+                        eprintln!("[siglab] wrote {summary_path:?} and {trades_path:?}")
+                    }
                     Err(e) => eprintln!("[siglab] report write failed: {e:#}"),
                 }
                 cgroup_prev = cgroup_now;
