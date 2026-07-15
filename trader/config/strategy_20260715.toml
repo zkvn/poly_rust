@@ -1,10 +1,10 @@
 # meta
 ts = "2026-07-15T00:00:00+08:00"
-source = "reversal-only, all 6 assets (BTC/ETH/SOL/BNB/XRP/DOGE) from btc_5mins studies/reversal_abs_sl_multimarket/summary_2026-07-14_pnl_stop.md, 5m walk-forward 'Recommended parameters — By PnL' table (most recent OOS fold, test window 2026-07-12 to 2026-07-14). Trade assets narrowed to BTC, BNB only (ETH/SOL/XRP/DOGE now watch-only — price-recorded but not traded), at the user's explicit request. sl_reversal left unchanged at 0.10 (not part of this sweep — the study fixed sl_reversal=0/disabled to isolate sl_pnl_rev's effect; keeping the existing absolute backstop only ever tightens an exit, never loosens one, and matches this config's own 2026-07-13 precedent of preferring an active backstop). Caveats carried over from the study, not resolved by this deploy: same boundary-seeking pattern as every prior sweep in that repo (reversal=0.50 and unwind_pnl_rev=0.25 both sit at the loosest tested edge, not an interior optimum); BNB's 100% win rate (18 trades) is flagged in the study as a likely thin-book/fill-assumption artifact, not a confirmed edge — moot for live risk here since BNB is one of the two enabled trade assets; ETH's own By-PnL pick was OOS-negative (-0.10) in that same fold (deployed anyway since ETH is watch-only, not traded, under this revision). Deployed per user's explicit instruction to use the best-PnL config for all 6 assets and trade only BTC+BNB."
+source = "same-day update: reversal-only, all 6 assets (BTC/ETH/SOL/BNB/XRP/DOGE) now from btc_5mins studies/reversal_hourly/summary.md, 5m hour-bucketed walk-forward 'Recommended parameters — By win_rate' table (most recent fold per asset, OOS — fold windows vary by asset, see per-asset comment above [delta_pct_rev] below). Superseded the earlier same-day By-PnL deploy (reversal_abs_sl_multimarket/summary_2026-07-14_pnl_stop.md) at the user's explicit request to switch selection method to win_rate and trade assets to BTC, BNB, SOL (ETH/XRP/DOGE now watch-only — price-recorded but not traded). sl_reversal left unchanged at 0.10 (not part of this sweep). unwind_pnl_rev converges to 0.10 for all 6 assets under this selection method, so no per-asset override is needed (a first for this field). Caveats NOT resolved by this deploy, carried over honestly: reversal_hourly's own summary explicitly says it is diagnostic-only, not a live-config recommendation — its hour-bucketed walk-forward (test window shrunk to 1 day/fold vs. the daily-version study's 3-day window) showed consistently lower mean OOS win rates and more zero-trade folds than the daily version across all 6 assets, a sample-size artifact of the shorter window, not necessarily a weaker edge. Two of the three now-traded assets' By-win_rate picks come from very thin single-fold OOS samples: BNB's 100% win rate is from only 2 OOS trades, SOL is 11 trades (81.8%); BTC is the least thin at 13 trades (92.3%). None of these should be read as validated edges, only as this one fold's realized outcome. Deployed anyway per the user's explicit instruction to use the best-win_rate config and trade BTC+BNB+SOL."
 
-# Trade assets narrowed to BTC, BNB — reversal only (see [strategies] below).
+# Trade assets: BTC, BNB, SOL — reversal only (see [strategies] below).
 assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
-trade_assets = ["BTC", "BNB"]
+trade_assets = ["BTC", "BNB", "SOL"]
 
 # Max buy price
 max_buy_price = 0.95
@@ -58,49 +58,51 @@ default = 2
 default = 8
 
 # --- Reversal strategy — entry+exit params from btc_5mins
-# studies/reversal_abs_sl_multimarket/summary_2026-07-14_pnl_stop.md, 5m
-# walk-forward "Recommended parameters — By PnL" table (most recent OOS fold,
-# test window 2026-07-12 to 2026-07-14). sl_reversal kept unchanged (0.10,
-# not part of this sweep — see meta.source above). halt_rev=1 unchanged.
-# By PnL (5m, walk-forward OOS):
-# BTC  delta=0.0003 rev=0.50 rev_lt=0.30 u=0.25 slp=0.30 uTime=20  trades=14  wr=78.6%  pnl=+2.70  ppt=0.193
-# ETH  delta=0.0003 rev=0.50 rev_lt=0.40 u=0.25 slp=0.30 uTime=20  trades=10  wr=60.0%  pnl=-0.10  ppt=-0.010  (watch-only, not traded)
-# SOL  delta=0.0003 rev=0.65 rev_lt=0.40 u=0.25 slp=0.30 uTime=20  trades=13  wr=69.2%  pnl=+1.17  ppt=0.090  (watch-only, not traded)
-# BNB  delta=0.0008 rev=0.50 rev_lt=0.40 u=0.25 slp=0.50 uTime=20  trades=18  wr=100.0% pnl=+3.74  ppt=0.208  (flagged as likely thin-book artifact in the study)
-# XRP  delta=0.0004 rev=0.50 rev_lt=0.40 u=0.25 slp=0.40 uTime=25  trades=19  wr=78.9%  pnl=+1.95  ppt=0.102  (watch-only, not traded)
-# DOGE delta=0.0010 rev=0.50 rev_lt=0.40 u=0.25 slp=0.50 uTime=20  trades=9   wr=77.8%  pnl=+0.70  ppt=0.078  (watch-only, not traded)
+# studies/reversal_hourly/summary.md, 5m hour-bucketed walk-forward
+# "Recommended parameters — By win_rate" table (most recent fold per asset,
+# OOS). sl_reversal kept unchanged (0.10, not part of this sweep — see
+# meta.source above). halt_rev=1 unchanged.
+# By win_rate (5m, hour-bucketed walk-forward OOS):
+# BTC  delta=0.0004 rev=0.55 rev_lt=0.20 u=0.10 slp=0.30 uTime=20  trades=13  wr=92.3%  pnl=+1.67  ppt=0.128
+# ETH  delta=0.0006 rev=0.60 rev_lt=0.20 u=0.10 slp=0.30 uTime=25  trades=2   wr=50.0%  pnl=+0.07  ppt=0.034  (watch-only, not traded)
+# SOL  delta=0.0003 rev=0.60 rev_lt=0.40 u=0.10 slp=0.30 uTime=25  trades=11  wr=81.8%  pnl=+0.58  ppt=0.052
+# BNB  delta=0.0008 rev=0.50 rev_lt=0.20 u=0.10 slp=0.40 uTime=25  trades=2   wr=100.0% pnl=+0.38  ppt=0.191  (thin sample — only 2 OOS trades)
+# XRP  delta=0.0003 rev=0.65 rev_lt=0.20 u=0.10 slp=0.30 uTime=20  trades=2   wr=50.0%  pnl=+0.12  ppt=0.061  (watch-only, not traded)
+# DOGE delta=0.0005 rev=0.60 rev_lt=0.20 u=0.10 slp=0.30 uTime=25  trades=8   wr=75.0%  pnl=+0.08  ppt=0.010  (watch-only, not traded)
 
 [delta_pct_rev]
 default = 0.0003
+BTC = 0.0004
+ETH = 0.0006
 BNB = 0.0008
-XRP = 0.0004
-DOGE = 0.0010
+DOGE = 0.0005
 
 [reversal]
-default = 0.50
-SOL = 0.65
+default = 0.60
+BTC = 0.55
+BNB = 0.50
+XRP = 0.65
 
 [reversal_low_threshold]
-default = 0.40
-BTC = 0.30
+default = 0.20
+SOL = 0.40
 
 [sl_reversal]
 default = 0.10
 
 [unwind_pnl_rev]
-default = 0.25
+default = 0.10
 
 [sl_pnl_rev]
 default = 0.30
-BNB = 0.50
-XRP = 0.40
-DOGE = 0.50
+BNB = 0.40
 
 # Max holding time (seconds) — force-close at market if still open this long
 # after entry, regardless of price. 0 = disabled.
 [unwind_time_rev]
-default = 20.0
-XRP = 25.0
+default = 25.0
+BTC = 20.0
+XRP = 20.0
 
 [price_high_rev]
 default = 0.9
