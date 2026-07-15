@@ -852,6 +852,28 @@ predating this log), and — only from this precise source, never the asset-blin
 exclude cycles live was genuinely halted for from "BT vs Live missed opportunities" entirely.
 Full design: `trader/doc/plan_align_bt_with_live_2026-07-15.md`.
 
+**`trader/live_logs/control_log.jsonl`** — one shared file across every asset/strategy (not
+per-slot, unlike `live_trades_*.csv`/`live_state_*.json`), append-only, one JSON object per line:
+
+```json
+{"ts": 1784115801.299, "asset": "BTC", "strategy": "reversal", "event": "startup",
+ "entry_suppressed": false, "halt_losses": 1, "is_halted": true}
+```
+
+`event` is one of `halt` / `resume` / `reset_losses` (user commands), `drawdown_halt` /
+`halt_engaged` / `halt_reset` / `halt_cleared_by_correction` / `gamma_halt_engaged` (automatic
+engine events), or `startup` (a snapshot logged once per slot right after every process restart,
+so a worker restored already-halted — routine after any deploy — doesn't leave a gap in the
+timeline). `entry_suppressed`/`halt_losses`/`is_halted` are the worker's resulting state *after*
+the event, not a diff. Bootstraps empty — it only records from the day this feature shipped
+onward, nothing retroactive.
+
+**Sync:** already covered, no script changes needed. `trader/scripts/bash/run_daily_recon.bash`
+rsyncs the *entire* `trader/live_logs/` directory from Oracle before every recon run (no
+per-file include/exclude list), so `control_log.jsonl` comes down automatically alongside
+`live.log`/`live_trades_*.csv`/`live_state_*.json` — confirmed by running that same rsync by
+hand post-deploy and seeing the file arrive with real `startup` entries.
+
 ### Backtest reconciliation config-drift gap — fixed (2026-07-15)
 
 Closes the README TODO flagged 2026-07-10: the daily recon's "Backtest Reconciliation"
