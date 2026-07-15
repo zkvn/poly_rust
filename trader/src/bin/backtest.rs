@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 use trader::backtest::{load_price_data, run_backtest};
-use trader::config::load_latest;
+use trader::config::{load_file, load_latest};
 use trader::types::TradeRecord;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -40,9 +40,18 @@ struct Args {
     #[arg(
         long,
         default_value = "/home/kev/apps/btc_5mins/config",
-        help = "Directory containing strategy_*.toml"
+        help = "Directory containing strategy_*.toml — ignored if --config-file is given"
     )]
     config_dir: String,
+
+    #[arg(
+        long,
+        help = "Load this exact strategy_*.toml instead of --config-dir's lexicographically-latest \
+                file — pins a specific historical config (e.g. trade_reconcile.py's BT \
+                reconciliation, reconciling a past window against the config that was actually \
+                live then, not today's)"
+    )]
+    config_file: Option<String>,
 
     #[arg(long, help = "Disable halt (sets halt_rev=halt_prob=0)")]
     no_halt: bool,
@@ -54,7 +63,10 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let toml = load_latest(&args.config_dir)?;
+    let toml = match &args.config_file {
+        Some(path) => load_file(path)?,
+        None => load_latest(&args.config_dir)?,
+    };
     let mut params = toml.resolve(&args.asset)?;
     if args.no_halt {
         params.halt_rev = 0;

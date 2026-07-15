@@ -215,8 +215,20 @@ pub fn load_latest(config_dir: &str) -> Result<StrategyToml> {
     }
     paths.sort();
     let latest = paths.pop().unwrap();
-    let raw = std::fs::read_to_string(&latest).with_context(|| format!("read {latest:?}"))?;
-    toml::from_str(&raw).with_context(|| format!("parse {latest:?}"))
+    load_file(latest.to_str().unwrap_or_default())
+}
+
+/// Load one exact strategy_*.toml by path, bypassing `load_latest`'s
+/// directory-glob "newest file wins" selection entirely. Used by
+/// `backtest`'s `--config-file` to pin a specific historical config instead
+/// of always resolving to whatever is lexicographically latest in the
+/// directory right now — closes the daily-recon "always reconciles against
+/// today's config, never the config that was actually live at trade time"
+/// gap (README `## TODO`, flagged 2026-07-10; see
+/// `trader/doc/audit_recon_2026-07-15.md`).
+pub fn load_file(path: &str) -> Result<StrategyToml> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
+    toml::from_str(&raw).with_context(|| format!("parse {path}"))
 }
 
 #[cfg(test)]
@@ -285,5 +297,27 @@ mod tests {
         // BTC is now the asset that demonstrates the fallback path).
         let p = toml.resolve("BTC").expect("resolve BTC");
         assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
+    }
+
+    #[test]
+    fn load_file_reads_the_exact_file_given_not_the_latest() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/config");
+        // strategy_20260713.toml exists but is not the lexicographically-latest
+        // file in this directory — load_latest would skip past it. load_file
+        // must load exactly what's asked for regardless.
+        let pinned = load_file(&format!("{dir}/strategy_20260713.toml")).expect("load pinned");
+        let latest = load_latest(dir).expect("load latest");
+        assert_ne!(
+            pinned.trade_assets, latest.trade_assets,
+            "sanity: the pinned historical file must differ from today's latest \
+             (strategy_20260713.toml traded ETH too; the latest config narrowed \
+             trade_assets to BTC+BNB only)"
+        );
+        assert!(pinned.trade_assets.contains(&"ETH".to_string()));
+    }
+
+    #[test]
+    fn load_file_errors_on_missing_path() {
+        assert!(load_file("/nonexistent/strategy_99999999.toml").is_err());
     }
 }

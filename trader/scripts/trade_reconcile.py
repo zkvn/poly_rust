@@ -759,6 +759,78 @@ def _safe_get_config_last_change_ts(config_dir: Path) -> Optional[float]:
         return None
 
 
+def _file_first_commit_ts(path: Path, config_dir: Path) -> Optional[float]:
+    """Unix ts of the commit that first added `path` to git — i.e. when it
+    actually started being deployable, not the date embedded in its own
+    filename (which can lag the real commit — e.g. strategy_20260715.toml was
+    committed ~08:58 HKT that morning, not at midnight). `--diff-filter=A`
+    with git's default newest-first ordering means the *last* line is the add
+    commit; `git log` on an untracked/uncommitted file returns nothing, which
+    is handled the same as any other resolution failure (None)."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "--diff-filter=A", "--format=%ct", "--", path.name],
+            cwd=config_dir, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [ln for ln in result.stdout.strip().splitlines() if ln.strip()]
+        return float(lines[-1]) if lines else None
+    except Exception:
+        return None
+
+
+def build_config_timeline(config_dir: Path, window_start_ts: float, window_end_ts: float) -> list:
+    """[(effective_from_ts, file_path), ...] sorted ascending — reconstructs
+    which strategy_*.toml `config::load_latest` would actually have resolved
+    to at each point covering `[window_start_ts, window_end_ts]`. Config
+    files are never deleted in this repo (every dated strategy_*.toml stays
+    around — see README "Strategy config"), so "was the latest file at time
+    T" reduces to "first committed at-or-before T, and no later file was also
+    first-committed at-or-before T". Closes the daily-recon "always
+    reconciles against today's config" gap (README TODO, flagged
+    2026-07-10; see trader/doc/audit_recon_2026-07-15.md)."""
+    files = sorted(config_dir.glob("strategy_*.toml"))
+    dated = []
+    for f in files:
+        ts = _file_first_commit_ts(f, config_dir)
+        if ts is not None:
+            dated.append((ts, f))
+    dated.sort(key=lambda x: x[0])
+
+    timeline: list = []
+    active_at_window_start: Optional[tuple] = None
+    for ts, f in dated:
+        if ts <= window_start_ts:
+            active_at_window_start = (window_start_ts, f)  # last one <= start wins
+        elif ts <= window_end_ts:
+            timeline.append((ts, f))
+    if active_at_window_start is not None:
+        timeline.insert(0, active_at_window_start)
+    return timeline
+
+
+def config_file_at(timeline: list, ts: float) -> Optional[Path]:
+    """Which file was active (per `build_config_timeline`) at unix ts `ts` —
+    None if `ts` predates every entry in the timeline (no config history
+    reaches that far back, or git history was entirely unavailable)."""
+    result = None
+    for eff_ts, f in timeline:
+        if eff_ts <= ts:
+            result = f
+        else:
+            break
+    return result
+
+
+def _safe_build_config_timeline(config_dir: Path, window_start_ts: float, window_end_ts: float) -> list:
+    try:
+        return build_config_timeline(config_dir, window_start_ts, window_end_ts)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not build historical config timeline: {e}[/yellow]")
+        return []
+
+
 SPARSE_TICK_THRESHOLD = 60  # a full 5-min cycle at this project's usual ~4Hz
 # binance sample rate is ~1200 ticks; 60 is a conservative floor well below
 # any normal cycle, chosen to only flag genuinely gappy cycles, not quiet ones.
@@ -972,14 +1044,31 @@ def build_price_data(assets: list, date: str, out_dir: Path, build_script: Path)
     return True
 
 
-def run_rust_backtest(asset: str, date: str, prices_dir: Path, config_dir: Path, binary: Path) -> str:
-    result = subprocess.run(
-        [str(binary), "--asset", asset, "--date", date,
-         "--prices-dir", str(prices_dir), "--config-dir", str(config_dir),
-         "--format", "csv"],
-        capture_output=True, text=True, check=True,
-    )
+def run_rust_backtest(asset: str, date: str, prices_dir: Path, binary: Path,
+                       config_dir: Optional[Path] = None, config_file: Optional[Path] = None) -> str:
+    """Shells out to the `backtest` binary for one (asset, date). Pass exactly
+    one of `config_dir` (today's `config::load_latest` behavior — whichever
+    strategy_*.toml is lexicographically latest right now) or `config_file`
+    (pin one exact historical file — see `build_config_timeline`)."""
+    cmd = [str(binary), "--asset", asset, "--date", date,
+           "--prices-dir", str(prices_dir), "--format", "csv"]
+    cmd += ["--config-file", str(config_file)] if config_file is not None else ["--config-dir", str(config_dir)]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return result.stdout
+
+
+def _resolve_config_files_for_window(window_start_ts: float, window_end_ts: float) -> tuple:
+    """Which strategy_*.toml file(s) `run_backtest_reconciliation` needs to
+    replay against, and the timeline (if any) describing when each was
+    active. Falls back to today's single latest file — the pre-pinning
+    behavior — if no git history could be reconstructed for any file (an
+    empty `timeline` return signals "don't filter rows by cycle time, every
+    row already came from the one config we had")."""
+    timeline = _safe_build_config_timeline(CONFIG_DIR, window_start_ts, window_end_ts)
+    if timeline:
+        return sorted({f for _, f in timeline}), timeline
+    files = sorted(CONFIG_DIR.glob("strategy_*.toml"))
+    return ([files[-1]] if files else []), []
 
 
 def run_backtest_reconciliation(window_start: datetime, window_end: datetime, annotated_live_rows: list) -> Optional[tuple]:
@@ -992,6 +1081,17 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
     report. Never touches the live trading process; syncs price_feed/raw
     from Oracle (read-only, additive), then reads it plus trader/config and
     shells out to the separate `backtest` binary.
+
+    Replays against whichever strategy_*.toml was actually live at each
+    cycle's own timestamp, not always today's latest config — closes the
+    "always reconciles against today's config" gap (README TODO, flagged
+    2026-07-10; see trader/doc/audit_recon_2026-07-15.md). A window that
+    straddles a config change needs the binary run once per config file
+    (`config_files_needed`), then each cycle's row is kept only from the run
+    whose config was actually active at that cycle's own timestamp
+    (`config_file_at`) — a cycle isn't "whichever run happened to produce a
+    row for its slug", since two different eras can each legitimately fire
+    (or not) for the same slug.
     """
     if not BACKTEST_BINARY.exists():
         console.print(
@@ -1000,8 +1100,21 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
         )
         return None
 
+    window_start_ts = window_start.timestamp()
+    window_end_ts = window_end.timestamp()
+    config_files_needed, timeline = _resolve_config_files_for_window(window_start_ts, window_end_ts)
+    if not config_files_needed:
+        console.print("[yellow]⚠ Backtest reconciliation skipped: no strategy_*.toml found[/yellow]")
+        return None
+
     try:
-        assets = resolve_trade_assets(CONFIG_DIR)
+        assets: set = set()
+        for cf in config_files_needed:
+            with open(cf, "rb") as f:
+                assets.update(tomllib.load(f).get("trade_assets", []))
+        assets = sorted(assets)
+        if not assets:
+            raise ValueError("no trade_assets resolved from any config file in window")
     except Exception as e:
         console.print(f"[yellow]⚠ Backtest reconciliation skipped: could not resolve trade_assets ({e})[/yellow]")
         return None
@@ -1012,29 +1125,42 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
     sync_price_feed_from_oracle(PRICE_FEED_SYNC_SCRIPT)
 
     BACKTEST_PRICES_DIR.mkdir(parents=True, exist_ok=True)
-    all_bt_rows: list = []
+    rows_by_config: dict = {cf: [] for cf in config_files_needed}
     assets_with_data: set = set()
 
     for date in dates:
         if not build_price_data(assets, date, BACKTEST_PRICES_DIR, BUILD_PRICES_SCRIPT):
             continue
         for asset in assets:
-            try:
-                csv_text = run_rust_backtest(asset, date, BACKTEST_PRICES_DIR, CONFIG_DIR, BACKTEST_BINARY)
-            except subprocess.CalledProcessError as e:
-                err = (e.stderr or str(e)).strip()[-300:]
-                console.print(f"[yellow]  {asset}/{date}: backtest failed ({err})[/yellow]")
-                continue
-            assets_with_data.add(asset)
-            all_bt_rows.extend(parse_backtest_csv(csv_text, asset))
+            for cf in config_files_needed:
+                try:
+                    csv_text = run_rust_backtest(
+                        asset, date, BACKTEST_PRICES_DIR, BACKTEST_BINARY, config_file=cf)
+                except subprocess.CalledProcessError as e:
+                    err = (e.stderr or str(e)).strip()[-300:]
+                    console.print(f"[yellow]  {asset}/{date} ({cf.name}): backtest failed ({err})[/yellow]")
+                    continue
+                assets_with_data.add(asset)
+                rows_by_config[cf].extend(parse_backtest_csv(csv_text, asset))
 
-    bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start.timestamp(), window_end.timestamp())
+    if timeline:
+        all_bt_rows = [
+            r for cf, rows in rows_by_config.items() for r in rows
+            if config_file_at(timeline, r["cycle_ts"]) == cf
+        ]
+    else:
+        # No historical timeline could be reconstructed — fell back to a
+        # single config (today's load_latest), same as pre-pinning behavior:
+        # every row already came from the one config we had.
+        all_bt_rows = [r for rows in rows_by_config.values() for r in rows]
+
+    bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start_ts, window_end_ts)
     live_norm = _normalize_live_rows(annotated_live_rows)
     underlying_prices = _safe_load_underlying_price_series(assets, dates, BACKTEST_PRICES_DIR)
     mismatch_ctx = {
         "halt_windows": _safe_build_halt_windows(LIVE_LOG_PATH, window_end),
         "config_change_ts": _safe_get_config_last_change_ts(CONFIG_DIR),
-        "window_end_ts": window_end.timestamp(),
+        "window_end_ts": window_end_ts,
     }
 
     live_vs_bt_rows, bt_summary = build_live_vs_bt(
@@ -1413,9 +1539,10 @@ def _make_sections_collapsible(lines: list) -> list:
     (Performance/Gamma/Data quality) already surface the headline numbers, so
     a long section — the Data Quality gap table in particular, which can run
     to 200+ rows during an incident — doesn't force scrolling past it to
-    reach everything below. The original '## Header' line is kept inside the
-    block (not just in <summary>) so in-page anchors keep working once
-    expanded."""
+    reach everything below. The original '## Header' line is dropped, not
+    kept inside the block too — <summary> is already the header (rendered
+    bigger, via <h2>), so keeping both showed the same title twice once a
+    section was expanded."""
     out: list = []
     open_section = False
 
@@ -1435,7 +1562,6 @@ def _make_sections_collapsible(lines: list) -> list:
             out.append("<details>")
             out.append(f"<summary><h2>{line[3:].strip()}</h2></summary>")
             out.append("")
-            out.append(line)
             open_section = True
         else:
             out.append(line)

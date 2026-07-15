@@ -280,6 +280,146 @@ class SafeGetConfigLastChangeTsTests(unittest.TestCase):
         self.assertIsNone(out)
 
 
+class FileFirstCommitTsTests(unittest.TestCase):
+    """`--diff-filter=A` commit time — when a file first entered git, not its
+    embedded filename date (which can lag the real commit)."""
+
+    def test_takes_the_oldest_line_not_the_newest(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            path = config_dir / "strategy_20260709.toml"
+            path.write_text("trade_assets = []\n")
+            # git log with no --follow renames is newest-first; the add
+            # commit is the *last* line.
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="1783950000\n1783900000\n", stderr="")):
+                ts = mod._file_first_commit_ts(path, config_dir)
+            self.assertEqual(ts, 1783900000.0)
+
+    def test_none_when_file_has_no_git_history(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            path = config_dir / "strategy_20260709.toml"
+            path.write_text("trade_assets = []\n")
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="", stderr="")):
+                self.assertIsNone(mod._file_first_commit_ts(path, config_dir))
+
+    def test_none_when_git_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            path = config_dir / "strategy_20260709.toml"
+            path.write_text("trade_assets = []\n")
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=128, stdout="", stderr="not a git repository")):
+                self.assertIsNone(mod._file_first_commit_ts(path, config_dir))
+
+
+class BuildConfigTimelineTests(unittest.TestCase):
+    """Reconstructs which strategy_*.toml `config::load_latest` would have
+    resolved to at each point in the window, from each file's first-commit
+    time (mocked here — see FileFirstCommitTsTests for that piece alone)."""
+
+    def _files(self, d: Path, *names: str) -> dict:
+        out = {}
+        for name in names:
+            p = d / name
+            p.write_text("trade_assets = []\n")
+            out[name] = p
+        return out
+
+    def test_single_file_predating_window_covers_the_whole_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            files = self._files(config_dir, "strategy_20260701.toml")
+            with patch.object(mod, "_file_first_commit_ts", return_value=1000.0):
+                timeline = mod.build_config_timeline(config_dir, 2000.0, 5000.0)
+            self.assertEqual(timeline, [(2000.0, files["strategy_20260701.toml"])])
+
+    def test_a_config_change_mid_window_produces_two_segments(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            files = self._files(config_dir, "strategy_20260701.toml", "strategy_20260710.toml")
+            ts_by_name = {"strategy_20260701.toml": 1000.0, "strategy_20260710.toml": 3000.0}
+
+            def fake_ts(path, cdir):
+                return ts_by_name[path.name]
+
+            with patch.object(mod, "_file_first_commit_ts", side_effect=fake_ts):
+                timeline = mod.build_config_timeline(config_dir, 2000.0, 5000.0)
+            self.assertEqual(timeline, [
+                (2000.0, files["strategy_20260701.toml"]),
+                (3000.0, files["strategy_20260710.toml"]),
+            ])
+
+    def test_a_file_first_committed_after_the_window_is_excluded(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            files = self._files(config_dir, "strategy_20260701.toml", "strategy_20260901.toml")
+            ts_by_name = {"strategy_20260701.toml": 1000.0, "strategy_20260901.toml": 9000.0}
+
+            def fake_ts(path, cdir):
+                return ts_by_name[path.name]
+
+            with patch.object(mod, "_file_first_commit_ts", side_effect=fake_ts):
+                timeline = mod.build_config_timeline(config_dir, 2000.0, 5000.0)
+            self.assertEqual(timeline, [(2000.0, files["strategy_20260701.toml"])])
+
+    def test_empty_when_no_file_predates_the_window_and_git_unavailable(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            self._files(config_dir, "strategy_20260701.toml")
+            with patch.object(mod, "_file_first_commit_ts", return_value=None):
+                timeline = mod.build_config_timeline(config_dir, 2000.0, 5000.0)
+            self.assertEqual(timeline, [])
+
+
+class ConfigFileAtTests(unittest.TestCase):
+    def test_picks_the_segment_containing_ts(self):
+        old, new = Path("/a/old.toml"), Path("/a/new.toml")
+        timeline = [(1000.0, old), (3000.0, new)]
+        self.assertEqual(mod.config_file_at(timeline, 1500.0), old)
+        self.assertEqual(mod.config_file_at(timeline, 3000.0), new)
+        self.assertEqual(mod.config_file_at(timeline, 9000.0), new)
+
+    def test_none_when_ts_predates_every_segment(self):
+        timeline = [(1000.0, Path("/a/old.toml"))]
+        self.assertIsNone(mod.config_file_at(timeline, 500.0))
+
+    def test_none_for_empty_timeline(self):
+        self.assertIsNone(mod.config_file_at([], 1500.0))
+
+
+class ResolveConfigFilesForWindowTests(unittest.TestCase):
+    def test_uses_timeline_files_when_available(self):
+        old, new = Path("/a/old.toml"), Path("/a/new.toml")
+        with patch.object(mod, "_safe_build_config_timeline",
+                           return_value=[(1000.0, old), (3000.0, new)]):
+            files, timeline = mod._resolve_config_files_for_window(1000.0, 5000.0)
+        self.assertEqual(files, sorted([old, new]))
+        self.assertEqual(timeline, [(1000.0, old), (3000.0, new)])
+
+    def test_falls_back_to_latest_file_when_timeline_is_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            config_dir = Path(d)
+            (config_dir / "strategy_20260701.toml").write_text("trade_assets = []\n")
+            latest = config_dir / "strategy_20260710.toml"
+            latest.write_text("trade_assets = []\n")
+            with patch.object(mod, "_safe_build_config_timeline", return_value=[]), \
+                 patch.object(mod, "CONFIG_DIR", config_dir):
+                files, timeline = mod._resolve_config_files_for_window(1000.0, 5000.0)
+        self.assertEqual(files, [latest])
+        self.assertEqual(timeline, [])
+
+    def test_empty_when_no_config_files_exist_at_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(mod, "_safe_build_config_timeline", return_value=[]), \
+                 patch.object(mod, "CONFIG_DIR", Path(d)):
+                files, timeline = mod._resolve_config_files_for_window(1000.0, 5000.0)
+        self.assertEqual(files, [])
+        self.assertEqual(timeline, [])
+
+
 class ClassifyMismatchReasonTests(unittest.TestCase):
     def test_halt_window_match(self):
         windows = [(1000.0, 1300.0, "manual /halt")]
@@ -524,14 +664,51 @@ class SyncPriceFeedFromOracleTests(unittest.TestCase):
             self.assertFalse(result)
 
 
+class RunRustBacktestTests(unittest.TestCase):
+    """CLI-arg construction — --config-file and --config-dir are mutually
+    exclusive ways to tell the Rust binary which strategy_*.toml to use."""
+
+    def test_config_file_takes_priority_and_omits_config_dir(self):
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="slug,strategy,side,token_price,exit_price,outcome,pnl\n", stderr="")) as run_mock:
+            mod.run_rust_backtest("BTC", "2026-07-15", Path("/prices"), Path("/bin/backtest"),
+                                   config_file=Path("/cfg/strategy_20260713.toml"))
+        cmd = run_mock.call_args[0][0]
+        self.assertIn("--config-file", cmd)
+        self.assertIn("/cfg/strategy_20260713.toml", cmd)
+        self.assertNotIn("--config-dir", cmd)
+
+    def test_falls_back_to_config_dir_when_no_file_given(self):
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="slug,strategy,side,token_price,exit_price,outcome,pnl\n", stderr="")) as run_mock:
+            mod.run_rust_backtest("BTC", "2026-07-15", Path("/prices"), Path("/bin/backtest"),
+                                   config_dir=Path("/cfg"))
+        cmd = run_mock.call_args[0][0]
+        self.assertIn("--config-dir", cmd)
+        self.assertIn("/cfg", cmd)
+        self.assertNotIn("--config-file", cmd)
+
+
 class RunBacktestReconciliationTests(unittest.TestCase):
     """Orchestration wrapper — every subprocess/filesystem boundary is
     mocked so these run instantly and never invoke cargo, the compiled
-    backtest binary, or anything touching trader/live_logs."""
+    backtest binary, or anything touching trader/live_logs.
+
+    `_resolve_config_files_for_window` (the historical-config-pinning step —
+    see ResolveConfigFilesForWindowTests / BuildConfigTimelineTests for its
+    own dedicated tests) is mocked here to a single fake file with an empty
+    timeline, the same "one config, no per-cycle filtering" shape
+    `run_backtest_reconciliation` falls back to when git history isn't
+    resolvable — these tests are about the orchestration loop around it, not
+    the pinning feature itself."""
 
     def setUp(self):
         self.window_start = mod.datetime(2026, 7, 9, 20, 0, tzinfo=mod.HKT)
         self.window_end = mod.datetime(2026, 7, 10, 20, 0, tzinfo=mod.HKT)
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.config_file = Path(self._tmpdir.name) / "strategy_20260709.toml"
+        self.config_file.write_text('trade_assets = ["ETH", "DOGE"]\n')
 
     def test_returns_none_when_binary_missing(self):
         with patch.object(mod.Path, "exists", return_value=False):
@@ -539,13 +716,13 @@ class RunBacktestReconciliationTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_skips_one_failing_asset_without_losing_the_others(self):
-        def fake_backtest(asset, date, prices_dir, config_dir, binary):
+        def fake_backtest(asset, date, prices_dir, binary, config_dir=None, config_file=None):
             if asset == "DOGE":
                 raise subprocess.CalledProcessError(1, "backtest", stderr="boom")
             return "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
 
         with patch.object(mod.Path, "exists", return_value=True), \
-             patch.object(mod, "resolve_trade_assets", return_value=["ETH", "DOGE"]), \
+             patch.object(mod, "_resolve_config_files_for_window", return_value=([self.config_file], [])), \
              patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
              patch.object(mod, "build_price_data", return_value=True), \
              patch.object(mod, "run_rust_backtest", side_effect=fake_backtest):
@@ -554,7 +731,7 @@ class RunBacktestReconciliationTests(unittest.TestCase):
 
     def test_skips_a_date_when_price_build_fails(self):
         with patch.object(mod.Path, "exists", return_value=True), \
-             patch.object(mod, "resolve_trade_assets", return_value=["ETH"]), \
+             patch.object(mod, "_resolve_config_files_for_window", return_value=([self.config_file], [])), \
              patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
              patch.object(mod, "build_price_data", return_value=False) as build_mock, \
              patch.object(mod, "run_rust_backtest") as bt_mock:
@@ -567,7 +744,7 @@ class RunBacktestReconciliationTests(unittest.TestCase):
         """Oracle unreachable (VPN down, SSH failure, etc.) must degrade to
         'use whatever local data already exists', not abort the report."""
         with patch.object(mod.Path, "exists", return_value=True), \
-             patch.object(mod, "resolve_trade_assets", return_value=["ETH"]), \
+             patch.object(mod, "_resolve_config_files_for_window", return_value=([self.config_file], [])), \
              patch.object(mod, "sync_price_feed_from_oracle", return_value=False) as sync_mock, \
              patch.object(mod, "build_price_data", return_value=True), \
              patch.object(mod, "run_rust_backtest", return_value="slug,strategy,side,token_price,exit_price,outcome,pnl\n"):
@@ -596,7 +773,7 @@ class RunBacktestReconciliationTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
         with patch.object(mod.Path, "exists", return_value=True), \
-             patch.object(mod, "resolve_trade_assets", return_value=["ETH"]), \
+             patch.object(mod, "_resolve_config_files_for_window", return_value=([self.config_file], [])), \
              patch("subprocess.run", side_effect=spying_run):
             mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
 
@@ -605,6 +782,53 @@ class RunBacktestReconciliationTests(unittest.TestCase):
             joined = " ".join(str(c) for c in cmd)
             self.assertNotIn("live_logs", joined)
             self.assertNotIn("/bin/live", joined)
+
+    def test_pins_each_cycle_to_the_config_that_was_actually_active(self):
+        """The actual point of this feature: a window spanning a config
+        change must resolve each cycle's BT row from the run whose config
+        was active at that cycle's own timestamp, not just concatenate every
+        run's output (which would let a stale-config row masquerade as a
+        cycle that never should have fired under it, or vice versa)."""
+        old_file = Path(self._tmpdir.name) / "strategy_20260709.toml"
+        new_file = Path(self._tmpdir.name) / "strategy_20260710.toml"
+        old_file.write_text('trade_assets = ["ETH"]\n')
+        new_file.write_text('trade_assets = ["ETH"]\n')
+
+        change_ts = mod.datetime(2026, 7, 10, 8, 0, tzinfo=mod.HKT).timestamp()
+        timeline = [(self.window_start.timestamp(), old_file), (change_ts, new_file)]
+
+        # Same slug/cycle fires under BOTH configs, with different outcomes —
+        # only the row from the config that was actually active at that
+        # cycle's timestamp must survive.
+        before_change_cycle = "eth-updown-5m-1783605600"  # 2026-07-09 22:00 HKT — before change_ts
+        after_change_cycle = "eth-updown-5m-1783648800"  # 2026-07-10 10:00 HKT — after change_ts
+
+        header = "slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts\n"
+
+        def fake_backtest(asset, date, prices_dir, binary, config_dir=None, config_file=None):
+            # One cycle per date requested — a fake that ignored `date` and
+            # always returned both cycles would double-count them across the
+            # two dates run_backtest_reconciliation queries for this window.
+            slug = before_change_cycle if date == "2026-07-09" else after_change_cycle
+            if config_file == old_file:
+                return header + f"{slug},reversal,UP,0.9,1.0,WIN,0.1,0\n"
+            return header + f"{slug},reversal,DOWN,0.9,0.2,LOSS,-0.7,0\n"
+
+        with patch.object(mod.Path, "exists", return_value=True), \
+             patch.object(mod, "_resolve_config_files_for_window", return_value=([old_file, new_file], timeline)), \
+             patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
+             patch.object(mod, "build_price_data", return_value=True), \
+             patch.object(mod, "run_rust_backtest", side_effect=fake_backtest):
+            result = mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
+
+        self.assertIsNotNone(result)
+        _live_vs_bt, _summary, bt_vs_live_rows = result
+        # Exactly one row survived per cycle (not two duplicates, one per
+        # config run), and each took the outcome from whichever config was
+        # actually active at that cycle's own timestamp.
+        outcomes = sorted(r["outcome"] for r in bt_vs_live_rows)
+        self.assertEqual(len(bt_vs_live_rows), 2, "one surviving row per cycle, not one per config run")
+        self.assertEqual(outcomes, ["LOSS", "WIN"])
 
 
 class SafeRunBacktestReconciliationTests(unittest.TestCase):
@@ -774,7 +998,7 @@ class WriteMarkdownSummaryDataQualityTests(unittest.TestCase):
                 Path(d), bt_result=None, data_quality_result=result,
             )
             text = path.read_text()
-        self.assertIn("## Data Quality", text)
+        self.assertIn("<summary><h2>Data Quality</h2></summary>", text)
         self.assertIn("Data quality:** 1/5 asset-hours flagged", text)
 
     def test_missing_data_quality_result_does_not_crash(self):
@@ -786,7 +1010,7 @@ class WriteMarkdownSummaryDataQualityTests(unittest.TestCase):
                 Path(d), bt_result=None, data_quality_result=None,
             )
             text = path.read_text()
-        self.assertIn("## Data Quality", text)
+        self.assertIn("<summary><h2>Data Quality</h2></summary>", text)
 
 
 class WriteMarkdownSummaryBtSectionTests(unittest.TestCase):
@@ -804,7 +1028,7 @@ class WriteMarkdownSummaryBtSectionTests(unittest.TestCase):
             )
             text = path.read_text()
         self.assertIn("No trades in this window", text)
-        self.assertIn("## Backtest Reconciliation", text)
+        self.assertIn("<summary><h2>Backtest Reconciliation</h2></summary>", text)
 
     def test_section_renders_missed_trades_table_when_bt_result_given(self):
         bt_result = (
@@ -841,8 +1065,10 @@ class MakeSectionsCollapsibleTests(unittest.TestCase):
         self.assertIn("<summary><h2>Performance</h2></summary>", text)
         # preamble before the first '## ' stays outside any <details> block
         self.assertLess(out.index("> summary line"), out.index("<details>"))
-        # original header text is preserved inside the block (anchors still work)
-        self.assertIn("## Data Quality", text)
+        # the original '## Header' line is dropped, not duplicated inside the
+        # block too — <summary> is the only copy of the title now.
+        self.assertNotIn("## Data Quality", text)
+        self.assertEqual(text.count("Data Quality"), 1)
 
     def test_sub_headers_do_not_start_their_own_section(self):
         lines = ["## Performance", "", "### Sub Header", "content", ""]
@@ -878,12 +1104,22 @@ class MakeSectionsCollapsibleTests(unittest.TestCase):
             text = path.read_text()
         self.assertIn("<details>", text)
         self.assertIn("<summary><h2>Data Quality</h2></summary>", text)
-        self.assertIn("## Data Quality", text)
         self.assertIn("<summary><h2>Backtest Reconciliation</h2></summary>", text)
+        # No section's title appears twice (once in <summary>, again as a
+        # plain '## Header' inside the expanded block).
+        self.assertNotIn("## Data Quality", text)
+        self.assertNotIn("## Backtest Reconciliation", text)
+        self.assertNotIn("## Strategy Config", text)
         # Data Quality is rendered last (after Backtest Reconciliation) —
         # Strategy Config, by contrast, is always first.
-        self.assertLess(text.index("## Strategy Config"), text.index("## Backtest Reconciliation"))
-        self.assertLess(text.index("## Backtest Reconciliation"), text.index("## Data Quality"))
+        self.assertLess(
+            text.index("<summary><h2>Strategy Config</h2></summary>"),
+            text.index("<summary><h2>Backtest Reconciliation</h2></summary>"),
+        )
+        self.assertLess(
+            text.index("<summary><h2>Backtest Reconciliation</h2></summary>"),
+            text.index("<summary><h2>Data Quality</h2></summary>"),
+        )
 
 
 if __name__ == "__main__":

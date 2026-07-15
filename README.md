@@ -204,19 +204,6 @@ on the remote before the nightly sync runs.
   Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
   doesn't get lost.
 
-- **Backtest reconciliation config-drift gap — flagged 2026-07-10, not fixed (deliberately
-  deferred).** The new "Backtest Reconciliation" section in the daily recon report
-  (`trader/scripts/trade_reconcile.py`, see `trader/doc/feature_bt_recon_2026-07-10.md`) runs
-  the Rust `backtest` binary against whichever `strategy_*.toml` is lexicographically latest in
-  `trader/config/` **right now** (`config::load_latest`'s normal behavior) — not whichever config
-  was actually live during the window being reconciled. Only matters if the strategy config
-  changes mid-window; most windows won't. Closing this would mean adding a `--config-file <path>`
-  override to `backtest.rs` so the script can pin the exact historical snapshot (poly_rust's
-  `config_log.rs` already writes a schema-compatible JSONL snapshot log this could read from,
-  mirroring how `btc_5mins`'s own backtest recon does it via `read_latest_snapshot`). Not
-  blocking — but a silent mismatch here would otherwise look like a real trading-logic bug in the
-  report, so flagging rather than letting it get lost in a commit message.
-
 - **Backtest reconciliation halt-state-drift gap — flagged 2026-07-10, not fixed (deliberately
   deferred).** Once the binance-data bug above was fixed and the backtest could actually fire
   trades, the "BT vs Live" table started reporting real numbers — including 24 ETH/DOGE cycles
@@ -843,6 +830,26 @@ code). Summary:
 <summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
+
+### Backtest reconciliation config-drift gap — fixed (2026-07-15)
+
+Closes the README TODO flagged 2026-07-10: the daily recon's "Backtest Reconciliation"
+section always replayed against whichever `strategy_*.toml` was lexicographically latest
+*right now* (`config::load_latest`'s normal behavior), never the config that was actually
+live during the historical window being reconciled — silently misclassifying real
+config-drift as `BT DID NOT FIRE`. Added `config::load_file`/`backtest --config-file` to
+pin one exact historical config, and `trade_reconcile.py::build_config_timeline` to
+reconstruct which file was live at any past timestamp from each file's git first-commit
+time (config files are never deleted in this repo, so "latest file as of T" is
+reconstructable). A window spanning a config change now replays once per config era and
+keeps each cycle's row only from the run whose config was actually active at that cycle's
+own timestamp. Verified against the exact 2026-07-15 08:58 config swap this was built to
+diagnose: the false `BT DID NOT FIRE` on the 08:55 BTC WIN resolved to an accurately
+explained `OUTCOME DIFF` instead (entry conditions now agree — confirming the fix — the
+residual outcome difference is a separate, already-documented, intentional backtest-only
+rule, `machine.rs`'s `FORCE_UNWIND_BEFORE_CYCLE_END_SECS`, added 2026-07-14 and explicitly
+scoped away from `worker.rs`/live). Full writeup:
+`trader/doc/audit_recon_2026-07-15.md`.
 
 ### BTC stuck halted despite repeated `/resume` (2026-07-15, fixed)
 

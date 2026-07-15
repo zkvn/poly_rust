@@ -1,22 +1,33 @@
 # Recon Audit — why BT didn't fire, 2026-07-15
 
+**Update (same day, after implementing the fix):** §5 below implements the pinned-historical-
+config fix this audit originally only recommended, regenerates the report, and reports the
+actual (not hoped-for) result: the false `BT DID NOT FIRE` is gone, but the row does **not**
+resolve to a clean `MATCH` — it resolves to an accurately-explained `OUTCOME DIFF`, caused by a
+second, separate, already-documented, intentional backtest-only rule. Read §5 for the honest
+final state; §§1-4 are the original same-day investigation, left as written (its evidence and
+row-2 conclusion are unaffected — only row 1's exact numbers, which came from a `backtest_prices`
+snapshot that got rebuilt later the same day, are superseded).
+
 Today's daily recon (`trader/results/daily_recon/trade_recon_2026-07-14_to_2026-07-15.md`,
 "Live vs BT" table) shows 4 of 5 live trades as `BT DID NOT FIRE`. Two carry reason
 `live halted: manual /halt 08:10–01:59` — a real, already-high-confidence halt window
 (`classify_mismatch_reason`'s own doc comment rates halt-window matches as the one label that
-*is* proof, not just a pointer), not investigated further here. The other two both carry
-`config changed 2026-07-15 08:58 same-window (verify params)` — the classifier's explicit
-"unverified, go check" label. This audit does that verification, for both rows, by actually
-re-running the Rust backtest against the config that was live at trade time instead of today's
-(config::load_latest's) latest file.
+*is* proof, not just a pointer), not investigated further here (§5 finds one of these two rows
+was actually mis-attributed — see there). The other two both carry `config changed 2026-07-15
+08:58 same-window (verify params)` — the classifier's explicit "unverified, go check" label. This
+audit does that verification, for both rows, by actually re-running the Rust backtest against the
+config that was live at trade time instead of today's (config::load_latest's) latest file.
 
 **Two different root causes, not one:**
 
 1. **08:55 BTC WIN — a real recon-tooling gap.** Replaying with the config that was actually
-   live at 08:55 makes the backtest fire and match live almost exactly. `BT DID NOT FIRE` here
-   is a false negative caused entirely by `trade_reconcile.py` always reconciling against
-   *today's* config, not the config live was actually running under at the time — a gap already
-   flagged in README `## TODO` since 2026-07-10, now confirmed with a concrete reproduction.
+   live at 08:55 makes the backtest fire, with an entry that matches live almost exactly. `BT DID
+   NOT FIRE` here is a false negative caused entirely by `trade_reconcile.py` always reconciling
+   against *today's* config, not the config live was actually running under at the time — a gap
+   already flagged in README `## TODO` since 2026-07-10, now confirmed with a concrete
+   reproduction (and, per §5, now fixed — though the row still isn't a clean `MATCH`, for an
+   unrelated reason).
 2. **08:59 BTC STOPLOSS (-$0.5273) — BT is right, live is wrong.** Even replaying with the
    correct historical config, the backtest still doesn't fire this cycle — correctly. Live's own
    entry was driven by a corrupted `cycle_open_binance` reference price, a *different*, already-
@@ -74,17 +85,21 @@ $ ./target/release/backtest --asset BTC --date 2026-07-15 \
 # (no btc-updown-5m-1784076600 row)
 ```
 
-Old-config replay: **WIN, entry 0.9000, exit 1.0000, pnl +0.1111** — matching live's own
-0.9000 → 1.0000 → +0.1041 almost exactly (entry/exit prices identical; the small pnl delta,
-+0.1111 vs +0.1041, is ordinary backtest-vs-live fill/fee modeling slop, not a new finding).
-**Verdict: config drift, not a real trading-logic discrepancy.** The relevant parameter that
-actually differs between the two configs for BTC is `reversal_low_threshold`
-(`strategy_20260713.toml`: BTC override `0.20`; `strategy_20260715.toml`: BTC override `0.30`,
-raised as part of the 07-15 walk-forward refresh) — either value happens to still classify this
-cycle's dip as a valid "saw low" in this specific case, so the WIN wasn't actually sensitive to
-which config replayed it; it just needed to be replayed with *a* config that was ever live for
-BTC, not necessarily this exact one. The failure mode is purely "the recon script asked the
-wrong question," not a signal disagreement.
+Old-config replay: **entry 0.9000** — matching live's own entry price exactly. (The exit/outcome
+this specific replay produced changed between when this was first checked and when §5's
+regenerated report ran, because `backtest_prices/BTC_poly_2026-07-15.parquet` got rebuilt in
+between by a later `sync_price_feed_from_oracle` in this same session — confirmed byte-for-byte
+reproducible against the *current* file, twice, so it's not flaky; see §5 for the authoritative
+exit/outcome and why it differs from live's.) **Verdict on the entry side: config drift, not a
+real trading-logic discrepancy.** The relevant parameter that actually differs between the two
+configs for BTC is `reversal_low_threshold` (`strategy_20260713.toml`: BTC override `0.20`;
+`strategy_20260715.toml`: BTC override `0.30`, raised as part of the 07-15 walk-forward refresh)
+— either value happens to still classify this cycle's dip as a valid "saw low" in this specific
+case, so entry firing wasn't actually sensitive to which config replayed it; it just needed to be
+replayed with *a* config that was ever live for BTC, not necessarily this exact one. The `BT DID
+NOT FIRE` failure mode was purely "the recon script asked the wrong question," not a signal
+disagreement — confirmed by the entry price match, independent of whatever the exit turns out to
+be (§5).
 
 ## 3. Row 2 (08:59 STOPLOSS) — BT is correctly silent; the bug is upstream, in live
 
@@ -152,14 +167,13 @@ from anything live logged) already reads **`-0.0%`** — rounds from the same �
 derived by hand from the raw ticks. That column was sitting in the report the whole time as a
 quiet second confirmation that the true underlying move was near-zero.
 
-## 4. Conclusions / status
+## 4. Conclusions / status (original same-day pass, before §5's fix)
 
 - **Row 1 (WIN):** confirmed config-drift artifact of the recon script, per the already-tracked
   README TODO — no new bug. Fixing `trade_reconcile.py`/`backtest.rs` to accept a pinned
-  historical config (the TODO's own proposed fix: a `--config-file` override, sourced from
-  `config_log.rs`'s JSONL snapshot log) would make this row resolve to MATCH automatically.
-  Not implemented here — same "deliberately deferred" scope call as the existing TODO entry;
-  this audit only adds a concrete confirmation, doesn't change the fix-it decision.
+  historical config would make the false `BT DID NOT FIRE` go away. Whether it resolves all the
+  way to a clean `MATCH` was, at this point in the investigation, still an open question — see
+  §5, where it's implemented and checked.
 - **Row 2 (STOPLOSS):** not a recon-tooling gap at all. The mid-cycle-restart bug
   (`fix_live_deploy_2026-07-15.md`) was already found and fixed today, independent of this
   audit — this section is corroborating evidence for that fix, tying it concretely to the
@@ -167,6 +181,96 @@ quiet second confirmation that the true underlying move was near-zero.
   `delta_pct_rev` threshold as a second, compounding factor worth knowing about (not itself a
   bug — 0.0003 is a deliberately-chosen walk-forward parameter — but it did make this particular
   corrupted-reference-price entry slip through where the old 0.0005 would not have).
-- No code changes made by this audit — it's a verification/diagnosis pass over an existing
-  "(verify params)" flag, confirming one row as tooling noise and the other as real, already-
-  fixed, real-money impact.
+
+## 5. Implementing the fix, and what actually happened
+
+Per the user's follow-up ask, implemented the README TODO's proposed fix rather than leaving it
+recommended-but-undone:
+
+- **`config::load_file`** (`trader/src/config.rs`) — loads one exact `strategy_*.toml` by path,
+  bypassing `load_latest`'s directory-glob "newest file wins" selection. `load_latest` itself
+  refactored to call it.
+- **`backtest --config-file <path>`** (`trader/src/bin/backtest.rs`) — new flag, mutually
+  exclusive with `--config-dir`; unset behavior (today's `load_latest`) is unchanged.
+- **`trade_reconcile.py::build_config_timeline`** — reconstructs which `strategy_*.toml`
+  `config::load_latest` would have resolved to at any past timestamp, from each config file's
+  git *first-commit* time (`_file_first_commit_ts`, `--diff-filter=A`) — not the date embedded in
+  its own filename, which can lag the real commit (`strategy_20260715.toml` was committed
+  ≈08:58 HKT, not midnight). Config files are never deleted in this repo, so "the latest file as
+  of past time T" is fully reconstructable this way.
+- **`run_backtest_reconciliation`** now runs the `backtest` binary once per distinct config era
+  the window touches (`_resolve_config_files_for_window`), and keeps each cycle's row only from
+  the run whose config was actually active at that cycle's own timestamp
+  (`config_file_at(timeline, cycle_ts)`) — not "whichever run happened to produce a row for that
+  slug," since two eras can each legitimately fire (or not) for the same slug. Falls back to the
+  pre-fix behavior (single latest-file replay, no per-cycle filtering) if git history can't be
+  reconstructed for any file, so this degrades the same way every other optional enrichment in
+  this module already does rather than breaking the report.
+- 15 new tests (`trader/src/config.rs` x2, `trader/scripts/test_trade_reconcile.py` x13) covering
+  `load_file`, the timeline reconstruction (single file, mid-window change, file added after the
+  window, git-unavailable fallback), `config_file_at`'s segment lookup, and — the actual point of
+  the feature — a window spanning a real config change resolving to exactly one row per cycle,
+  each with the outcome from the config genuinely active at that moment, not one row per config
+  run. `cargo test`/`cargo clippy`/`cargo fmt` and the Python suite (98 tests) all clean; the
+  same 4 pre-existing, unrelated `config`/`config_log` test failures persist (config-drift against
+  today's real `strategy_20260715.toml`, tracked in README `## TODO` since 2026-07-09).
+
+### Regenerated report — the honest result
+
+Re-ran `trade_reconcile.py --today` after the fix. The false `BT DID NOT FIRE` is gone — but the
+row resolves to `OUTCOME DIFF`, not `MATCH`:
+
+| Time | Side | Entry Px | Live Outcome | Live PnL | BT Outcome | BT PnL | Status |
+|---|---|---|---|---|---|---|---|
+| 2026-07-15 08:55:00 | UP | 0.9000 | WIN | +0.1041 | UNWIND | +0.0278 | OUTCOME DIFF (live=WIN bt=UNWIND) |
+
+**Entry price matches exactly (0.9000)** — the config-pinning fix worked precisely as intended;
+this is no longer a blind "didn't fire," it's a specific, explainable outcome disagreement. That
+disagreement is **not a bug**: `machine.rs` (the `backtest`/`siglab` replay engine — a different,
+simpler implementation from `worker.rs`, the live driver) force-closes any still-held position,
+labeled `Unwind` at whatever price is showing, once fewer than `FORCE_UNWIND_BEFORE_CYCLE_END_SECS`
+(10.0s) remain before cycle close — *regardless of whether a real take-profit/stop-loss/timeout
+condition fired*:
+
+```rust
+// trader/src/machine.rs
+/// Seconds before cycle-end at which a still-open position is force-closed, labeled
+/// `Outcome::Unwind` regardless of whether the take-profit price was actually reached.
+/// Added 2026-07-14 so a position entered late in a cycle can no longer ride to a natural
+/// WIN/LOSS cycle-close... `siglab`/`backtest.rs` path only — `worker.rs` (the live
+/// driver) is untouched; see `siglab/doc/incident_same_entry_ts_2026-07-14.md`.
+const FORCE_UNWIND_BEFORE_CYCLE_END_SECS: f64 = 10.0;
+```
+
+This trade entered at **T-19s** (19 seconds before cycle close) — inside the replay engine's
+10-second force-close window a few seconds later, so `machine.rs` closes it early at whatever
+price it saw then (0.9250 → +0.0278), while `worker.rs` (live) has no such rule and legitimately
+held the extra ~9 seconds to the real market resolution, landing at 1.0000 (a genuine WIN,
++0.1041). This is a **known, already-documented, deliberately-scoped** asymmetry — added
+yesterday specifically to fix a different problem (`siglab`'s same-entry-timestamp report
+artifact) and its own doc comment explicitly says live is untouched. It will produce this exact
+`OUTCOME DIFF` shape for *any* live trade that enters in a cycle's final ~10-20 seconds and holds
+to natural resolution — a residual, expected source of Live-vs-BT disagreement, separate from
+(and now no longer confused with) config drift.
+
+**Side finding:** the 2026-07-14 23:04:36 STOPLOSS row and the 2026-07-14 20:39:55 UNWIND row
+also changed on regeneration. The UNWIND row now shows a clean `MATCH` (it had previously been
+mis-attributed to `live halted: manual /halt 08:10–01:59` — a coincidental overlap with an
+unrelated halt window, not the real cause, which was also config drift). The STOPLOSS row flipped
+from `BT DID NOT FIRE` to `OUTCOME DIFF (live=STOPLOSS bt=UNWIND)`, very likely the same
+`FORCE_UNWIND_BEFORE_CYCLE_END_SECS` mechanic (entered at T-39s, held into the final-seconds
+window before a real stop-loss would have fired) — not independently re-verified tick-by-tick
+here, flagged for whoever looks at this report next rather than left silently unexplained.
+
+**BT vs Live** ("cycles live missed") also changed: 17 cycles now (was 10), would-be PnL +1.2251
+USDC (was +1.9785) — the corrected, per-era-config numbers; the old figures were computed against
+a mix of right and wrong configs depending on which side of 08:58 each cycle fell.
+
+### Bottom line
+
+The config-drift gap is fixed and verified against the exact case that motivated it. It does
+**not** make every historical Live-vs-BT row agree — it makes the comparison ask the right
+question, which sometimes surfaces a *real*, previously-hidden, already-understood limitation
+(`machine.rs` vs `worker.rs` near-cycle-close behavior) instead of masking it behind "config
+changed, ignore this row." That's the correct outcome for a diagnostic tool, even though it isn't
+the clean "match" a first guess might have hoped for.
