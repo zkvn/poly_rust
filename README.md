@@ -3,9 +3,10 @@
 Rust price recorder for Polymarket CLOB markets. Streams live order-book, price, and Binance
 spot-price data and writes hourly Parquet files.
 
-Sibling crates in this repo: `trader/` (the live trading bot) and `siglab/` (standalone
+Sibling crates in this repo: `trader/` (the live trading bot), `siglab/` (standalone
 multi-market signal live-testing harness — paper trades only, crypto + weather markets; see
-`siglab/README.md`). Neither reads or writes the other's config/state.
+`siglab/README.md`), and `gamma_recorder/` (independent Polymarket Gamma-API results
+recorder — see below). None of these read or write another's config/state.
 
 <details>
 <summary><strong>Git branch convention</strong></summary>
@@ -20,6 +21,34 @@ actually checked out / running on the target machine — deploying a branch that
 branch's already-shipped feature will silently regress production (this happened once: a
 price-recorder fix branch that predated the Binance-recording feature was deployed over it on
 Oracle, killing Binance recording for about an hour before being caught).
+
+</details>
+
+<details>
+<summary><strong>gamma_recorder</strong></summary>
+
+## gamma_recorder
+
+Independent crate, sibling to `price_feed`/`trader`/`siglab`, sharing zero code with any of
+them. Records official Polymarket up-down market resolutions (`{asset}-updown-{5m,15m,4h}-{slot}`)
+into a local SQLite file (`gamma_recorder/data/gamma.db`) by polling the Gamma API — a ground-truth
+outcome table for potential future consumers (backtest validation, daily recon), not built yet.
+Full design: `gamma_recorder/doc/plan_gamma_recorder_2026-07-15.md`.
+
+- `cargo run --bin gamma_recorder -- resolve --backfill --from 2026-06-12 --to 2026-07-15` —
+  one-shot bulk backfill (paginates `/events/keyset`, cursor-based — see TODO below on why not
+  the plain offset-paginated `/events`).
+- `cargo run --bin gamma_recorder -- resolve` — long-running continuous mode: single periodic
+  sweep (30s) folding gap-reconciliation + due-row polling.
+- Tracked asset list is derived dynamically from `price_feed/raw*/` filenames (`--assets` to
+  override).
+
+**Status as of 2026-07-15: local-only, not deployed to Oracle.** Backfilled 2026-06-12 →
+2026-07-15 (88,990 rows, 7 assets × 3 durations), spot-checked 15 random rows against live Gamma
+(0 mismatches), verified idempotent re-backfill (0 drift across 88,990 pre-existing rows), and
+soak-tested continuous mode locally. No Docker packaging / Cross.toml / systemd unit yet — the
+plan's §11 Docker-based validation gate is for pre-Oracle-deploy hardening, which wasn't in scope
+for this local-only pass; see TODO.
 
 </details>
 
@@ -150,6 +179,34 @@ on the remote before the nightly sync runs.
 <summary><strong>TODO</strong></summary>
 
 ## TODO
+
+- **`gamma_recorder` has no Docker/Cross.toml/systemd packaging yet — deferred 2026-07-15.**
+  The plan doc's §11 Docker-based CPU/memory soak-test gate and §5/§9's `Cross.toml`/systemd unit
+  are specced for the pre-Oracle-deploy hardening pass; today's task was explicitly local-only
+  ("don't touch oracle"), so the crate was built, backfilled, spot-checked, and soak-tested as a
+  native local process instead. Needed before any Oracle deploy: Dockerfile (mirror
+  `trader/Dockerfile`), `Cross.toml` (mirror `price_feed/Cross.toml`), systemd unit
+  (`poly-gamma-recorder.service`), and the fault-injection test (plan §11 item 8, lower priority).
+- **`gamma_recorder` backfill needed `/events/keyset` (cursor pagination), not the plain
+  `/events` endpoint the plan assumed — found + fixed 2026-07-15.** Live-verified the plain
+  offset-paginated `/events?...&offset=N` caps out at offset+limit <= ~2100 (`"offset too large,
+  use /events/keyset for deeper pagination"`) — well under a single day's ~2,730 tracked-market
+  events, so the plan's page-count estimate would have silently dropped most of the range. Fixed
+  by switching to `/events/keyset` with `after_cursor`/`next_cursor` (verified live: 8 pages, 0
+  duplicates, correct advancement) for both bulk backfill and single-slug sweep lookups.
+- **`gamma_recorder`'s gap-reconciliation has no backfill fallback for a genuinely new
+  `(asset, duration)` with zero prior rows — noted 2026-07-15, not built.** `reconcile_gaps`
+  seeds the frontier at just the most-recently-closed slot in that case rather than walking all
+  history, since the plan only specs a full-table-empty check triggering backfill on continuous-
+  mode startup, not a per-asset one. Low-probability edge case (a brand-new tracked asset added
+  mid-run, between backfills) — flagging in case it ever matters.
+- **`gamma_recorder`'s simulated-outage/restart test (plan doc §11 item 7) run natively, not
+  via Docker — 2026-07-15.** Killed the local process, waited ~6.5min past two 5m slot
+  boundaries, restarted: first heartbeat showed `gap_inserted=14` (7 assets × 2 missed 5m slots
+  + one 15m slot), 13/14 resolved immediately and the 14th (BTC, closed seconds earlier) resolved
+  on the next 30s sweep — gap-reconciliation and the retry path both confirmed working under a
+  real outage. The Docker-container variant of this same test (plan §11 step 7) is still open,
+  bundled with the other Docker-dependent items above.
 
 - **`machine.rs`'s `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` (backtest-only early-close) vs
   `worker.rs` (live, no such rule) is a real, recurring source of Live-vs-BT `OUTCOME DIFF` —

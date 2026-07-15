@@ -1,0 +1,5 @@
+/target
+
+# gamma.db is runtime state (local-only for now, see doc/ for deploy plan), never commit
+/data
+/logs
