@@ -249,6 +249,108 @@ class SafeBuildHaltWindowsTests(unittest.TestCase):
         self.assertEqual(out, [])
 
 
+class ParseControlLogTests(unittest.TestCase):
+    """control_log.jsonl — bin/live.rs::log_control_event's append-only,
+    structured halt-state record (trader/doc/plan_align_bt_with_live_2026-07-15.md)."""
+
+    def test_parses_and_sorts_by_ts(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "control_log.jsonl"
+            path.write_text(
+                '{"ts": 200.0, "asset": "BTC", "strategy": "reversal", "event": "resume", '
+                '"entry_suppressed": false, "halt_losses": 0, "is_halted": false}\n'
+                '{"ts": 100.0, "asset": "BTC", "strategy": "reversal", "event": "halt", '
+                '"entry_suppressed": true, "halt_losses": 0, "is_halted": true}\n'
+            )
+            entries = mod.parse_control_log(path)
+        self.assertEqual([e["event"] for e in entries], ["halt", "resume"])
+
+    def test_missing_file_returns_empty_not_fatal(self):
+        self.assertEqual(mod.parse_control_log(Path("/nonexistent/control_log.jsonl")), [])
+
+    def test_unparsable_lines_are_skipped_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "control_log.jsonl"
+            path.write_text(
+                '{"ts": 100.0, "asset": "BTC", "strategy": "reversal", "event": "halt", "is_halted": true}\n'
+                "not valid json\n"
+                "\n"
+            )
+            entries = mod.parse_control_log(path)
+        self.assertEqual(len(entries), 1)
+
+
+class SafeParseControlLogTests(unittest.TestCase):
+    def test_never_raises_even_if_the_inner_function_blows_up(self):
+        with patch.object(mod, "parse_control_log", side_effect=RuntimeError("boom")):
+            out = mod._safe_parse_control_log(Path("/tmp"))
+        self.assertEqual(out, [])
+
+
+class BuildControlLogHaltWindowsTests(unittest.TestCase):
+    def _entry(self, ts, asset, strategy, event, is_halted):
+        return {"ts": ts, "asset": asset, "strategy": strategy, "event": event, "is_halted": is_halted}
+
+    def test_open_then_close_produces_one_window(self):
+        entries = [
+            self._entry(100.0, "BTC", "reversal", "halt_engaged", True),
+            self._entry(200.0, "BTC", "reversal", "reset_losses", False),
+        ]
+        windows = mod.build_control_log_halt_windows(entries, window_end_ts=1000.0)
+        self.assertEqual(windows, {("BTC", "reversal"): [(100.0, 200.0, "halt_engaged")]})
+
+    def test_still_halted_at_window_end_stays_open(self):
+        entries = [self._entry(100.0, "BTC", "reversal", "halt", True)]
+        windows = mod.build_control_log_halt_windows(entries, window_end_ts=1000.0)
+        self.assertEqual(windows, {("BTC", "reversal"): [(100.0, 1000.0, "halt")]})
+
+    def test_separate_assets_and_strategies_do_not_mix(self):
+        entries = [
+            self._entry(100.0, "BTC", "reversal", "halt", True),
+            self._entry(150.0, "ETH", "high_prob", "halt", True),
+            self._entry(200.0, "BTC", "reversal", "resume", False),
+        ]
+        windows = mod.build_control_log_halt_windows(entries, window_end_ts=1000.0)
+        self.assertEqual(windows[("BTC", "reversal")], [(100.0, 200.0, "halt")])
+        self.assertEqual(windows[("ETH", "high_prob")], [(150.0, 1000.0, "halt")])
+
+    def test_never_halted_produces_no_window(self):
+        entries = [self._entry(100.0, "BTC", "reversal", "resume", False)]
+        windows = mod.build_control_log_halt_windows(entries, window_end_ts=1000.0)
+        self.assertEqual(windows, {})
+
+    def test_multiple_halt_close_cycles_for_the_same_key(self):
+        entries = [
+            self._entry(100.0, "BTC", "reversal", "halt", True),
+            self._entry(200.0, "BTC", "reversal", "resume", False),
+            self._entry(300.0, "BTC", "reversal", "halt_engaged", True),
+            self._entry(400.0, "BTC", "reversal", "halt_reset", False),
+        ]
+        windows = mod.build_control_log_halt_windows(entries, window_end_ts=1000.0)
+        self.assertEqual(
+            windows[("BTC", "reversal")],
+            [(100.0, 200.0, "halt"), (300.0, 400.0, "halt_engaged")],
+        )
+
+
+class ControlLogHaltWindowAtTests(unittest.TestCase):
+    def test_returns_reason_inside_window(self):
+        windows = {("BTC", "reversal"): [(100.0, 200.0, "halt_engaged")]}
+        self.assertEqual(mod.control_log_halt_window_at(windows, "BTC", "reversal", 150.0), "halt_engaged")
+
+    def test_none_outside_window_or_unknown_key(self):
+        windows = {("BTC", "reversal"): [(100.0, 200.0, "halt_engaged")]}
+        self.assertIsNone(mod.control_log_halt_window_at(windows, "BTC", "reversal", 250.0))
+        self.assertIsNone(mod.control_log_halt_window_at(windows, "ETH", "reversal", 150.0))
+
+
+class SafeBuildControlLogHaltWindowsTests(unittest.TestCase):
+    def test_never_raises_even_if_the_inner_function_blows_up(self):
+        with patch.object(mod, "build_control_log_halt_windows", side_effect=RuntimeError("boom")):
+            out = mod._safe_build_control_log_halt_windows([], 1000.0)
+        self.assertEqual(out, {})
+
+
 class GetConfigLastChangeTsTests(unittest.TestCase):
     def test_returns_git_commit_ts_of_latest_config_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -457,6 +559,35 @@ class ClassifyMismatchReasonTests(unittest.TestCase):
         reason = mod.classify_mismatch_reason(1100.0, [], 1500.0, 2000.0, 5)
         self.assertIn("config changed", reason)
 
+    def test_control_log_windows_take_priority_over_legacy_halt_windows(self):
+        legacy = [(1000.0, 1300.0, "manual /halt")]
+        control_log_windows = {("BTC", "reversal"): [(1050.0, 1200.0, "halt_engaged")]}
+        reason = mod.classify_mismatch_reason(
+            1100.0, legacy, None, 2000.0, None,
+            asset="BTC", strategy="reversal", control_log_windows=control_log_windows,
+        )
+        self.assertEqual(reason, "live halted (halt_engaged)")
+
+    def test_control_log_windows_are_scoped_to_the_right_asset_and_strategy(self):
+        """A halt window logged for a different asset/strategy must not leak
+        into another one's reason — the bug found in build_halt_windows'
+        asset-blind text-regex path, avoided here since every control-log
+        entry already carries its own asset+strategy."""
+        control_log_windows = {("ETH", "reversal"): [(1000.0, 1300.0, "halt_engaged")]}
+        reason = mod.classify_mismatch_reason(
+            1100.0, [], None, 2000.0, None,
+            asset="BTC", strategy="reversal", control_log_windows=control_log_windows,
+        )
+        self.assertEqual(reason, "unexplained")
+
+    def test_falls_back_to_legacy_halt_windows_when_control_log_has_no_match(self):
+        legacy = [(1000.0, 1300.0, "manual /halt")]
+        reason = mod.classify_mismatch_reason(
+            1100.0, legacy, None, 2000.0, None,
+            asset="BTC", strategy="reversal", control_log_windows={},
+        )
+        self.assertIn("live halted: manual /halt", reason)
+
 
 class FilterBtRowsToWindowTests(unittest.TestCase):
     def test_keeps_only_rows_in_half_open_window(self):
@@ -640,6 +771,34 @@ class BuildBtVsLiveTests(unittest.TestCase):
         self.assertAlmostEqual(r["cycle_delta_pct"], (1802.0 - 1800.0) / 1800.0 * 100)
         self.assertAlmostEqual(r["entry_delta_pct"], (1801.44 - 1800.0) / 1800.0 * 100)
 
+    def test_control_log_confirmed_halt_excludes_the_cycle_entirely(self):
+        """The actual point of trader/doc/plan_align_bt_with_live_2026-07-15.md:
+        a cycle the control log confirms live was genuinely halted for is not
+        a missed opportunity — closes the 2026-07-10 'Backtest reconciliation
+        halt-state-drift gap' README TODO."""
+        bt = [{"asset": "BTC", "slug": "btc-updown-5m-1000", "strategy": "reversal",
+               "side": "UP", "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1000.0}]
+        mismatch_ctx = {"control_log_windows": {("BTC", "reversal"): [(900.0, 1100.0, "halt_engaged")]}}
+        missed = mod.build_bt_vs_live(bt, live_rows=[], mismatch_ctx=mismatch_ctx)
+        self.assertEqual(missed, [])
+
+    def test_control_log_exclusion_is_scoped_to_the_right_asset(self):
+        """A halt window logged for a different asset must not exclude this
+        one's genuinely-missed cycle."""
+        bt = [{"asset": "BTC", "slug": "btc-updown-5m-1000", "strategy": "reversal",
+               "side": "UP", "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1000.0}]
+        mismatch_ctx = {"control_log_windows": {("ETH", "reversal"): [(900.0, 1100.0, "halt_engaged")]}}
+        missed = mod.build_bt_vs_live(bt, live_rows=[], mismatch_ctx=mismatch_ctx)
+        self.assertEqual(len(missed), 1)
+
+    def test_no_control_log_windows_available_excludes_nothing(self):
+        """mismatch_ctx without control_log_windows (or None) must not
+        exclude anything — same as before this feature existed."""
+        bt = [{"asset": "BTC", "slug": "btc-updown-5m-1000", "strategy": "reversal",
+               "side": "UP", "outcome": "WIN", "pnl": 0.3, "cycle_ts": 1000.0}]
+        missed = mod.build_bt_vs_live(bt, live_rows=[])
+        self.assertEqual(len(missed), 1)
+
 
 class SyncPriceFeedFromOracleTests(unittest.TestCase):
     def test_returns_false_when_script_missing(self):
@@ -686,7 +845,22 @@ class RunRustBacktestTests(unittest.TestCase):
         cmd = run_mock.call_args[0][0]
         self.assertIn("--config-dir", cmd)
         self.assertIn("/cfg", cmd)
-        self.assertNotIn("--config-file", cmd)
+
+    def test_no_halt_appends_the_flag(self):
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="slug,strategy,side,token_price,exit_price,outcome,pnl\n", stderr="")) as run_mock:
+            mod.run_rust_backtest("BTC", "2026-07-15", Path("/prices"), Path("/bin/backtest"),
+                                   config_file=Path("/cfg/strategy_20260713.toml"), no_halt=True)
+        cmd = run_mock.call_args[0][0]
+        self.assertIn("--no-halt", cmd)
+
+    def test_no_halt_defaults_to_false(self):
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                [], returncode=0, stdout="slug,strategy,side,token_price,exit_price,outcome,pnl\n", stderr="")) as run_mock:
+            mod.run_rust_backtest("BTC", "2026-07-15", Path("/prices"), Path("/bin/backtest"),
+                                   config_file=Path("/cfg/strategy_20260713.toml"))
+        cmd = run_mock.call_args[0][0]
+        self.assertNotIn("--no-halt", cmd)
 
 
 class RunBacktestReconciliationTests(unittest.TestCase):
@@ -716,7 +890,7 @@ class RunBacktestReconciliationTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_skips_one_failing_asset_without_losing_the_others(self):
-        def fake_backtest(asset, date, prices_dir, binary, config_dir=None, config_file=None):
+        def fake_backtest(asset, date, prices_dir, binary, config_dir=None, config_file=None, no_halt=False):
             if asset == "DOGE":
                 raise subprocess.CalledProcessError(1, "backtest", stderr="boom")
             return "slug,strategy,side,token_price,exit_price,outcome,pnl\n"
@@ -805,7 +979,7 @@ class RunBacktestReconciliationTests(unittest.TestCase):
 
         header = "slug,strategy,side,token_price,exit_price,outcome,pnl,entry_ts\n"
 
-        def fake_backtest(asset, date, prices_dir, binary, config_dir=None, config_file=None):
+        def fake_backtest(asset, date, prices_dir, binary, config_dir=None, config_file=None, no_halt=False):
             # One cycle per date requested — a fake that ignored `date` and
             # always returned both cycles would double-count them across the
             # two dates run_backtest_reconciliation queries for this window.
@@ -829,6 +1003,50 @@ class RunBacktestReconciliationTests(unittest.TestCase):
         outcomes = sorted(r["outcome"] for r in bt_vs_live_rows)
         self.assertEqual(len(bt_vs_live_rows), 2, "one surviving row per cycle, not one per config run")
         self.assertEqual(outcomes, ["LOSS", "WIN"])
+
+    def test_always_runs_the_backtest_with_no_halt(self):
+        """Halt truth for reconciliation comes from the real control-log
+        timeline (see BuildControlLogHaltWindowsTests), not the backtest
+        binary's own from-scratch HaltTracker — see
+        trader/doc/incident_recon_btc_reversal_2026-07-15.md."""
+        with patch.object(mod.Path, "exists", return_value=True), \
+             patch.object(mod, "_resolve_config_files_for_window", return_value=([self.config_file], [])), \
+             patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
+             patch.object(mod, "build_price_data", return_value=True), \
+             patch.object(mod, "run_rust_backtest", return_value="slug,strategy,side,token_price,exit_price,outcome,pnl\n") as bt_mock:
+            mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
+        self.assertTrue(bt_mock.call_args_list, "run_rust_backtest should have been called")
+        for call in bt_mock.call_args_list:
+            self.assertTrue(call.kwargs.get("no_halt"), f"expected no_halt=True, got call: {call}")
+
+    def test_mismatch_ctx_includes_control_log_windows(self):
+        """run_backtest_reconciliation must actually build and pass through
+        control_log_windows, not just the pieces exercised by the other
+        (config-file-focused) tests above."""
+        with tempfile.TemporaryDirectory() as d:
+            control_log = Path(d) / "control_log.jsonl"
+            control_log.write_text(
+                '{"ts": %f, "asset": "BTC", "strategy": "reversal", "event": "halt_engaged", '
+                '"is_halted": true}\n' % (self.window_start.timestamp() + 10)
+            )
+            captured = {}
+
+            def fake_build_live_vs_bt(*args, **kwargs):
+                captured["mismatch_ctx"] = kwargs.get("mismatch_ctx") or (args[4] if len(args) > 4 else None)
+                return [], {"n_live": 0, "n_match": 0, "n_outcome_diff": 0, "n_side_diff": 0,
+                            "n_not_fired": 0, "n_no_data": 0, "total_live_pnl": 0.0, "total_bt_pnl": 0.0}
+
+            with patch.object(mod.Path, "exists", return_value=True), \
+                 patch.object(mod, "CONTROL_LOG_PATH", control_log), \
+                 patch.object(mod, "_resolve_config_files_for_window", return_value=([self.config_file], [])), \
+                 patch.object(mod, "sync_price_feed_from_oracle", return_value=True), \
+                 patch.object(mod, "build_price_data", return_value=True), \
+                 patch.object(mod, "run_rust_backtest", return_value="slug,strategy,side,token_price,exit_price,outcome,pnl\n"), \
+                 patch.object(mod, "build_live_vs_bt", side_effect=fake_build_live_vs_bt):
+                mod.run_backtest_reconciliation(self.window_start, self.window_end, [])
+
+        windows = captured["mismatch_ctx"]["control_log_windows"]
+        self.assertIn(("BTC", "reversal"), windows)
 
 
 class SafeRunBacktestReconciliationTests(unittest.TestCase):

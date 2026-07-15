@@ -77,6 +77,7 @@ BUILD_PRICES_SCRIPT = REPO_ROOT / "scripts" / "build_backtest_prices.py"
 # something else already did.
 PRICE_FEED_SYNC_SCRIPT = REPO_ROOT.parent / "price_feed" / "scripts" / "sync_oracle.sh"
 LIVE_LOG_PATH = REPO_ROOT / "live_logs" / "live.log"
+CONTROL_LOG_PATH = REPO_ROOT / "live_logs" / "control_log.jsonl"
 
 # ---------------------------------------------------------------------------
 # Data quality — independent tick-coverage observer
@@ -731,6 +732,93 @@ def _safe_build_halt_windows(live_log_path: Path, window_end: datetime) -> list:
         return []
 
 
+# ---------------------------------------------------------------------------
+# Control log — structured, per-(asset, strategy) halt-state timeline
+# (trader/doc/plan_align_bt_with_live_2026-07-15.md). Written by
+# bin/live.rs::log_control_event: one JSON line per event that can change
+# is_halted() — /halt, /resume, /reset_losses, balance drawdown, loss-streak
+# engage/reset, Gamma-unresolved halt, a Gamma correction clearing one. Exact
+# and asset+strategy-scoped, unlike build_halt_windows above (regex over
+# live.log's printed Telegram text — asset-blind, and never recognized the
+# loss-streak halt's own messages at all; see
+# trader/doc/incident_recon_btc_reversal_2026-07-15.md). Only exists from
+# the day this feature shipped onward — build_halt_windows stays the only
+# source for anything older, and reason-labeling (not filtering — see
+# run_backtest_reconciliation) still consults both.
+# ---------------------------------------------------------------------------
+
+def parse_control_log(path: Path) -> list:
+    """Sorted-by-ts list of control_log.jsonl entries. Missing file /
+    unparsable lines are silently skipped — same fallback pattern as every
+    other optional enrichment in this module."""
+    if not path.exists():
+        return []
+    entries = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    entries.sort(key=lambda e: e.get("ts", 0.0))
+    return entries
+
+
+def _safe_parse_control_log(path: Path) -> list:
+    try:
+        return parse_control_log(path)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not read control log: {e}[/yellow]")
+        return []
+
+
+def build_control_log_halt_windows(entries: list, window_end_ts: float) -> dict:
+    """{(asset, strategy): [(start_ts, end_ts, reason), ...]} reconstructed
+    from `parse_control_log`'s `is_halted` transitions — no regex guessing,
+    each entry already says exactly which (asset, strategy) it's about. An
+    asset/strategy still halted at `window_end_ts` (per the last entry seen)
+    stays open through it."""
+    windows: dict = {}
+    open_start: dict = {}
+    open_reason: dict = {}
+    last_halted: dict = {}
+    for e in entries:
+        key = (e.get("asset", ""), e.get("strategy", ""))
+        ts = e.get("ts", 0.0)
+        is_halted = bool(e.get("is_halted", False))
+        was_halted = last_halted.get(key, False)
+        if is_halted and not was_halted:
+            open_start[key] = ts
+            open_reason[key] = e.get("event", "halted")
+        elif not is_halted and was_halted and key in open_start:
+            windows.setdefault(key, []).append(
+                (open_start.pop(key), ts, open_reason.pop(key, "halted"))
+            )
+        last_halted[key] = is_halted
+    for key, start in open_start.items():
+        windows.setdefault(key, []).append((start, window_end_ts, open_reason.get(key, "halted")))
+    return windows
+
+
+def control_log_halt_window_at(windows: dict, asset: str, strategy: str, ts: float) -> Optional[str]:
+    """The logged `event` name if (asset, strategy) was halted (per the
+    control log) at `ts`, else None."""
+    for start, end, reason in windows.get((asset, strategy), []):
+        if start <= ts <= end:
+            return reason
+    return None
+
+
+def _safe_build_control_log_halt_windows(entries: list, window_end_ts: float) -> dict:
+    try:
+        return build_control_log_halt_windows(entries, window_end_ts)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not build control-log halt windows: {e}[/yellow]")
+        return {}
+
+
 def get_config_last_change_ts(config_dir: Path) -> Optional[float]:
     """Unix ts of the most recent git commit touching the resolved (latest)
     strategy_*.toml — best-effort via `git log`; None if git/the repo isn't
@@ -839,8 +927,17 @@ SPARSE_TICK_THRESHOLD = 60  # a full 5-min cycle at this project's usual ~4Hz
 def classify_mismatch_reason(
     cycle_ts: float, halt_windows: list, config_change_ts: Optional[float],
     window_end_ts: float, tick_count: Optional[int],
+    *, asset: str = "", strategy: str = "", control_log_windows: Optional[dict] = None,
 ) -> str:
-    """Priority order, first match wins — see module doc comment above."""
+    """Priority order, first match wins — see module doc comment above.
+    `control_log_windows` (asset+strategy-precise, from control_log.jsonl —
+    see build_control_log_halt_windows) is checked before the asset-blind
+    `halt_windows` (regex over live.log text) when both are available, since
+    it's exact and covers the loss-streak halt too."""
+    if control_log_windows is not None:
+        cl_reason = control_log_halt_window_at(control_log_windows, asset, strategy, cycle_ts)
+        if cl_reason is not None:
+            return f"live halted ({cl_reason})"
     for start, end, reason in halt_windows:
         if start <= cycle_ts <= end:
             start_str = datetime.fromtimestamp(start, tz=HKT).strftime("%H:%M")
@@ -899,6 +996,7 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
     halt_windows = mismatch_ctx.get("halt_windows", [])
     config_change_ts = mismatch_ctx.get("config_change_ts")
     window_end_ts = mismatch_ctx.get("window_end_ts", 0.0)
+    control_log_windows = mismatch_ctx.get("control_log_windows")
 
     bt_lookup: dict = {}
     for r in bt_rows:
@@ -921,6 +1019,7 @@ def build_live_vs_bt(live_rows: list, bt_rows: list, assets_with_data: set,
         mismatch_reason = classify_mismatch_reason(
             cycle_ts, halt_windows, config_change_ts, window_end_ts,
             len(ticks) if ticks else None,
+            asset=lt["asset"], strategy=lt["strategy"], control_log_windows=control_log_windows,
         )
         extra = {
             "entry_time": t_minus_str(lt["slug"], lt.get("entry_ts")),
@@ -973,17 +1072,32 @@ def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional
     as SIDE DIFF in the Live vs BT table, so this only needs to exclude
     slugs live touched on any side — not check side equality itself. Every
     row here is by definition a mismatch, so `reason` is always computed.
+
+    A cycle the control log (control_log.jsonl — exact, asset+strategy-scoped)
+    confirms live was genuinely halted for is excluded entirely, not counted
+    as a "missed opportunity" — live correctly chose not to trade there, same
+    as any other legitimate halt (closes the "Backtest reconciliation
+    halt-state-drift gap" README TODO, 2026-07-10). Only the control log is
+    trusted for this *exclusion* — unlike the asset-blind `halt_windows`
+    (regex over live.log text, used for `reason` labeling only, below), a
+    false-positive exclusion here would silently hide a real signal for a
+    *different* asset, which is worse than an unexplained row.
     """
     underlying_prices = underlying_prices or {}
     mismatch_ctx = mismatch_ctx or {}
     halt_windows = mismatch_ctx.get("halt_windows", [])
     config_change_ts = mismatch_ctx.get("config_change_ts")
     window_end_ts = mismatch_ctx.get("window_end_ts", 0.0)
+    control_log_windows = mismatch_ctx.get("control_log_windows")
 
     live_slugs = {lt["slug"] for lt in live_rows}
     missed = []
     for r in bt_rows:
         if r["slug"] in live_slugs:
+            continue
+        if control_log_windows is not None and control_log_halt_window_at(
+            control_log_windows, r["asset"], r["strategy"], r["cycle_ts"]
+        ) is not None:
             continue
         ticks = underlying_prices.get(r["slug"], [])
         open_p, close_p = _cycle_open_close(ticks)
@@ -991,6 +1105,7 @@ def build_bt_vs_live(bt_rows: list, live_rows: list, underlying_prices: Optional
         reason = classify_mismatch_reason(
             r["cycle_ts"], halt_windows, config_change_ts, window_end_ts,
             len(ticks) if ticks else None,
+            asset=r["asset"], strategy=r["strategy"], control_log_windows=control_log_windows,
         )
         missed.append({
             "time": datetime.fromtimestamp(r["cycle_ts"], tz=HKT).strftime("%Y-%m-%d %H:%M:%S") if r["cycle_ts"] else "",
@@ -1045,14 +1160,25 @@ def build_price_data(assets: list, date: str, out_dir: Path, build_script: Path)
 
 
 def run_rust_backtest(asset: str, date: str, prices_dir: Path, binary: Path,
-                       config_dir: Optional[Path] = None, config_file: Optional[Path] = None) -> str:
+                       config_dir: Optional[Path] = None, config_file: Optional[Path] = None,
+                       no_halt: bool = False) -> str:
     """Shells out to the `backtest` binary for one (asset, date). Pass exactly
     one of `config_dir` (today's `config::load_latest` behavior — whichever
     strategy_*.toml is lexicographically latest right now) or `config_file`
-    (pin one exact historical file — see `build_config_timeline`)."""
+    (pin one exact historical file — see `build_config_timeline`).
+
+    `no_halt=True` (what `run_backtest_reconciliation` always passes) disables
+    the backtest binary's own from-scratch `HaltTracker` entirely — halt truth
+    for reconciliation purposes comes from the real recorded control-log
+    timeline instead (`build_control_log_halt_windows`), not a naive
+    same-day replay that can trip on trades live never even took and has no
+    way to know about a mid-day `/reset_losses`; see
+    trader/doc/incident_recon_btc_reversal_2026-07-15.md."""
     cmd = [str(binary), "--asset", asset, "--date", date,
            "--prices-dir", str(prices_dir), "--format", "csv"]
     cmd += ["--config-file", str(config_file)] if config_file is not None else ["--config-dir", str(config_dir)]
+    if no_halt:
+        cmd.append("--no-halt")
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return result.stdout
 
@@ -1135,7 +1261,7 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
             for cf in config_files_needed:
                 try:
                     csv_text = run_rust_backtest(
-                        asset, date, BACKTEST_PRICES_DIR, BACKTEST_BINARY, config_file=cf)
+                        asset, date, BACKTEST_PRICES_DIR, BACKTEST_BINARY, config_file=cf, no_halt=True)
                 except subprocess.CalledProcessError as e:
                     err = (e.stderr or str(e)).strip()[-300:]
                     console.print(f"[yellow]  {asset}/{date} ({cf.name}): backtest failed ({err})[/yellow]")
@@ -1157,10 +1283,12 @@ def run_backtest_reconciliation(window_start: datetime, window_end: datetime, an
     bt_in_window = filter_bt_rows_to_window(all_bt_rows, window_start_ts, window_end_ts)
     live_norm = _normalize_live_rows(annotated_live_rows)
     underlying_prices = _safe_load_underlying_price_series(assets, dates, BACKTEST_PRICES_DIR)
+    control_log_entries = _safe_parse_control_log(CONTROL_LOG_PATH)
     mismatch_ctx = {
         "halt_windows": _safe_build_halt_windows(LIVE_LOG_PATH, window_end),
         "config_change_ts": _safe_get_config_last_change_ts(CONFIG_DIR),
         "window_end_ts": window_end_ts,
+        "control_log_windows": _safe_build_control_log_halt_windows(control_log_entries, window_end_ts),
     }
 
     live_vs_bt_rows, bt_summary = build_live_vs_bt(

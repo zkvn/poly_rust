@@ -151,24 +151,6 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **Backtest reconciliation has no visibility into the loss-streak halt (`halt_rev`/
-  `HaltTracker`) — found 2026-07-15 investigating two BTC trades with no BT row at all, not
-  fixed.** `trade_reconcile.py::build_halt_windows`'s `_HALT_OPEN_PATTERNS` only recognizes
-  balance-drawdown, Gamma-unresolved, and manual `/halt` — not the loss-streak halt's own
-  `🟡 <asset> HALTED` (engage) / `🟢 <asset> HALT RESET` / `🔄 Reset loss-streak halt counter`
-  (today's new `/reset_losses`) Telegram lines. Worse, the *backtest binary itself* has no way
-  to replay past a manual `/reset_losses` at all — its single continuous-day `HaltTracker` trips
-  on whatever it independently simulates (which can differ from live's real trade history) and
-  only clears at the daily `halt_reset_hour_rev` rollover, so once tripped it silently
-  suppresses every later entry that day. Concretely: BTC's real 08:59:40 loss-streak halt was
-  cleared live via `/reset_losses` at 16:49:44, but the backtest's *own* simulated 08:25
-  stop-loss (a cycle live never traded) tripped its *own* halt with no way to un-trip it,
-  producing `BT DID NOT FIRE`/`unexplained` for two real BTC trades at 16:54:46 and 17:24:52
-  that afternoon — confirmed by disabling halt entirely and watching both fire. Same *class* of
-  gap as the "Backtest reconciliation halt-state-drift gap" item below, but for the loss-streak
-  mechanism rather than the manual one, and newly load-bearing now that `/reset_losses`
-  actually works. Full writeup: `trader/doc/incident_recon_btc_reversal_2026-07-15.md`.
-
 - **`machine.rs`'s `FORCE_UNWIND_BEFORE_CYCLE_END_SECS` (backtest-only early-close) vs
   `worker.rs` (live, no such rule) is a real, recurring source of Live-vs-BT `OUTCOME DIFF` —
   found 2026-07-15 while implementing the recon config-pinning fix, not fixed.** Any live
@@ -238,21 +220,6 @@ on the remote before the nightly sync runs.
   bug in the recon report: `load_cycle_open_prices` already degrades a missing slug to "—" for
   Entry Δ% rather than guessing, so the report itself is fine — flagging so the underlying gap
   doesn't get lost.
-
-- **Backtest reconciliation halt-state-drift gap — flagged 2026-07-10, not fixed (deliberately
-  deferred).** Once the binance-data bug above was fixed and the backtest could actually fire
-  trades, the "BT vs Live" table started reporting real numbers — including 24 ETH/DOGE cycles
-  the backtest fired on 2026-07-10 that live never traded, "worth" +2.33 USDC. Checked
-  `trader/live_logs/live_state_eth_high_prob.json`: `entry_suppressed: true`, `halt_losses: 0` —
-  ETH/high_prob was under a **manual** `/halt` for a chunk of the day (confirmed via the
-  `🛑 Halted ETH/high_prob` Telegram log line), which the backtest — a config-driven replay with
-  no live halt-state input — has no way to know about, so it fires straight through. Most (not
-  necessarily all) of the 24 "missed" cycles are very likely this, not live actually failing to
-  take a real opportunity. Same shape as the Gamma-timeout balance-override carve-out already
-  built into the Gamma Cross-Check section (`gamma_timeout` in `annotate_rows`) — closing this
-  would mean similarly reading `live_state_*.json`/`live.log`'s halt history and tagging BT vs
-  Live rows that fall inside a real halt window as "as designed" rather than "missed." Flagging
-  so the 24-cycle number in today's report isn't misread as a live-trading bug.
 
 - **`ApiResultTimeout` never corrects `HaltTracker` — flagged 2026-07-10, not fixed (deliberately
   deferred).** Found while explaining `trader/doc/incident_halt_double_count_2026-07-10.md`'s fix:
@@ -865,6 +832,25 @@ code). Summary:
 <summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
+
+### Backtest reconciliation had no visibility into live's real halt state — fixed (2026-07-15)
+
+Closes two README TODOs at once: the loss-streak-halt gap found investigating
+`trader/doc/incident_recon_btc_reversal_2026-07-15.md` (two real BTC trades with zero backtest
+row — the `backtest` binary's own from-scratch `HaltTracker` tripped on a stop-loss it
+independently simulated on a cycle live never even traded, with no way to know a human sent
+`/reset_losses btc` to unstick live's real halt hours earlier), and the older 2026-07-10
+"Backtest reconciliation halt-state-drift gap" (manual `/halt` windows counted as false "missed
+opportunities" in BT vs Live). Added `bin/live.rs::log_control_event`, an append-only
+`control_log.jsonl` recording every event that can change `is_halted()` — user commands
+(`/halt`, `/resume`, `/reset_losses`) and automatic ones (loss-streak engage/reset, balance
+drawdown, Gamma-unresolved halt/clear) alike, precisely scoped per asset+strategy.
+`trade_reconcile.py` now always runs `backtest --no-halt` for reconciliation (the binary's own
+halt simulation is no longer trusted) and uses the control log two ways: to label *why* a
+mismatch happened (falling back to the older asset-blind `live.log`-text-regex path for history
+predating this log), and — only from this precise source, never the asset-blind one — to
+exclude cycles live was genuinely halted for from "BT vs Live missed opportunities" entirely.
+Full design: `trader/doc/plan_align_bt_with_live_2026-07-15.md`.
 
 ### Backtest reconciliation config-drift gap — fixed (2026-07-15)
 

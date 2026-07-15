@@ -404,6 +404,54 @@ fn persist(slot: &AssetSlot) {
     }
 }
 
+/// Append-only, timestamped record of every event that can change a slot's
+/// `is_halted()` state — user commands (`/halt`, `/resume`, `/reset_losses`)
+/// and automatic engine events (loss-streak engage/reset, balance drawdown,
+/// Gamma-unresolved halt, a Gamma correction clearing one) alike, one shared
+/// `control_log.jsonl` across every asset/strategy in `log_dir`. Read by
+/// `trade_reconcile.py` to reconstruct the real historical halt timeline per
+/// (asset, strategy) for backtest reconciliation — replaying with the
+/// backtest's own from-scratch `HaltTracker` alone can diverge arbitrarily
+/// from what live actually experienced (a different simulated trade history,
+/// or a manual `/reset_losses` mid-day the backtest has no way to know
+/// about); see `trader/doc/plan_align_bt_with_live_2026-07-15.md` and
+/// `trader/doc/incident_recon_btc_reversal_2026-07-15.md` for the incident
+/// that motivated this. Best-effort — a write failure here must never
+/// interrupt live trading, same fail-open posture as `persist`.
+fn log_control_event(slot: &AssetSlot, event: &str) {
+    #[derive(serde::Serialize)]
+    struct ControlLogEntry<'a> {
+        ts: f64,
+        asset: &'a str,
+        strategy: &'a str,
+        event: &'a str,
+        entry_suppressed: bool,
+        halt_losses: i64,
+        is_halted: bool,
+    }
+    let now = chrono::Utc::now();
+    let entry = ControlLogEntry {
+        ts: now.timestamp() as f64 + now.timestamp_subsec_millis() as f64 / 1000.0,
+        asset: &slot.worker.asset,
+        strategy: slot.worker.strategy_name,
+        event,
+        entry_suppressed: slot.worker.manually_suppressed(),
+        halt_losses: slot.worker.halt_losses(),
+        is_halted: slot.worker.is_halted(),
+    };
+    let Ok(line) = serde_json::to_string(&entry) else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&slot.control_log_path)
+    {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// `Worker::on_control` always returns exactly `[Action::Persist]` — apply the event and act on
 /// that signal immediately, rather than leaving `entry_suppressed` unpersisted until some later,
 /// unrelated event happens to persist this slot (2026-07-11,
@@ -413,6 +461,14 @@ fn persist(slot: &AssetSlot) {
 fn apply_control(slot: &mut AssetSlot, event: ControlEvent) {
     slot.worker.step(Event::Control(event));
     persist(slot);
+    log_control_event(
+        slot,
+        match event {
+            ControlEvent::Halt => "halt",
+            ControlEvent::Resume => "resume",
+            ControlEvent::ResetLosses => "reset_losses",
+        },
+    );
 }
 
 /// Builds a warning suffix listing any slot that's still halted purely due to
@@ -448,6 +504,7 @@ fn loss_streak_still_halted_note<'a>(slots: impl Iterator<Item = &'a AssetSlot>)
 fn apply_balance_halt(slot: &mut AssetSlot) {
     slot.worker.step(Event::Balance(BalanceEvent::DrawdownHalt));
     persist(slot);
+    log_control_event(slot, "drawdown_halt");
 }
 
 /// Best-effort load of a previously-persisted slot — a missing file (first
@@ -540,6 +597,9 @@ struct AssetSlot {
     max_buy_price: f64,
     log_path: String,
     state_file: String,
+    /// Shared across every slot (one file, `control_log.jsonl` in `log_dir` —
+    /// see `log_control_event`).
+    control_log_path: String,
     /// Trades logged in the *currently open* cycle only — reset to 0 every
     /// time a new cycle opens for this slot (see the ticker branch below).
     /// Gates `--max-trades` (default 1: at most one trade per cycle), never
@@ -1158,6 +1218,7 @@ impl Driver<'_> {
                     // and the balance drawdown halt, which already notify at their own
                     // call sites (Command::Halt, DrawdownHalt).
                     Action::HaltEngaged => {
+                        log_control_event(slot, "halt_engaged");
                         let halt_n = if slot.worker.strategy_name == "high_prob" {
                             slot.params.halt_prob
                         } else {
@@ -1169,6 +1230,7 @@ impl Driver<'_> {
                         )).await;
                     }
                     Action::HaltReset => {
+                        log_control_event(slot, "halt_reset");
                         self.notify(&format!(
                             "🟢 <b>{} HALT RESET</b> | {} | {}\nDaily loss-streak reset — new entries re-armed.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
@@ -1179,6 +1241,7 @@ impl Driver<'_> {
                     // engaged partly or wholly on a phantom loss — see
                     // trader/doc/incident_halt_double_count_2026-07-10.md.
                     Action::HaltClearedByCorrection => {
+                        log_control_event(slot, "halt_cleared_by_correction");
                         self.notify(&format!(
                             "🟢 <b>{} HALT CLEARED</b> | {} | {}\nA Gamma correction reversed one of the counted losses — new entries re-armed.",
                             slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
@@ -1189,6 +1252,7 @@ impl Driver<'_> {
                     // §4): the provisional record stands as logged, unverified, and new
                     // entries are suppressed until a human checks it and /resumes.
                     Action::GammaHaltEngaged { record } => {
+                        log_control_event(slot, "gamma_halt_engaged");
                         println!(
                             "[live] {} gave up waiting for Gamma resolution of {} — halting new entries ({})",
                             slot.worker.asset, record.slug, slot.worker.strategy_name
@@ -1425,6 +1489,7 @@ async fn main() -> Result<()> {
                 max_buy_price,
                 log_path,
                 state_file,
+                control_log_path: format!("{}/control_log.jsonl", args.log_dir),
                 cycle_trades: 0,
                 sl_notified: false,
                 timeout_notified: false,
@@ -2399,6 +2464,7 @@ mod halt_persist_tests {
             current_token_id: None,
             max_buy_price: 0.95,
             log_path: String::new(),
+            control_log_path: format!("{state_file}.control.jsonl"),
             state_file,
             cycle_trades: 0,
             sl_notified: false,
@@ -2542,5 +2608,89 @@ mod halt_persist_tests {
         );
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The control log (`trader/doc/plan_align_bt_with_live_2026-07-15.md`) — read
+    /// back a `log_control_event` line and check every field, plus that it's
+    /// genuinely append-only across multiple calls.
+    #[test]
+    fn log_control_event_appends_one_json_line_per_call() {
+        let path = scratch_state_path("control_log_basic");
+        let control_log = format!("{path}.control.jsonl");
+        let _ = std::fs::remove_file(&control_log);
+        let mut slot = test_slot("BTC", path.clone());
+
+        log_control_event(&slot, "halt");
+        slot.worker.restore_halt(false, 2, None); // halt_rev=2 in test_params -> now tripped
+        log_control_event(&slot, "halt_engaged");
+
+        let contents = std::fs::read_to_string(&control_log).expect("control log must exist");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "one JSON line per call, append-only");
+
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("valid JSON");
+        assert_eq!(first["asset"], "BTC");
+        assert_eq!(first["strategy"], "reversal");
+        assert_eq!(first["event"], "halt");
+        assert_eq!(first["is_halted"], false);
+        assert!(first["ts"].as_f64().unwrap() > 0.0);
+
+        let second: serde_json::Value = serde_json::from_str(lines[1]).expect("valid JSON");
+        assert_eq!(second["event"], "halt_engaged");
+        assert_eq!(second["halt_losses"], 2);
+        assert_eq!(second["is_halted"], true);
+
+        // No apply_control/persist call in this test, so no state_file was
+        // ever written — only the control log needs cleanup here.
+        let _ = std::fs::remove_file(&path);
+        std::fs::remove_file(&control_log).unwrap();
+    }
+
+    /// `apply_control` must log each `ControlEvent` variant under the exact
+    /// event name `trade_reconcile.py`'s parser expects.
+    #[test]
+    fn apply_control_logs_the_correct_event_name_per_variant() {
+        let path = scratch_state_path("control_log_apply_control");
+        let control_log = format!("{path}.control.jsonl");
+        let _ = std::fs::remove_file(&control_log);
+        let mut slot = test_slot("ETH", path.clone());
+
+        apply_control(&mut slot, ControlEvent::Halt);
+        apply_control(&mut slot, ControlEvent::Resume);
+        apply_control(&mut slot, ControlEvent::ResetLosses);
+
+        let contents = std::fs::read_to_string(&control_log).unwrap();
+        let events: Vec<String> = contents
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["event"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(events, vec!["halt", "resume", "reset_losses"]);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&control_log).unwrap();
+    }
+
+    #[test]
+    fn apply_balance_halt_logs_drawdown_halt_event() {
+        let path = scratch_state_path("control_log_balance");
+        let control_log = format!("{path}.control.jsonl");
+        let _ = std::fs::remove_file(&control_log);
+        let mut slot = test_slot("BTC", path.clone());
+
+        apply_balance_halt(&mut slot);
+
+        let contents = std::fs::read_to_string(&control_log).unwrap();
+        let entry: serde_json::Value =
+            serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert_eq!(entry["event"], "drawdown_halt");
+        assert_eq!(entry["is_halted"], true);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&control_log).unwrap();
     }
 }
