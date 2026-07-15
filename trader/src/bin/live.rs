@@ -1510,6 +1510,13 @@ async fn main() -> Result<()> {
                 last_binance_ts: None,
                 last_poly_ts: None,
             });
+            // A restart-restored halt (or lack of one) is otherwise invisible
+            // to control_log.jsonl — the previous process's own halt/resume/
+            // reset_losses events are already in the log, but nothing marks
+            // *this* process picking that state back up. Log a snapshot so
+            // trade_reconcile.py's timeline reconstruction has a starting
+            // point right after every restart, not just gaps between them.
+            log_control_event(assets.last().unwrap(), "startup");
         }
     }
 
