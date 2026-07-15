@@ -151,24 +151,6 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **`trader/src/bin/live.rs`: restarting the process mid-cycle corrupts that cycle's
-  `open_binance` reference — found 2026-07-15 auditing costly stop-losses, not fixed.**
-  `current_slot_val` (`live.rs:1510`) initializes to `0` on every process start, so the very
-  first `ticker` tick after *any* restart (config deploy, binary redeploy, or a crash+respawn
-  under systemd's `Restart=always`) always looks like a "new cycle" — even when the real
-  current 5-minute slot has already been running for minutes. `open_binance` then gets set to
-  `slot.last_binance` (line 1602) — whatever Binance is trading at *right now* — instead of the
-  cycle's true opening price, and `Worker::on_cycle_open` (`worker.rs:751`) uses that fabricated
-  value for every signal computation (`delta_pct`, the reversal reset, the final
-  `price_moved_up` resolution) for the rest of that cycle. Confirmed via a real incident: our own
-  `--update-config` deploy today restarted `trader-live.service` 100s into an open BTC cycle,
-  producing two `[live] new cycle ... slug=btc-updown-5m-1784076900` log lines with two different
-  `open_binance` values, and directly implicated in a costly stop-loss that fired in that same
-  cycle. Full writeup: `../btc_5mins/doc/audit_bt2_stoploss_2026-07-15.md` §3b. Proposed fix:
-  either re-derive the true cycle-open on restart (e.g. from Binance klines or `price_feed`'s own
-  recorded open), or suppress entries for the remainder of any in-flight cycle detected at
-  startup and only resume trading from the next clean cycle boundary.
-
 - ~~`../btc_5mins/bot/backtest.py`'s `_replay_all` has the identical TIMEOUT/halt gap this repo
   just fixed~~ — **fixed 2026-07-14 in `btc_5mins`** (same day, same fix: `TIMEOUT` now counts
   toward `losses_rev`/`losses_hp` only when its `pnl < 0`), ported to `_replay_all` and both
@@ -852,6 +834,22 @@ code). Summary:
 <summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
+
+### Mid-cycle restart corrupted `cycle_open_binance` (2026-07-15, fixed)
+
+Found while auditing costly stop-losses (cross-project audit from `../btc_5mins`, §3b):
+`current_slot_val` (`trader/src/bin/live.rs`) initialized to `0` on every process start, so the
+first `ticker` tick after *any* restart — config deploy, binary redeploy, crash+respawn under
+systemd's `Restart=always` — always looked like a fresh cycle boundary, even 100+s into an
+already-open one, stamping `open_binance` with whatever Binance traded at that instant instead of
+the cycle's true open. Every signal for the rest of that cycle (`delta_pct`, the reversal reset,
+the final `price_moved_up` resolution) then ran against a fabricated reference price. Confirmed
+directly implicated in one real costly stop-loss on 2026-07-15. Fixed: a restart landing more than
+5s into an already-open slot now skips firing `CycleOpen` for that cycle entirely (no entries) and
+resumes normally at the next clean boundary, instead of fabricating a reference price — verified
+locally (dummy-keyed dry run against live NATS data, twice) and live on the Oracle deploy that
+shipped this fix, which itself landed 12s into a cycle and correctly suppressed. Full writeup:
+`trader/doc/fix_live_deploy_2026-07-15.md`.
 
 ### `TradeRecord`/`HoldingData` gained `entry_price_ts` — additive, compiled/tested, not deployed (2026-07-14, added)
 

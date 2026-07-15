@@ -58,6 +58,25 @@ const CLOB_HOST: &str = "https://clob.polymarket.com";
 // Matches the vendored SDK's own `Client<Unauthenticated>::default()` endpoint.
 const UNWIND_WS_HOST: &str = "wss://ws-subscriptions-clob.polymarket.com";
 
+/// `current_slot_val` starts at `0` every process start, so the first `ticker`
+/// tick after *any* restart always looks like a fresh cycle boundary — even
+/// when the real slot has already been running for minutes. A restart landing
+/// mid-cycle must not fire `CycleOpen` with a fabricated `open_binance` (see
+/// `trader/doc/fix_live_deploy_2026-07-15.md`). The ticker fires every 1s, so
+/// a genuine boundary crossing during normal steady-state operation is always
+/// caught within ~1-2s — 5s gives headroom for scheduler jitter while still
+/// being far below any real "restart landed mid-cycle" gap (100s+ in the
+/// incident that found this bug).
+const STARTUP_MID_CYCLE_GUARD_SECS: f64 = 5.0;
+
+/// Pure decision for the guard above — extracted so it's unit-testable
+/// without needing the full `tokio::select!` loop. Only ever applies to the
+/// first tick after process start (`is_first_tick`); every later boundary
+/// crossing in the same process run is trusted as genuine.
+fn should_suppress_startup_cycle(is_first_tick: bool, elapsed_into_slot: f64) -> bool {
+    is_first_tick && elapsed_into_slot > STARTUP_MID_CYCLE_GUARD_SECS
+}
+
 type Signer = alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>;
 
 #[derive(Parser, Debug)]
@@ -1556,7 +1575,17 @@ async fn main() -> Result<()> {
             _ = ticker.tick() => {
                 let slot_now = current_slot(args.period_secs);
                 if slot_now != current_slot_val {
+                    let is_first_tick = current_slot_val == 0;
                     current_slot_val = slot_now;
+                    let elapsed_into_slot = now_secs_f64() - slot_now as f64;
+
+                    if should_suppress_startup_cycle(is_first_tick, elapsed_into_slot) {
+                        println!(
+                            "[live] startup landed {elapsed_into_slot:.0}s into an already-open cycle (slot={slot_now}) — suppressing entries until the next clean cycle boundary (trader/doc/fix_live_deploy_2026-07-15.md)"
+                        );
+                        continue;
+                    }
+
                     for slot in assets.iter_mut() {
                         let asset = slot.worker.asset.clone();
                         if slot.current_slug.is_some() {
@@ -1780,6 +1809,51 @@ async fn main() -> Result<()> {
                     ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod restart_guard_tests {
+    use super::*;
+
+    /// Clean start right at (or within a tick of) a real boundary — the
+    /// common case, e.g. a process that happens to start exactly when a new
+    /// 5-minute slot begins. Must NOT suppress.
+    #[test]
+    fn clean_start_at_boundary_not_suppressed() {
+        assert!(!should_suppress_startup_cycle(true, 0.3));
+    }
+
+    /// The actual 2026-07-15 incident shape: a restart lands 100s into an
+    /// already-open cycle. Must suppress — this is the bug this fix closes.
+    #[test]
+    fn restart_100s_into_cycle_is_suppressed() {
+        assert!(should_suppress_startup_cycle(true, 100.0));
+    }
+
+    /// Exactly at the threshold is NOT suppressed (`>`, not `>=`) — documents
+    /// the boundary choice so a future edit that flips the comparison
+    /// direction fails a test instead of silently changing behavior.
+    #[test]
+    fn exactly_at_threshold_not_suppressed() {
+        assert!(!should_suppress_startup_cycle(
+            true,
+            STARTUP_MID_CYCLE_GUARD_SECS
+        ));
+        assert!(should_suppress_startup_cycle(
+            true,
+            STARTUP_MID_CYCLE_GUARD_SECS + 0.001
+        ));
+    }
+
+    /// The guard only ever applies to the very first tick after process
+    /// start. A steady-state boundary crossing that happens to be
+    /// late/delayed (e.g. a slow tick under load) must never suppress —
+    /// suppressing here would silently skip a real cycle mid-run, a much
+    /// worse regression than the bug being fixed.
+    #[test]
+    fn late_steady_state_tick_not_suppressed() {
+        assert!(!should_suppress_startup_cycle(false, 100.0));
     }
 }
 
