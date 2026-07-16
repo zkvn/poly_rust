@@ -11,6 +11,16 @@ of that pipeline and its neighbors, not a fix — no code is changed here.
 (`trader::machine::Machine`, `siglab::v_shape::VShapeEngine`) are only referenced where they
 reveal something about how a data-quality gap actually reaches a trading decision.
 
+**Important scope correction (added after review, following user pushback — see below):**
+`trader::marketdata::spawn_poly_task` is only used by the **direct-WS** path — `siglab`,
+`backtest.rs`/`shadow.rs`, and `bin/live.rs`'s fallback mode when `--nats-url` is *not* passed.
+The actual **production** live-trading path (`bin/live.rs` with `--nats-url`, which is what
+`docker-compose.yml` always runs) gets its ticks from `price_feed`'s independently-built
+collector via NATS instead, which has its own, separately-implemented ingestion
+(`price_feed/src/collect.rs::spawn_bba_task`) — not the code reviewed in §1/§3 below. Findings
+in this document apply as stated to the direct-WS path; where they also apply to
+`price_feed::collect.rs` (checked afterward), that's called out explicitly.
+
 ## 1. `spawn_poly_task`'s stream merge has no atomicity or ordering guarantee
 
 **Why there are two streams for one mid-price in the first place.** They're not two independent
@@ -79,6 +89,19 @@ the market's exit tick minutes later matched the archive closely. Not proven to 
 mechanism (see that incident's own caveat about 200ms archive sampling), but it's the leading
 code-level candidate.
 
+**This exact pattern is not confined to the paper-trading path — and the fix is simpler than
+"reconstruct ordering from scratch."** `price_feed/src/collect.rs::spawn_bba_task`
+(`collect.rs:1136-1169`) — the real data source `bin/live.rs`'s production NATS path ultimately
+depends on — has the byte-for-byte identical `futures::stream::select(bba_u, pc_u)` merge over
+the same two subscriptions. The difference: it already reads `m.timestamp`/`p.timestamp` off
+each message into a `server_ts_ms` field (`collect.rs:1144-1166`) — captured specifically to
+compute its own `latency_ms` metric — but that timestamp is **never used to decide whether an
+incoming value should overwrite the cached one** (`collect.rs:1181-1189` just unconditionally
+replaces `state.latest_bba` with whatever the merged stream yields next, in arrival order). So
+the ingredient needed to fix the ordering problem is already being captured right next to the
+bug — it's a one-line guard away (`if new.server_ts_ms >= cached.server_ts_ms`), not a redesign.
+See "Ideas" below.
+
 ## 2. `SpreadSignal`'s premium/discount gate is structurally inert
 
 `check_gates` runs this first, ahead of every other check (`gates.rs:1-8`, mirroring Python's
@@ -110,7 +133,8 @@ suite would catch it, since a gate that can never fire also can never fail a tes
 the "should block" branch with real UP/DN asymmetry (the existing `gates.rs` tests construct
 `SpreadSignal` the same synthetic way, so they'd pass either way — see `gates.rs:120-145`).
 
-## 3. Ticks carry local wall-clock time only, no server-side provenance
+## 3. `PolyTick`/`BinanceTick` (direct-WS path only) carry local wall-clock time, no server-side
+   provenance — corrected from an earlier, too-broad version of this finding
 
 ```rust
 // marketdata.rs:199-204 (poly) — same pattern at marketdata.rs:129 (binance)
@@ -123,25 +147,55 @@ providing one** (see §1's confirmed `BestBidAsk.timestamp`/`PriceChange.timesta
 `spawn_poly_task` never reads them). Binance's raw `@trade` WS payload is the same story: the
 code parses the full JSON value (`marketdata.rs:124`) but only ever reads `v["p"]` (price);
 Binance's standard `@trade` schema also includes `E` (event time) and `T` (trade time) fields
-that go unread and unused. Compare `price_feed`'s own recorder, which persists both `server_ts`
-and `latency_ms` per row (visible directly in its parquet schema — confirmed while investigating
-the 2026-07-16 BNB incident). `trader::marketdata` has no equivalent: once a tick is in
-`PolyTick`/`BinanceTick`, there's no way to later ask "how much local processing/scheduling delay
-sat between the real event and when we saw it," which is exactly the question the BNB incident
-needed answered and couldn't get from this pipeline alone (it had to fall back on `price_feed`'s
-independent archive instead, which has its own coarser 200ms-sampling limitation).
+that go unread and unused. This is real, and it's why the BNB incident couldn't get a definitive
+answer from this pipeline alone — but it is **specific to the direct-WS path**
+(`spawn_poly_task`/`PolySub`, used by `siglab`, `backtest.rs`/`shadow.rs`, and `bin/live.rs`'s
+`--nats-url`-absent fallback). An earlier version of this finding implied the system as a whole
+doesn't measure network latency — **that was wrong**, corrected below.
 
-**Why this wasn't caught by the existing latency instrumentation.** `TradeRecord` already tracks
-`entry_signal_latency_ms`/`entry_process_latency_ms` (`types.rs:146-157`), which look at a glance
-like they'd need a server timestamp — they don't. `live.rs`'s `latency_ms(from_ts, to_ts)`
-(`bin/live.rs:582-584`) is a plain `(to_ts - from_ts) * 1000.0`, and both endpoints passed to it
-trace back to `now_secs_f64()` calls made at different stages of *our own* pipeline (tick
-captured in `marketdata.rs` → driver receives it → fill confirmed). It's a real, useful measure
-of **internal processing latency** (queueing/scheduling delay inside our own async runtime) —
-but it was never designed to measure, and can't measure, **network/exchange latency** (how stale
-the price itself was relative to when the exchange's book actually changed), because neither
-endpoint is ever anchored to an exchange-side timestamp. The two kinds of latency look similar
-but answer different questions; today only the first is instrumented.
+**Production live trading (`bin/live.rs` with `--nats-url`) already measures real network
+latency, and has since 2026-07-06.** It doesn't go through `spawn_poly_task` at all — it
+subscribes to `price.poly.*`/`price.binance.*` NATS subjects published by `price_feed`'s
+collector, which independently connects to the CLOB/Binance WS and *does* capture the exchange's
+own timestamp (`price_feed/src/collect.rs::spawn_bba_task`, `m.timestamp`/`p.timestamp` off the
+same SDK messages §1 covers). That `server_ts` is threaded through the NATS payload
+(`poly_nats_payload`, `collect.rs:88-92`), extracted in `bin/live.rs` (`extract_server_ts`,
+`bin/live.rs:344`), cached per-asset (`AssetSlot.last_poly_server_ts`/`last_binance_server_ts`),
+and used to compute a genuine one-hop network latency:
+
+```rust
+// bin/live.rs:552 — exchange_latency_ms
+fn exchange_latency_ms(local_ts: Option<f64>, server_ts: Option<f64>) -> Option<f64> {
+    // local_ts - server_ts: a real, fixed one-hop number, independent of tick age
+}
+```
+
+Shown unconditionally on every entry as `clob_latency=`/`binance_latency=` on Telegram and in
+`live.log`, and documented at length in root `README.md`'s "Latency & observability
+infrastructure" section (2026-07-06/07 entries) — which this review should have read before
+making the original claim and didn't.
+
+**Two genuinely different metrics, easy to conflate (this review did):**
+- `clob_latency`/`binance_latency` (`exchange_latency_ms`, `bin/live.rs`, NATS path only) =
+  **real network latency** — local receipt time minus the exchange's own event timestamp.
+- `entry_signal_latency_ms`/`entry_process_latency_ms` (`TradeRecord`, all paths) = **internal
+  processing latency** — `live.rs`'s `latency_ms(from_ts, to_ts) = (to_ts - from_ts) * 1000.0`
+  (`bin/live.rs:582-584`), where both endpoints are our *own* `now_secs_f64()` stamps at
+  different pipeline stages (tick captured → driver receives it → fill confirmed). README's own
+  2026-07-07 entry confirms this is deliberate: "`process_latency` confirmed as a pure local
+  round-trip, not mixable with a server timestamp." This one genuinely doesn't need, and isn't
+  meant to have, a server timestamp — it answers "how long did our own software take," not "how
+  stale was the price."
+
+**What's still actually true after this correction:** the `PolyTick`/`BinanceTick` struct types
+themselves never carry `server_ts` — it's deliberately kept out of them (`README.md`'s
+2026-07-06 entry: kept as a `bin/live.rs`-only side channel specifically to avoid rippling a new
+field into ~80 existing tick-construction call sites across `worker.rs`/`strategies.rs`/
+`machine.rs`/`backtest.rs`/`gates.rs`/tests). That means every consumer *except* `bin/live.rs`'s
+NATS path — `siglab`, `backtest`, `shadow`, `Machine`/`Worker`'s own internal signals
+(`LatestPolySignal.age()`, gate staleness checks) — has no access to real network latency at all,
+even though `price_feed` is, in production, already computing it one process away. That's a real
+gap (see Ideas below), just a narrower one than originally stated.
 
 ## 4. No outlier/rate-of-change filtering beyond `is_finite() && > 0`
 
@@ -206,16 +260,27 @@ information" from "the same book state reported twice" after the fact.
   already in hand, e.g. cross-checking the `best_bid_ask`-channel-derived mid against the
   `price_changes`-channel-derived mid for the *same* token as a same-side consistency check
   instead of a UP-vs-DOWN one.
-- **Prefer one authoritative channel over merging two, or sequence the merge properly.** If
-  `best_bid_ask` alone is sufficient (it's the channel purpose-built for this), consider dropping
-  `price_changes` from the merge entirely rather than reconciling two streams with unclear
-  relative guarantees. If both are genuinely needed, order by whatever the SDK exposes as a
-  message sequence number or server timestamp rather than relying on `stream::select`'s
-  incidental interleaving.
-- **Thread real provenance through `PolyTick`/`BinanceTick`.** Add a server-side timestamp (if
-  the SDK exposes one) and/or a monotonic local receive-sequence number, mirroring what
-  `price_feed` already captures (`server_ts`, `latency_ms`) — so a future investigation doesn't
-  have to reconstruct intent from a separately-archived, coarser-sampled recording.
+- **Guard the merge overwrite with the timestamp that's already there — smallest, most concrete
+  fix in this whole review.** `price_feed::collect.rs::spawn_bba_task` already extracts
+  `server_ts_ms` from every merged message (it needs it for `latency_ms` anyway) but never
+  compares it before overwriting `state.latest_bba`. Changing that one write to
+  `if server_ts_ms >= cached.server_ts_ms { overwrite }` (a "last-value-wins by timestamp" guard
+  — the standard pattern for this exact problem in market-data systems, since exchanges guarantee
+  order *within* one channel but never across two) would fix the reordering risk in the actual
+  production data path with no new subscription, no new field, and no framework — the ingredient
+  was already being computed one line away. `trader::marketdata::spawn_poly_task` doesn't capture
+  `server_ts_ms` at all today, so it needs that added first, but the same one-comparison guard
+  would apply once it does. Only if `best_bid_ask` alone turns out sufficient on its own would
+  dropping `price_changes` from the merge entirely be simpler still.
+- **Thread real provenance through `PolyTick`/`BinanceTick` — for the direct-WS path only.**
+  `price_feed`'s NATS path already has this (`server_ts`, `latency_ms`, threaded through to
+  `bin/live.rs`'s `clob_latency`/`binance_latency`, live since 2026-07-06 — see §3's correction).
+  The gap is narrower than originally stated: `siglab`, `backtest`, `shadow`, and `Machine`'s own
+  staleness gate (`LatestPolySignal.age()`) all run on `spawn_poly_task`'s direct-WS path, which
+  has no equivalent. Adding a server-side timestamp there (the SDK already provides it — see §1)
+  would give those paths the same real-network-latency visibility production live trading already
+  has, and would let `gates.rs`'s staleness check measure actual exchange staleness instead of
+  only local tick age.
 - **Bounded outlier/rate-of-change filter.** Reject or flag a tick whose mid differs from the
   immediately preceding one by more than some clamp within a very short window — conceptually
   similar to what `price_feed/src/reconcile.rs` already does for its own REST/WS reconciliation
