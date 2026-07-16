@@ -762,7 +762,7 @@ impl Driver<'_> {
             // `low`/`high` are the strategy's entry trigger band — reversal_low_threshold/
             // reversal for reversal (aka "unwind" — the reversal+take-profit-unwind
             // strategy), price_low/price_high for high_prob.
-            let (sl, delta_gate, low, high, halt_n, unwind_pnl, sl_pnl, unwind_time) =
+            let (sl, delta_gate, low, high, halt_n, unwind_pnl, sl_pnl, unwind_time, start) =
                 if slot.worker.strategy_name == "high_prob" {
                     (
                         slot.params.sl_high_prob,
@@ -773,6 +773,7 @@ impl Driver<'_> {
                         slot.params.unwind_pnl_hp,
                         slot.params.sl_pnl_hp,
                         slot.params.unwind_time_hp,
+                        None,
                     )
                 } else {
                     (
@@ -784,10 +785,15 @@ impl Driver<'_> {
                         slot.params.unwind_pnl_rev,
                         slot.params.sl_pnl_rev,
                         slot.params.unwind_time_rev,
+                        Some(slot.params.reversal_start_time),
                     )
                 };
+            let start_str = match start {
+                Some(s) => format!("  start={s:.0}s"),
+                None => String::new(),
+            };
             ta_lines.push(format!(
-                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  unwind_time={unwind_time:.1}s  size=${:.2}",
+                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  unwind_time={unwind_time:.1}s{start_str}  size=${:.2}",
                 slot.worker.strategy_name, slot.params.trade_size_usdc
             ));
 
