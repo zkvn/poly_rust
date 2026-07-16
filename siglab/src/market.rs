@@ -189,9 +189,9 @@ pub async fn run_market(
                     for e in v_engines.iter_mut() {
                         if let Some(ct) = e.on_tick(tick.up, tick.ts) {
                             let out = SiglabTradeRecord::from_v_shape_engine(
-                                &e.variant_id, &asset, &market_key, slug, ct.side_up,
-                                ct.entry_ts, ct.entry_price, ct.exit_price, ct.outcome,
-                                ct.pnl, now_secs_f64(),
+                                MarketKind::Crypto, &e.variant_id, &asset, &market_key, slug,
+                                ct.side_up, ct.entry_ts, ct.entry_price, ct.exit_price,
+                                ct.outcome, ct.pnl, now_secs_f64(),
                             );
                             let _ = trade_tx.send(out);
                         }
@@ -219,7 +219,7 @@ pub async fn run_market(
                             let cycle_slug = e.cycle_slug.clone();
                             if let Some(ct) = e.force_close_if_holding(last_up) {
                                 let out = SiglabTradeRecord::from_v_shape_engine(
-                                    &e.variant_id, &asset, &market_key,
+                                    MarketKind::Crypto, &e.variant_id, &asset, &market_key,
                                     &cycle_slug, ct.side_up, ct.entry_ts, ct.entry_price,
                                     ct.exit_price, ct.outcome, ct.pnl, now_secs_f64(),
                                 );

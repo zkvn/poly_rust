@@ -4,19 +4,23 @@
 //! between them is how a slug is produced (weather: derived from today's date per city;
 //! World Cup: a fixed slug per event, no date involved) — everything about fetching an
 //! event's Yes-token buckets, batch-subscribing, demuxing ticks, and driving one
-//! `bucket_reversal::BucketReversalEngine` per (bucket, grid variant) is identical, so it
-//! lives here once instead of twice.
+//! `bucket_reversal::BucketReversalEngine` **and** one `v_shape::VShapeEngine` per (bucket,
+//! grid variant) is identical, so it lives here once instead of twice.
 //!
 //! **Why not `Machine`:** `Machine::cycle_close()` resolves a held position by comparing
 //! `last_binance` against `cycle_open_binance` — correct for crypto (that comparison *is*
 //! the market's real resolution rule), but wrong here: weather resolves against a station
 //! reading, World Cup markets resolve against real match/award outcomes — neither has
 //! anything to do with price momentum, and there's no equivalent reference feed anyway.
-//! Rather than fabricate one, every bucket instead runs `bucket_reversal.rs`'s
-//! self-contained engine, which never holds to real resolution at all — every position
-//! closes via observed price action or a fixed timeout (see that file's doc comment). Real
-//! Yes/No-aware Gamma-outcome resolution was considered and deliberately dropped, not
-//! deferred — see `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
+//! Rather than fabricate one, every bucket instead runs `bucket_reversal.rs`'s and
+//! `v_shape.rs`'s self-contained engines, neither of which ever holds to real resolution at
+//! all — every position closes via observed price action or a fixed timeout (see those
+//! files' doc comments). `v_shape::VShapeEngine` additionally supports a real cycle-end
+//! force-unwind rule for crypto, but here it's simply never given a cycle (`cycle_open` is
+//! never called), which permanently disables that branch — see
+//! `doc/feature_v_2026-07-17.md`. Real Yes/No-aware Gamma-outcome resolution was considered
+//! and deliberately dropped, not deferred — see
+//! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
 //!
 //! **Subscription strategy — batched per event, not one call per bucket.** Same lesson as
 //! `siglab/doc/incident_ws_2026-07-13.md`: `polymarket_client_sdk_v2`'s `ConnectionManager`
@@ -41,6 +45,7 @@ use crate::bucket_reversal::{BucketReversalEngine, reversal_grid};
 use crate::market::{SharedClients, StalenessTick};
 use crate::record::{MarketKind, SiglabTradeRecord};
 use crate::snapshot::{MarketSnapshot, SharedSnapshots, update as update_snapshot};
+use crate::v_shape::{VShapeEngine, v_shape_grid};
 
 /// Static identity for one monitored event — bundled to keep `run_event_feed`/
 /// `run_event_supervisor` under clippy's argument-count limit. `log_key`/`snapshot_prefix`
@@ -204,6 +209,25 @@ async fn run_event_feed(
         })
         .collect();
 
+    // V-shape engines, one set per bucket, added 2026-07-17 (see
+    // doc/feature_v_2026-07-17.md) — `cycle_open` is deliberately never called on these,
+    // which permanently disables `VShapeEngine`'s cycle-end force-unwind branch
+    // (`cycle_end_ts` stays 0.0), leaving stop-loss/take-profit/timeout as the only exits —
+    // the same behavior model `BucketReversalEngine` already uses for these markets. Their
+    // `seen_high`/`seen_low_after_high` latches persist across the bucket's whole lifetime
+    // (only reset on a closed trade), unlike crypto's per-cycle reset via `cycle_open`.
+    let v_grid = v_shape_grid();
+    let mut v_engines: HashMap<U256, Vec<VShapeEngine>> = ids
+        .iter()
+        .map(|&token| {
+            let set = v_grid
+                .iter()
+                .map(|(id, params)| VShapeEngine::new(id.clone(), *params))
+                .collect();
+            (token, set)
+        })
+        .collect();
+
     loop {
         match merged_price_stream(&clob, ids.clone()) {
             Ok(stream) => {
@@ -235,6 +259,28 @@ async fn run_event_feed(
                         for engine in bucket_engines.iter_mut() {
                             if let Some(closed) = engine.on_tick(up, ts_secs) {
                                 let rec = SiglabTradeRecord::from_bucket_engine(
+                                    market_kind,
+                                    &engine.variant_id,
+                                    &display_name,
+                                    &key,
+                                    &slug,
+                                    closed.side_up,
+                                    closed.entry_ts,
+                                    closed.entry_price,
+                                    closed.exit_price,
+                                    closed.outcome,
+                                    closed.pnl,
+                                    now_secs_f64(),
+                                );
+                                let _ = trade_tx.send(rec);
+                            }
+                        }
+                    }
+
+                    if let Some(bucket_v_engines) = v_engines.get_mut(&asset_id) {
+                        for engine in bucket_v_engines.iter_mut() {
+                            if let Some(closed) = engine.on_tick(up, ts_secs) {
+                                let rec = SiglabTradeRecord::from_v_shape_engine(
                                     market_kind,
                                     &engine.variant_id,
                                     &display_name,

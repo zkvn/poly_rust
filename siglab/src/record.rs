@@ -92,11 +92,16 @@ impl SiglabTradeRecord {
 
     /// For `v_shape.rs`'s engine — same rationale as `from_bucket_engine` below (no
     /// `trader::types::TradeRecord` to convert from, since `VShapeEngine` never touches
-    /// `trader::machine::Machine` either), but `market_kind` is always `Crypto` (V-shape
-    /// only runs on crypto markets, unlike bucket_reversal which is weather/World-Cup-only)
-    /// and `strategy` is hardcoded `"v_shape"` instead of `"reversal"`.
+    /// `trader::machine::Machine` either). `market_kind` is caller-supplied (like
+    /// `from_bucket_engine`'s) since 2026-07-17 — `v_shape.rs`'s engine now also runs against
+    /// weather/World Cup buckets (never calling `cycle_open`, which permanently disables its
+    /// cycle-end force-unwind branch and leaves it behaviorally equivalent to
+    /// `bucket_reversal.rs` — see `doc/feature_v_2026-07-17.md`), not just crypto markets.
+    /// `strategy` stays hardcoded `"v_shape"` instead of `"reversal"` regardless of
+    /// `market_kind`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_v_shape_engine(
+        market_kind: MarketKind,
         variant_id: &str,
         asset: &str,
         market: &str,
@@ -111,7 +116,7 @@ impl SiglabTradeRecord {
     ) -> Self {
         Self {
             logged_at,
-            market_kind: MarketKind::Crypto,
+            market_kind,
             variant_id: variant_id.to_string(),
             asset: asset.to_string(),
             market: market.to_string(),
@@ -167,5 +172,54 @@ impl SiglabTradeRecord {
             outcome: outcome.to_string(),
             pnl,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `from_v_shape_engine` gained a caller-supplied `market_kind` parameter 2026-07-17 (see
+    /// `doc/feature_v_2026-07-17.md`) so `event_monitor.rs` can tag V-shape trades fired on
+    /// weather/World Cup buckets as such, rather than the old hardcoded `MarketKind::Crypto`.
+    /// Confirms both non-crypto kinds round-trip correctly and `strategy` stays `"v_shape"`
+    /// regardless of which market kind is passed.
+    #[test]
+    fn from_v_shape_engine_tags_non_crypto_market_kinds() {
+        let weather = SiglabTradeRecord::from_v_shape_engine(
+            MarketKind::Weather,
+            "v_0.7_0.3_0.7_0.3_0.05",
+            "weather",
+            "weather:hong-kong",
+            "hong-kong-2026-07-17",
+            true,
+            10.0,
+            0.70,
+            0.75,
+            "UNWIND",
+            0.05,
+            20.0,
+        );
+        assert!(matches!(weather.market_kind, MarketKind::Weather));
+        assert_eq!(weather.strategy, "v_shape");
+        assert_eq!(weather.side, "UP");
+
+        let worldcup = SiglabTradeRecord::from_v_shape_engine(
+            MarketKind::Worldcup,
+            "v_0.7_0.3_0.7_0.3_0.05",
+            "worldcup",
+            "worldcup:world-cup-winner",
+            "world-cup-winner",
+            false,
+            10.0,
+            0.70,
+            0.40,
+            "STOPLOSS",
+            -0.3,
+            20.0,
+        );
+        assert!(matches!(worldcup.market_kind, MarketKind::Worldcup));
+        assert_eq!(worldcup.strategy, "v_shape");
+        assert_eq!(worldcup.side, "DOWN");
     }
 }

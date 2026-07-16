@@ -679,7 +679,7 @@ fn render_config_section(
     }
     out.push_str("\n</details>\n\n");
 
-    out.push_str("<details>\n<summary>Crypto V-shape variants</summary>\n\n");
+    out.push_str("<details>\n<summary>V-shape variants (crypto + weather/World Cup)</summary>\n\n");
     out.push_str(
         "| variant | high1 | low | high2 | sl_pnl | unwind_pnl | unwind_time (s) | \
          trade_size ($) |\n\
@@ -724,12 +724,16 @@ fn render_config_section(
          reversal variants additionally force-close (labeled `UNWIND`) within 10s of the \
          market's own cycle-end regardless of holding time — weather/World Cup buckets have \
          no cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s \
-         doc comment). Crypto markets additionally run the 16-variant V-shape grid above via \
+         doc comment). All markets — crypto *and*, since 2026-07-17, weather/World Cup \
+         buckets too — additionally run the 16-variant V-shape grid above via \
          `v_shape.rs::VShapeEngine` — a self-contained engine like `bucket_reversal.rs` (no \
-         `gates.rs`, no delta_pct/Binance-direction requirement), but unlike that module it \
-         *does* track real cycle boundaries and reuses the same force-unwind-within-10s-of-\
-         cycle-end rule the reversal grid gets from `trader::machine::Machine` (see \
-         `v_shape.rs`'s doc comment).\n\n",
+         `gates.rs`, no delta_pct/Binance-direction requirement). On crypto it tracks real \
+         cycle boundaries and reuses the same force-unwind-within-10s-of-cycle-end rule the \
+         reversal grid gets from `trader::machine::Machine`; on weather/World Cup buckets it \
+         is simply never given a cycle, which permanently disables that branch, leaving \
+         stop-loss/take-profit/timeout as its only exits — the same exit model \
+         `bucket_reversal.rs` uses (see `v_shape.rs`'s doc comment and \
+         `doc/feature_v_2026-07-17.md`).\n\n",
     );
 
     out.push_str(CONFIG_MARKER_END);
@@ -766,10 +770,11 @@ fn summary_header(date: &str) -> String {
          staleness/CPU snapshots) live below. See\n\
          `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
          `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md` for what this harness does\n\
-         and does not claim. Weather and World Cup markets trade via a self-contained\n\
-         `bucket_reversal.rs` reversal engine (18 variants per bucket, no delta/Gamma/resolve —\n\
-         see that file's doc comment), separate from crypto's `trader::machine::Machine`\n\
-         (reversal grid) and `v_shape.rs` (V-shape grid).\n\n"
+         and does not claim. Weather and World Cup markets trade via self-contained\n\
+         `bucket_reversal.rs` reversal (18 variants/bucket) and `v_shape.rs` V-shape\n\
+         (16 variants/bucket) engines, no delta/Gamma/resolve (see those files' doc\n\
+         comments and `doc/feature_v_2026-07-17.md`) — separate from crypto's\n\
+         `trader::machine::Machine` (reversal grid).\n\n"
     )
 }
 

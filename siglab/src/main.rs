@@ -4,11 +4,13 @@
 //! `trader::machine::Machine` per (crypto market, configured variant) pair against live
 //! ticks, plus one self-contained `v_shape::VShapeEngine` per (crypto market, grid variant)
 //! pair, and logs paper trade-record outcomes to JSONL. Also drives one
-//! `bucket_reversal::BucketReversalEngine` per (weather/World Cup bucket, grid variant) pair
-//! — a separate, self-contained pure-price-action engine, not `Machine` — see
-//! `bucket_reversal.rs`'s doc comment for why. **No real orders, no parquet/raw tick
-//! recording.** Config, logs, and process are entirely standalone from `trader`/
-//! `price_feed` — see `siglab/config.rs`'s doc comment and
+//! `bucket_reversal::BucketReversalEngine` **and** one `v_shape::VShapeEngine` per
+//! (weather/World Cup bucket, grid variant) pair — separate, self-contained
+//! pure-price-action engines, not `Machine` — see `bucket_reversal.rs`'s doc comment for why,
+//! and `doc/feature_v_2026-07-17.md` for how `VShapeEngine` (originally crypto-only) was
+//! extended to buckets without any change to its own code (never given a cycle). **No real
+//! orders, no parquet/raw tick recording.** Config, logs, and process are entirely
+//! standalone from `trader`/`price_feed` — see `siglab/config.rs`'s doc comment and
 //! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
 //!
 //! Every hour (HKT), writes/updates `{report_dir}/{date}/summary_{date}.md` (day-level

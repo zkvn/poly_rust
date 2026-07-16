@@ -487,6 +487,63 @@ mod tests {
         assert!((closed.exit_price - 0.77).abs() < 1e-9);
     }
 
+    /// Weather/World Cup buckets (`event_monitor.rs`, added 2026-07-17 — see
+    /// `doc/feature_v_2026-07-17.md`) never call `cycle_open` at all, unlike crypto's
+    /// `market.rs`. Confirms the engine still enters/exits correctly via stop-loss/
+    /// take-profit/timeout with `cycle_end_ts` left at its `VShapeEngine::new` default of
+    /// 0.0 — i.e. it works exactly like `bucket_reversal::BucketReversalEngine` when no one
+    /// ever calls `cycle_open`.
+    #[test]
+    fn works_without_ever_calling_cycle_open() {
+        let mut e = VShapeEngine::new(
+            "v".to_string(),
+            VShapeParams {
+                high1: 0.7,
+                low: 0.3,
+                high2: 0.7,
+                sl_pnl: 0.3,
+                unwind_pnl: 0.05,
+            },
+        );
+        assert!(e.on_tick(0.75, 0.0).is_none()); // high1 latched
+        assert!(e.on_tick(0.25, 1.0).is_none()); // low latched (after high)
+        assert!(e.on_tick(0.70, 2.0).is_none()); // high2 crossed -> enters at up=0.70
+        assert!(e.is_holding());
+        let closed = e.on_tick(0.75, 3.0).unwrap(); // take-profit at 0.70 + 0.05
+        assert_eq!(closed.outcome, "UNWIND");
+        assert!(!e.is_holding());
+    }
+
+    /// Companion to `works_without_ever_calling_cycle_open`: since `cycle_end_ts` is never
+    /// set away from its 0.0 default, `cycle_end_ts - ts` (`0.0 - ts`) is negative for any
+    /// positive `ts`, which would trivially satisfy `<= FORCE_UNWIND_BEFORE_CYCLE_END_SECS`
+    /// on the very next tick after entry if the `self.cycle_end_ts > 0.0` guard preceding it
+    /// were ever removed or bypassed — i.e. this is the regression this guard exists to
+    /// prevent. Confirms a freshly-entered position (well within both the SL/TP band and the
+    /// 25s timeout) stays open on the very next tick rather than force-unwinding instantly.
+    #[test]
+    fn no_force_unwind_branch_without_cycle_open() {
+        let mut e = VShapeEngine::new(
+            "v".to_string(),
+            VShapeParams {
+                high1: 0.7,
+                low: 0.3,
+                high2: 0.7,
+                sl_pnl: 0.3,
+                unwind_pnl: 0.05,
+            },
+        );
+        e.on_tick(0.75, 0.0);
+        e.on_tick(0.25, 1.0);
+        e.on_tick(0.70, 2.0); // entry at up=0.70
+        assert!(e.is_holding());
+
+        // 1 second later, price unchanged from entry (well inside the SL floor of 0.40 and
+        // TP ceiling of 0.75, and nowhere near the 25s timeout) — must stay open.
+        assert!(e.on_tick(0.70, 3.0).is_none());
+        assert!(e.is_holding());
+    }
+
     #[test]
     fn cycle_open_resets_watching_latches_without_resolving_a_holding_position() {
         // Documents the contract: cycle_open alone does NOT force-close a held position —

@@ -21,14 +21,17 @@ core), but never reads or writes anything under `../trader/config`, `../trader/l
 - **Crypto markets**: fully tradeable — real `trader::machine::Machine` instances per
   `(market, variant)` pair (real Binance reference feed, real entry/exit/PnL simulation) for
   the `reversal`/`high_prob` grids, plus a self-contained `v_shape::VShapeEngine` per
-  `(market, variant)` pair for the 8-variant V-shape grid (pure CLOB price action, no
+  `(market, variant)` pair for the 16-variant V-shape grid (pure CLOB price action, no
   Binance/gates — see `src/v_shape.rs`'s doc comment).
-- **Weather and World Cup markets**: **monitoring only** — track live prices and feed
-  staleness per outcome bucket, but do **not** run them through `Machine`.
+- **Weather and World Cup markets**: tradeable too, but never through `Machine` —
   `Machine::cycle_close()` resolves via Binance-price-momentum, which would fabricate
   win/loss labels against these markets' real (station-reading / match-outcome) resolution.
-  See `src/event_monitor.rs`'s doc comment. (A plan to actually simulate trades for these too
-  is under review — see `doc/plan_weather_worldcup_trading_2026-07-13.md`.)
+  Instead, every bucket runs its own self-contained `bucket_reversal::BucketReversalEngine`
+  (18-variant reversal grid) **and**, since 2026-07-17, its own `v_shape::VShapeEngine`
+  (the same 16-variant V-shape grid crypto uses) — both close purely via observed price
+  action (stop-loss/take-profit/timeout), never a real Yes/No outcome. See
+  `src/event_monitor.rs`'s doc comment, `doc/plan_weather_worldcup_trading_2026-07-13.md`
+  (original reversal-only design), and `doc/feature_v_2026-07-17.md` (V-shape extension).
 - No real orders, ever. No parquet/raw tick recording — `price_feed` already owns that.
 
 <details>
@@ -322,9 +325,6 @@ trading it — before the first Docker deployment, so the resource-test numbers 
   show-environment` gives you there) or use that as the trigger to switch to the more robust
   deploy-key approach instead, especially if Oracle has no persistent interactive login
   session to piggyback on in the first place (likely, for a headless server).
-- **Weather/World Cup markets are monitoring-only; a plan to actually simulate trades for
-  them (reusing the 18-variant reversal grid + high_prob) is written and pending review** —
-  see `doc/plan_weather_worldcup_trading_2026-07-13.md`. Not started.
 - Memory growth under full load — see Incidents above — not root-caused, being watched
   rather than fixed for now.
 - Force-unwind-near-cycle-end (`trader::machine` and `v_shape.rs`, both at a 10s-before-cycle-end
@@ -354,8 +354,10 @@ siglab/
     config.rs                # standalone TOML schema
     market.rs / rotation.rs  # crypto market rotation + Machine + v_shape wiring
     bucket_reversal.rs        # self-contained reversal engine for weather/World Cup buckets
-    v_shape.rs                # self-contained V-shape engine for crypto markets
-    event_monitor.rs          # shared discovery/monitoring core (monitoring-only events)
+    v_shape.rs                # self-contained V-shape engine, crypto + (since 2026-07-17)
+                               #   weather/World Cup buckets too
+    event_monitor.rs          # shared discovery/monitoring core; drives bucket_reversal +
+                               #   v_shape per weather/World Cup bucket (not just monitoring)
     weather.rs / worldcup.rs  # thin wrappers over event_monitor for each event source
     staleness.rs              # observe-only staleness telemetry (per-class correlated check)
     snapshot.rs / report.rs / cgroup.rs   # shared state, per-day MD report, resource sampling
@@ -363,7 +365,8 @@ siglab/
   doc/
     local_resource_test_2026-07-13.md         # Docker resource baseline + fix history
     incident_ws_2026-07-13.md                  # full incident writeups (summarized above)
-    plan_weather_worldcup_trading_2026-07-13.md  # pending-review plan (not started)
+    plan_weather_worldcup_trading_2026-07-13.md  # bucket_reversal design (implemented)
+    feature_v_2026-07-17.md                      # V-shape extended to weather/World Cup
     report/                                    # {date}/summary_{date}.md + trades_{date}_{HH}.md (git-tracked)
 ```
 
