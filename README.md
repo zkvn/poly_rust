@@ -35,20 +35,44 @@ into a local SQLite file (`gamma_recorder/data/gamma.db`) by polling the Gamma A
 outcome table for potential future consumers (backtest validation, daily recon), not built yet.
 Full design: `gamma_recorder/doc/plan_gamma_recorder_2026-07-15.md`.
 
-- `cargo run --bin gamma_recorder -- resolve --backfill --from 2026-06-12 --to 2026-07-15` —
-  one-shot bulk backfill (paginates `/events/keyset`, cursor-based — see TODO below on why not
-  the plain offset-paginated `/events`).
-- `cargo run --bin gamma_recorder -- resolve` — long-running continuous mode: single periodic
-  sweep (30s) folding gap-reconciliation + due-row polling.
+### Quick start (local)
+
+```bash
+# One-shot backfill first (only needed once — continuous mode below also auto-backfills
+# on startup if gamma.db is empty):
+cd gamma_recorder
+cargo run --release -- resolve --backfill --from 2026-06-12 --to 2026-07-15 --db data/gamma.db
+
+# Then start the long-running recorder in the background:
+./scripts/run_local.sh
+tail -f logs/continuous.log
+
+# Stop it:
+kill $(cat gamma_recorder.pid)
+```
+
+`scripts/run_local.sh` mirrors `price_feed/scripts/run_collector.sh`'s pattern: builds
+`--release`, backgrounds with `nohup`, and writes a `gamma_recorder.pid` file so re-running it
+while already running fails loudly instead of starting a duplicate process.
+
+- Backfill mode (`--backfill --from ... --to ...`) paginates `/events/keyset` (cursor-based —
+  see TODO below on why not the plain offset-paginated `/events`), upserting every matching
+  updown-market event.
+- Continuous mode (no `--backfill` flag) runs a single periodic sweep (30s) folding
+  gap-reconciliation + due-row polling. Heartbeat log lines look like
+  `heartbeat: checked=N resolved=N seeded=N gap_recovered=N` — `seeded` is routine (new slots
+  closing on schedule, expected to tick up every few minutes) while `gap_recovered` should stay
+  0 except right after a real outage; a nonzero `gap_recovered` also gets its own loud
+  `gap recovered: {asset} {duration} — N missing slot(s) ...` log line.
 - Tracked asset list is derived dynamically from `price_feed/raw*/` filenames (`--assets` to
-  override).
+  override, e.g. `--assets BTC,ETH`).
 
 **Status as of 2026-07-15: local-only, not deployed to Oracle.** Backfilled 2026-06-12 →
 2026-07-15 (88,990 rows, 7 assets × 3 durations), spot-checked 15 random rows against live Gamma
 (0 mismatches), verified idempotent re-backfill (0 drift across 88,990 pre-existing rows), and
-soak-tested continuous mode locally. No Docker packaging / Cross.toml / systemd unit yet — the
-plan's §11 Docker-based validation gate is for pre-Oracle-deploy hardening, which wasn't in scope
-for this local-only pass; see TODO.
+soak-tested continuous mode locally (including a simulated outage/restart — see incidents below).
+No Docker packaging / Cross.toml / systemd unit yet — the plan's §11 Docker-based validation gate
+is for pre-Oracle-deploy hardening, which wasn't in scope for this local-only pass; see TODO.
 
 </details>
 
