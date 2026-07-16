@@ -1,6 +1,6 @@
 # Plan: daily recon — drop the dead CLOB-history table, resolve outcomes from gamma_recorder's local db first (2026-07-16)
 
-## Status: implementing (part 1 already shipped, this doc covers part 2)
+## Status: implemented (commit `dfcfbec`), verified. One follow-up open (below).
 
 ## Problem
 
@@ -179,3 +179,29 @@ Key decisions:
   live `gamma_recorder/data/gamma.db` and confirm identical outcomes/verdicts to the last
   (API-only) run — same 12 trades, same resolved/pending counts, same match rate. This is the real
   proof the swap is behavior-preserving, not just unit-test-clean.
+
+## Implemented — verification results
+
+- All 6 planned unit tests written (`FetchGammaOutcomeFromDbTests` in `test_trade_reconcile.py`) —
+  resolved/unresolved/missing-slug/missing-db-file/corrupt-db-file/direct-helper-return-value, all
+  pass. Full python suite: 137/137 (131 pre-existing + 6 new), unmodified — confirms
+  `annotate_rows`'s tests were insulated from the refactor as expected.
+- `gamma_recorder`: `cargo test` 24/24, `clippy --all-targets --all-features -- -D warnings` clean,
+  `cargo fmt --all --check` clean.
+- Live-db sanity check: `_fetch_gamma_outcome_from_db` against the real, running `gamma.db` —
+  `sol-updown-5m-1784141100` → `DOWN`, `btc-updown-5m-1784124900` → `UP`, both matching the
+  slug/outcome pairs already visible in the last report; an unknown slug correctly returned `None`
+  (would fall through to the API).
+  End-to-end: `trade_reconcile.py --today` regenerated against the live db — identical 12-trade
+  outcome set and 1/1 (100%) match rate to the prior (API-only) run. Report committed/pushed by
+  the script's own auto-commit as `c509b95`; code committed separately as `dfcfbec`.
+
+## Follow-up (not done, tracked in README `## TODO`)
+
+The new `idx_market_resolutions_slug` index only gets created the next time `gamma_recorder`'s
+`open()` runs (`init_schema`'s `CREATE INDEX IF NOT EXISTS`) — the currently-running process
+(started before this change, no supervisor/restart-on-crash) won't pick it up until it's next
+restarted. Correctness is unaffected in the meantime (`SELECT ... WHERE slug = ?` still works, just
+as an unindexed scan over ~91k rows — sub-second at this size). Restarting a long-running,
+un-supervised process wasn't something explicitly requested, so left running; restart with
+`gamma_recorder/scripts/run_local.sh` (after `cargo build --release`) whenever convenient.

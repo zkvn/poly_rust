@@ -217,6 +217,14 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`gamma_recorder`'s new `idx_market_resolutions_slug` index not yet live — added 2026-07-16,
+  pending a restart.** `trade_reconcile.py` now queries `market_resolutions` by `slug` (see
+  `trader/doc/plan_daily_recon_gamma_db_2026-07-16.md`), and the matching index was added to
+  `init_schema`, but the currently-running `gamma_recorder` process (started before this change,
+  no crash-supervisor) only creates it on its next `open()`/restart. Not a correctness issue in the
+  meantime (unindexed scan over ~91k rows, still sub-second) — restarting a long-running process
+  wasn't explicitly requested so left running. Restart via `gamma_recorder/scripts/run_local.sh`
+  (after `cargo build --release`) whenever convenient.
 - **`gamma_recorder` has no Docker/Cross.toml/systemd packaging yet — deferred 2026-07-15.**
   The plan doc's §11 Docker-based CPU/memory soak-test gate and §5/§9's `Cross.toml`/systemd unit
   are specced for the pre-Oracle-deploy hardening pass; today's task was explicitly local-only
