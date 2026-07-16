@@ -914,6 +914,43 @@ code). Summary:
 <details>
 <summary><strong>Trading engine — known incidents</strong></summary>
 
+## Cron jobs
+
+All scheduled automation for this project, in one place. Two different mechanisms are in play —
+know which one a given job uses before debugging it.
+
+### User crontab (`crontab -l`, runs as `kev`)
+
+| Schedule | Job | Script | Log |
+|---|---|---|---|
+| `0 18 * * *` | Daily pull of `raw*/` parquet from Oracle to local | `price_feed/scripts/sync_oracle.sh` | `price_feed/scripts/sync_oracle.log` |
+| `20 */2 * * *` | Trade reconciliation (syncs `trader/live_logs` from Oracle, runs `trade_reconcile.py --today`, auto-commits+pushes the result) | `trader/scripts/bash/run_daily_recon.bash` | `trader/log/recon_cron.log` |
+
+Both are host-level cron entries and depend on the system `cron.service` being up — see the
+outage incident below for what that outage looked like and how it's now guarded
+(`cron-watchdog.service`/`.timer`). Ad-hoc run: `bash trader/scripts/bash/run_daily_recon.bash`
+(idempotent — reconciles a full rolling 8pm–8pm HKT window each time, safe to re-run).
+
+### systemd `--user` timer (not cron — survives cron.service outages)
+
+| Timer | Cadence | Job | Service |
+|---|---|---|---|
+| `siglab-report-push.timer` | every 15 min | `git add`+commit+push any changed `siglab/doc/report/**/*.md` | `siglab-report-push.service` → runs `siglab/scripts/push_report.sh` |
+
+Installed once via `siglab/scripts/install_timer.sh` (bakes in the installing shell's
+`SSH_AUTH_SOCK` — re-run after a reboot/re-login if pushes start failing auth). The report
+*content* itself is written by the `siglab` Docker container directly to the bind-mounted
+`siglab/doc/report/` (as root, inside the container) — this timer only handles the git side, on
+the host, as `kev`. Inspect: `systemctl --user list-timers siglab-report-push.timer`,
+`journalctl --user -u siglab-report-push.service`.
+
+### siglab Docker rebuild (manual, not scheduled)
+
+Not a cron job, but the deploy step that follows a `siglab` code change: `siglab/scripts/deploy_local.sh`
+runs `cargo test`/`clippy`/`fmt --check` then `docker compose -f siglab/docker-compose.yml up --build -d`
+to rebuild the image and restart the `siglab-siglab-1` container so it picks up the new binary
+(`--skip-checks` to skip the Rust checks, `--logs` to follow container logs after restart).
+
 ## Trading engine — known incidents
 
 ### Host `cron.service` was dead for ~9h (06:25–15:22), silently skipping this project's cron jobs (2026-07-16, fixed)
