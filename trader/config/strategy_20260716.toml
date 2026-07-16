@@ -1,0 +1,177 @@
+# meta
+ts = "2026-07-16T00:00:00+08:00"
+source = "btc_5mins studies/unwind_safely/summary_2026-07-16_low03_high055_halt1_dailywf.md — reversal_low_threshold=0.3/reversal=0.55 candidate combo (delta_pct_rev=0.0004, unwind_pnl_rev=0.15, sl_pnl_rev=0.30, unwind_time_rev=25) re-tested at halt_rev=1 and live-config fidelity (active sl_reversal=0.10, reversal_start_time=120 — both held at their actual live values instead of the study's disabled-defaults convention, per user's explicit choice) across full price history, with a daily OOS consistency breakdown layered on top (not a Cal->OOS parameter-reselection walk-forward — the combo was fixed before this run, chosen by hand from a 6-value delta_pct_rev grid earlier in the same chat thread and never re-compared under halt=1 conditions). Applied to BTC/SOL/DOGE (trade_assets narrowed to these three per user's explicit instruction, dropping BNB from strategy_20260715.toml's BTC/BNB/SOL); BNB/ETH/XRP now watch-only again. Full-history halt=1 numbers: BTC 222 trades/80.2% win_rate/pnl=21.25, SOL 275/78.2%/27.13, DOGE 253/77.1%/21.23 — vs BNB 199/73.9%/13.13, XRP 201/71.1%/10.79, ETH 189/69.3%/8.58 (BNB/XRP/ETH retained only ~35-39% of their halt=2 PnL once the halt=1 + active absolute stop-loss were modeled; BTC/SOL/DOGE retained 50-80%). Caveats NOT resolved by this deploy, carried over honestly from the summary doc: single full-history period only (no held-out later period exists yet), delta_pct_rev=0.0004 was only ever compared against 0.0003 under the old halt=2/disabled-sl_reversal settings (not re-checked under halt=1 live-fidelity conditions), and reversal_low_threshold=0.3/reversal=0.55 are applied uniformly across BTC/SOL/DOGE rather than per-asset-tuned the way most other reversal params in this file are."
+
+# Trade assets: BTC, SOL, DOGE — reversal only (see [strategies] below).
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "SOL", "DOGE"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Trade size
+[trade_size_usdc]
+default = 1.0
+
+# Reversal only — all traded assets.
+[strategies]
+default = ["reversal"]
+
+# --- Halt ---
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — BTC/SOL/DOGE now share one candidate combo from
+# btc_5mins studies/unwind_safely/summary_2026-07-16_low03_high055_halt1_dailywf.md
+# (see meta.source above for the full rationale + caveats). sl_reversal,
+# reversal_start_time, halt_rev, halt_reset_hour_rev, price_high_rev held
+# unchanged at their strategy_20260715.toml live values throughout that
+# validation run. ETH/BNB/XRP keep their prior strategy_20260715.toml
+# per-asset values unchanged (watch-only, not traded, so inert).
+[delta_pct_rev]
+default = 0.0003
+BTC = 0.0004
+ETH = 0.0006
+SOL = 0.0004
+BNB = 0.0008
+DOGE = 0.0004
+
+[reversal]
+default = 0.60
+BTC = 0.55
+SOL = 0.55
+BNB = 0.50
+XRP = 0.65
+DOGE = 0.55
+
+[reversal_low_threshold]
+default = 0.20
+BTC = 0.30
+SOL = 0.30
+DOGE = 0.30
+
+[sl_reversal]
+default = 0.10
+
+[unwind_pnl_rev]
+default = 0.10
+BTC = 0.15
+SOL = 0.15
+DOGE = 0.15
+
+[sl_pnl_rev]
+default = 0.30
+BNB = 0.40
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. 0 = disabled.
+[unwind_time_rev]
+default = 25.0
+XRP = 20.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# Gamma resolution watcher cadence (2026-07-09) — Gamma "usually won't give you
+# anything until 20-60s after cycle end" (see incident_DOGE_wrong_result doc),
+# so don't start polling immediately; wait gamma_poll_delay_secs, then retry
+# every gamma_poll_interval_secs until gamma_poll_deadline_secs gives up.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
+
+# --- High-prob strategy — carried over unchanged; not currently traded (see [strategies] above) ---
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+
+# Max holding time (seconds), high_prob.
+[unwind_time_hp]
+default = 30.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long]
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249
