@@ -130,6 +130,29 @@ struct BbaSample {
     received_at_ms: i64,
 }
 
+/// Whether a new best-bid/ask update should replace the cached one — guards against
+/// `spawn_bba_task`'s `stream::select` merge yielding an out-of-order message (a stale
+/// `price_change`/`best_bid_ask` update arriving locally after a fresher one from the other
+/// channel, silently overwriting it — see `doc/plan_bba_merge_ordering_fix_2026-07-16.md`).
+///
+/// `new_server_ts_ms <= 0` is treated as "no usable timestamp" and always accepted — a
+/// zero/negative placeholder should never permanently block real updates (not observed in
+/// practice, but a cheap defensive check). Ties (`==`) are accepted (`>=`, not `>`) so a
+/// same-millisecond update from either channel is never stuck behind the other — this can
+/// occasionally let a batch-derived `price_change` value overwrite a same-instant direct
+/// `best_bid_ask` one, but the two should report the same real price at that point, and biasing
+/// toward acceptance avoids freezing on whichever happened to arrive first.
+fn should_accept_bba_update(existing_server_ts_ms: Option<i64>, new_server_ts_ms: i64) -> bool {
+    if new_server_ts_ms <= 0 {
+        return true;
+    }
+    match existing_server_ts_ms {
+        None => true,
+        Some(existing) if existing <= 0 => true,
+        Some(existing) => new_server_ts_ms >= existing,
+    }
+}
+
 // ── Gamma asset discovery ─────────────────────────────────────────────────────
 
 async fn discover_assets(http: &reqwest::Client) -> Result<Vec<String>> {
@@ -1176,17 +1199,37 @@ fn spawn_bba_task(
                                 if let Some(&(_, idx)) = map.iter().find(|(id, _)| *id == asset_id)
                                 {
                                     let received_at_ms = now_ms();
-                                    // Release lock before any await.
-                                    {
+                                    // Release lock before any await. `accepted` guards both the
+                                    // cache write below and the NATS publish that follows — a
+                                    // stale out-of-order message must not reach either (see
+                                    // should_accept_bba_update's doc comment and
+                                    // doc/plan_bba_merge_ordering_fix_2026-07-16.md).
+                                    let accepted = {
                                         let mut st = state.lock().unwrap();
-                                        if idx < st.len() {
-                                            st[idx].latest_bba = Some(BbaSample {
-                                                best_bid: bid,
-                                                best_ask: ask,
-                                                server_ts_ms,
-                                                received_at_ms,
-                                            });
+                                        if idx >= st.len() {
+                                            false
+                                        } else {
+                                            let existing_ts =
+                                                st[idx].latest_bba.map(|b| b.server_ts_ms);
+                                            if should_accept_bba_update(existing_ts, server_ts_ms) {
+                                                st[idx].latest_bba = Some(BbaSample {
+                                                    best_bid: bid,
+                                                    best_ask: ask,
+                                                    server_ts_ms,
+                                                    received_at_ms,
+                                                });
+                                                true
+                                            } else {
+                                                false
+                                            }
                                         }
+                                    };
+                                    if !accepted {
+                                        eprintln!(
+                                            "[{}] stale bba/price update rejected: server_ts_ms={server_ts_ms}",
+                                            assets.get(idx).map(String::as_str).unwrap_or("?")
+                                        );
+                                        continue;
                                     }
                                     if let Some(ref nc) = nats
                                         && idx < assets.len()
@@ -1738,6 +1781,57 @@ mod tests {
             payload,
             r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"server_ts":null}"#
         );
+    }
+
+    // ── should_accept_bba_update / spawn_bba_task merge-ordering guard ─────
+    // doc/plan_bba_merge_ordering_fix_2026-07-16.md
+
+    #[test]
+    fn bba_update_first_sample_always_accepted() {
+        assert!(should_accept_bba_update(None, 1_000));
+    }
+
+    #[test]
+    fn bba_update_newer_timestamp_accepted() {
+        assert!(should_accept_bba_update(Some(1_000), 1_001));
+    }
+
+    #[test]
+    fn bba_update_older_timestamp_rejected() {
+        assert!(!should_accept_bba_update(Some(1_001), 1_000));
+    }
+
+    #[test]
+    fn bba_update_equal_timestamp_accepted() {
+        // Ties favor acceptance (>=, not >) so a same-millisecond update from either channel
+        // never gets stuck behind the other.
+        assert!(should_accept_bba_update(Some(1_000), 1_000));
+    }
+
+    #[test]
+    fn bba_update_zero_or_negative_new_timestamp_always_accepted() {
+        // A missing/placeholder timestamp on the incoming message must never permanently
+        // block real updates.
+        assert!(should_accept_bba_update(Some(1_000), 0));
+        assert!(should_accept_bba_update(Some(1_000), -1));
+    }
+
+    #[test]
+    fn bba_update_zero_or_negative_existing_timestamp_always_accepts_next() {
+        // A previously-cached placeholder/missing timestamp must not block the next real one.
+        assert!(should_accept_bba_update(Some(0), 5));
+        assert!(should_accept_bba_update(Some(-1), 5));
+    }
+
+    #[test]
+    fn bba_update_far_out_of_order_message_rejected() {
+        // A price_change batch describing a much older book state arriving late (the exact
+        // mechanism behind the 2026-07-16 BNB incident) must not clobber a fresher
+        // best_bid_ask reading.
+        assert!(!should_accept_bba_update(
+            Some(1_784_138_990_000),
+            1_784_138_980_022
+        ));
     }
 
     // ── ParquetBuf / open_for_hour guard rail ──────────────────────────────

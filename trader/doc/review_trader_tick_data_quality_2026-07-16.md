@@ -5,6 +5,16 @@ entry-price gap that couldn't be conclusively attributed to a real sub-200ms mar
 possible artifact of how `trader::marketdata` assembles its poly ticks. This is a design review
 of that pipeline and its neighbors, not a fix — no code is changed here.
 
+**Update 2026-07-16: §1's top finding is fixed.** The unordered `stream::select` merge (both
+here and in `price_feed::collect.rs::spawn_bba_task`, which turned out to have the identical
+pattern and a much larger blast radius — it permanently corrupts recorded parquet data, not just
+a live moment) is now guarded by a `server_ts_ms`-based ordering check, reviewed by DeepSeek
+before implementation and deployed to Oracle + `siglab`. Full writeup, including a production
+observation that the guard rejects ~50% of raw merged messages (confirming this was a
+high-frequency issue, not a rare race):
+`price_feed/doc/plan_bba_merge_ordering_fix_2026-07-16.md`. The rest of this document's findings
+(§2-6) remain open/unimplemented, as originally scoped.
+
 **Scope:** `trader/src/marketdata.rs` (`spawn_poly_task`, `spawn_binance_task`, `PolySub`),
 `trader/src/types.rs` (`PolyTick`, `BinanceTick`), `trader/src/signal/*.rs` (`LatestPolySignal`,
 `SpreadSignal`, `DeltaPctSignal`), `trader/src/gates.rs` (`check_gates`). Consumers

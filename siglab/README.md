@@ -192,6 +192,21 @@ issue applies there independently — see the TODO below.
 
 Full writeups in `doc/incident_ws_2026-07-13.md` unless noted.
 
+### 2026-07-16 — WS stream-merge could silently overwrite a fresh price with a stale one — **fixed, root cause of the incident below**
+Follow-up investigation (see the entry below) found the real root cause one layer deeper than
+"not a bug": `trader::marketdata::spawn_poly_task` and `price_feed::collect.rs::spawn_bba_task`
+both merge two WS subscriptions (`best_bid_ask` + `price_changes`) via `futures::stream::select`,
+which has no ordering guarantee — a stale message from one channel could silently overwrite a
+fresher one from the other, both live (feeding `siglab`/`bin/live.rs`'s NATS path) and
+permanently (baked into `price_feed`'s sealed hourly parquet, which `trader/backtest_prices/`
+copies verbatim — so backtest results inherited the same corruption with no way to detect it).
+Fixed by guarding both merges with a `server_ts_ms`-based "only accept if newer-or-equal" check
+(the CLOB SDK already provides this timestamp on both message types; it was simply never read).
+Deployed to `price_feed` on Oracle (`poly-collector.service`) and rebuilt into `siglab`'s
+container. In production, the guard rejected ~50% of raw merged poly messages in the first
+minutes post-deploy — confirming this was a routine, high-frequency event, not a rare
+millisecond-scale race. Full writeup: `price_feed/doc/plan_bba_merge_ordering_fix_2026-07-16.md`.
+
 ### 2026-07-16 — `reversal` and `v_shape` sharing entry/exit timestamps on BNB-5m — **investigated, not a bug**
 12 `reversal` variants and 8 `v_shape` variants (two separate engines — `v_shape` never touches
 `trader::machine::Machine` or Binance) logged the identical millisecond `entry_ts`, and a subset
@@ -312,14 +327,6 @@ trading it — before the first Docker deployment, so the resource-test numbers 
   see `doc/plan_weather_worldcup_trading_2026-07-13.md`. Not started.
 - Memory growth under full load — see Incidents above — not root-caused, being watched
   rather than fixed for now.
-- **`trader::marketdata::spawn_poly_task` merges two independently-arriving WS streams
-  (`best_bid_ask` + `price_changes`) into one `(bid, ask)` pair with no verified atomicity
-  guarantee** — found 2026-07-16 investigating the `reversal`/`v_shape` correlated-timestamp
-  report (see Incidents above), where a single entry tick's price didn't match
-  `price_feed`'s independently-archived book/poly data by ~4.5¢ and couldn't be conclusively
-  attributed given that archive's 200ms sampling. Needs either an audit of
-  `polymarket_client_sdk_v2`'s `PriceChangeBatchEntry` guarantees or raw per-message (not
-  resampled) logging to close out. Full writeup: `doc/incident_signal_2026-07-16.md`.
 - Force-unwind-near-cycle-end (`trader::machine` and `v_shape.rs`, both at a 10s-before-cycle-end
   threshold) fills at the raw mid-price with no spread/liquidity check — noticed 2026-07-16 in a
   cycle that had spreads as wide as 0.80 a few minutes earlier, so paper PnL near cycle-end in

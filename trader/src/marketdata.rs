@@ -150,6 +150,32 @@ pub fn spawn_binance_task(asset: &str, tx: mpsc::UnboundedSender<BinanceTick>) {
 
 // ── Polymarket poly (best-bid/ask) ticks ──────────────────────────────────────
 
+/// Whether a new best-bid/ask update should be accepted — guards against `spawn_poly_task`'s
+/// `stream::select` merge yielding an out-of-order message (a stale `price_change`/
+/// `best_bid_ask` update arriving locally after a fresher one from the other channel, silently
+/// overwriting it — see `price_feed/doc/plan_bba_merge_ordering_fix_2026-07-16.md`, which this
+/// mirrors; `price_feed::collect.rs` has the identical guard under the name
+/// `should_accept_bba_update`, not shared code since the two crates have no common internal
+/// module for this).
+///
+/// `new_server_ts_ms <= 0` is treated as "no usable timestamp" and always accepted — a
+/// zero/negative placeholder should never permanently block real updates. Ties (`==`) are
+/// accepted (`>=`, not `>`) so a same-millisecond update from either channel is never stuck
+/// behind the other.
+fn should_accept_poly_update(
+    last_accepted_server_ts_ms: Option<i64>,
+    new_server_ts_ms: i64,
+) -> bool {
+    if new_server_ts_ms <= 0 {
+        return true;
+    }
+    match last_accepted_server_ts_ms {
+        None => true,
+        Some(last) if last <= 0 => true,
+        Some(last) => new_server_ts_ms >= last,
+    }
+}
+
 /// Subscribe to best_bid_ask + price_change for the UP token and forward merged
 /// `PolyTick { up, dn = 1-up }` samples on `tx`. Runs until the token set changes
 /// (caller aborts the returned JoinHandle to rotate).
@@ -171,30 +197,44 @@ pub fn spawn_poly_task(
                     // matching price_feed/src/collect.rs's proven pattern.
                     let bba_u = bba.filter_map(move |r| async move {
                         r.ok().and_then(|m| {
-                            (m.asset_id == up_id).then(|| (d2f(&m.best_bid), d2f(&m.best_ask)))
+                            (m.asset_id == up_id)
+                                .then(|| (d2f(&m.best_bid), d2f(&m.best_ask), m.timestamp))
                         })
                     });
                     let pc_u = pc.flat_map(move |r| {
-                        let items: Vec<(f64, f64)> = match r {
-                            Ok(p) => p
-                                .price_changes
-                                .into_iter()
-                                .filter(|e| e.asset_id == up_id)
-                                .filter_map(|e| match (e.best_bid, e.best_ask) {
-                                    (Some(b), Some(a)) => Some((d2f(&b), d2f(&a))),
-                                    _ => None,
-                                })
-                                .collect(),
+                        let items: Vec<(f64, f64, i64)> = match r {
+                            Ok(p) => {
+                                let ts = p.timestamp;
+                                p.price_changes
+                                    .into_iter()
+                                    .filter(|e| e.asset_id == up_id)
+                                    .filter_map(|e| match (e.best_bid, e.best_ask) {
+                                        (Some(b), Some(a)) => Some((d2f(&b), d2f(&a), ts)),
+                                        _ => None,
+                                    })
+                                    .collect()
+                            }
                             Err(_) => Vec::new(),
                         };
                         futures::stream::iter(items)
                     });
 
                     let mut merged = futures::stream::select(Box::pin(bba_u), Box::pin(pc_u));
-                    while let Some((bid, ask)) = merged.next().await {
+                    // Scoped to this reconnect attempt, not carried across reconnects — a fresh
+                    // subscription is a fresh stream, so the first post-reconnect message should
+                    // always be accepted regardless of what was cached before the drop.
+                    let mut last_accepted_server_ts_ms: Option<i64> = None;
+                    while let Some((bid, ask, server_ts_ms)) = merged.next().await {
                         if !bid.is_finite() || !ask.is_finite() || bid <= 0.0 || ask <= 0.0 {
                             continue;
                         }
+                        if !should_accept_poly_update(last_accepted_server_ts_ms, server_ts_ms) {
+                            eprintln!(
+                                "stale poly bba/price update rejected: server_ts_ms={server_ts_ms}"
+                            );
+                            continue;
+                        }
+                        last_accepted_server_ts_ms = Some(server_ts_ms);
                         let up = (bid + ask) / 2.0;
                         if tx
                             .send(PolyTick {
@@ -243,5 +283,56 @@ impl PolySub {
 impl Drop for PolySub {
     fn drop(&mut self) {
         self.handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── should_accept_poly_update / spawn_poly_task merge-ordering guard ───
+    // price_feed/doc/plan_bba_merge_ordering_fix_2026-07-16.md
+
+    #[test]
+    fn poly_update_first_sample_always_accepted() {
+        assert!(should_accept_poly_update(None, 1_000));
+    }
+
+    #[test]
+    fn poly_update_newer_timestamp_accepted() {
+        assert!(should_accept_poly_update(Some(1_000), 1_001));
+    }
+
+    #[test]
+    fn poly_update_older_timestamp_rejected() {
+        assert!(!should_accept_poly_update(Some(1_001), 1_000));
+    }
+
+    #[test]
+    fn poly_update_equal_timestamp_accepted() {
+        assert!(should_accept_poly_update(Some(1_000), 1_000));
+    }
+
+    #[test]
+    fn poly_update_zero_or_negative_new_timestamp_always_accepted() {
+        assert!(should_accept_poly_update(Some(1_000), 0));
+        assert!(should_accept_poly_update(Some(1_000), -1));
+    }
+
+    #[test]
+    fn poly_update_zero_or_negative_last_accepted_timestamp_always_accepts_next() {
+        assert!(should_accept_poly_update(Some(0), 5));
+        assert!(should_accept_poly_update(Some(-1), 5));
+    }
+
+    #[test]
+    fn poly_update_far_out_of_order_message_rejected() {
+        // A price_change batch describing a much older book state arriving late (the exact
+        // mechanism behind the 2026-07-16 BNB incident) must not clobber a fresher
+        // best_bid_ask reading.
+        assert!(!should_accept_poly_update(
+            Some(1_784_138_990_000),
+            1_784_138_980_022
+        ));
     }
 }

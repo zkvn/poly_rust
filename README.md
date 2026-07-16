@@ -916,6 +916,25 @@ code). Summary:
 
 ## Trading engine — known incidents
 
+### WS stream-merge could silently overwrite a fresh price with a stale one — corrupted recorded data and exposed live trading (2026-07-16, fixed)
+
+Investigating an "impossible" `siglab` incident (reversal/v_shape strategies logging identical
+entry/exit timestamps on BNB-5m — see `siglab/README.md`'s Incidents) surfaced a deeper root
+cause. Both `trader::marketdata::spawn_poly_task` and `price_feed::collect.rs::spawn_bba_task`
+merge two CLOB WS subscriptions (`best_bid_ask` + `price_changes`) via `futures::stream::select`,
+which has no ordering guarantee — a stale message from one channel could silently overwrite a
+fresher one from the other. This corrupted `price_feed`'s permanently-sealed hourly parquet (and
+everything `trader/backtest_prices/` / backtest replay derives from it downstream), and fed the
+same stale prices into `bin/live.rs`'s production NATS trading path. Fixed by guarding both
+merges with a `server_ts_ms`-based "accept only if newer-or-equal" check — both CLOB message
+types already carry this timestamp; it was simply never read. Plan reviewed by DeepSeek before
+implementation, 14 new regression tests across `price_feed`/`trader`, deployed to Oracle
+(`price_feed` only — deliberately not `trader-live.service`, which always runs the unaffected
+NATS path) and rebuilt into `siglab`'s container. In production, the guard rejected ~50% of raw
+merged poly messages in the first minutes post-deploy, confirming this was a routine,
+high-frequency event, not a rare millisecond-scale race. Full writeup:
+`price_feed/doc/plan_bba_merge_ordering_fix_2026-07-16.md`.
+
 ### Take-profit close `n_attempts` undercounted retries; settlement-lag race hammered the CLOB API (2026-07-16, fixed)
 
 A BTC take-profit close reported `n_attempts=1 process_latency=2891ms` — misleadingly clean-looking
