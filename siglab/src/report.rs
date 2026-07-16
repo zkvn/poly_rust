@@ -157,6 +157,98 @@ struct MarketStrategyAgg {
     unwind: u32,
 }
 
+#[derive(Default)]
+struct VariantPerf {
+    trades: u32,
+    wins: u32,
+    pnl: f64,
+}
+
+impl VariantPerf {
+    fn win_rate(&self) -> f64 {
+        if self.trades == 0 {
+            0.0
+        } else {
+            self.wins as f64 / self.trades as f64
+        }
+    }
+
+    fn pnl_per_trade(&self) -> f64 {
+        if self.trades == 0 {
+            0.0
+        } else {
+            self.pnl / self.trades as f64
+        }
+    }
+}
+
+/// "Top performing strategies" — three top-5 leaderboards (by total pnl, by win rate, by
+/// pnl per trade) over the same variant-level aggregation as `render_variant_totals_summary`
+/// (summed across every market a variant trades). "Win" here means `pnl > 0`, not the `WIN`
+/// outcome label — post-2026-07-14 `FORCE_UNWIND_BEFORE_CYCLE_END_SECS`, almost every exit is
+/// STOPLOSS/TIMEOUT/UNWIND, so a WIN-outcome-only win rate would be close to undefined. Shown
+/// right after `### Strategy config` in `render_summary_body`, computed from the same
+/// `day_trades` window as `## Day summary` below it. Added 2026-07-16 per explicit request.
+fn render_top_strategies_section(trades: &[SiglabTradeRecord]) -> String {
+    let mut out = String::from("### Top performing strategies\n\n");
+
+    let mut agg: HashMap<String, VariantPerf> = HashMap::new();
+    for t in trades {
+        let entry = agg.entry(t.variant_id.clone()).or_default();
+        entry.trades += 1;
+        entry.pnl += t.pnl;
+        if t.pnl > 0.0 {
+            entry.wins += 1;
+        }
+    }
+    if agg.is_empty() {
+        out.push_str("_No trades yet today._\n\n");
+        return out;
+    }
+    let rows: Vec<(String, VariantPerf)> = agg.into_iter().collect();
+
+    out.push_str(&render_leaderboard("Top 5 by total pnl", &rows, |p| p.pnl));
+    out.push_str(&render_leaderboard("Top 5 by win rate", &rows, |p| {
+        p.win_rate()
+    }));
+    out.push_str(&render_leaderboard("Top 5 by pnl per trade", &rows, |p| {
+        p.pnl_per_trade()
+    }));
+    out
+}
+
+/// One leaderboard table within `render_top_strategies_section`, sorted descending by `key`
+/// and truncated to the top 5 rows.
+fn render_leaderboard(
+    title: &str,
+    rows: &[(String, VariantPerf)],
+    key: impl Fn(&VariantPerf) -> f64,
+) -> String {
+    let mut sorted: Vec<&(String, VariantPerf)> = rows.iter().collect();
+    sorted.sort_by(|a, b| {
+        key(&b.1)
+            .partial_cmp(&key(&a.1))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut out = format!("**{title}**\n\n");
+    out.push_str(
+        "| variant | trades | win rate | pnl/trade | total pnl |\n\
+         |---|---|---|---|---|\n",
+    );
+    for (variant, p) in sorted.into_iter().take(5) {
+        out.push_str(&format!(
+            "| {variant} | {} | {:.1}% | {:.4} | {:.4} |\n",
+            p.trades,
+            p.win_rate() * 100.0,
+            p.pnl_per_trade(),
+            p.pnl,
+        ));
+    }
+    out.push('\n');
+    out
+}
+
 /// Aggregated PnL by (market, strategy), shown *above* the per-market trade tables — this
 /// answers "how did each market/strategy combo do," the per-market tables below answer "what
 /// happened." Note this aggregates by `strategy` (`"reversal"`/`"high_prob"`), not by the
@@ -713,12 +805,31 @@ fn render_summary_body(
 ) -> String {
     let mut s = summary_header(date);
     s.push_str(&render_config_section(cfg, weather_cities, worldcup_events));
+    s.push_str(&render_top_strategies_section(day_trades));
     s.push_str("## Day summary\n\n");
-    s.push_str(&render_trade_summary(day_trades));
-    s.push_str(&render_variant_summary(day_trades));
-    s.push_str(&render_variant_totals_summary(day_trades));
+    s.push_str(&collapsible_day_summary(&render_trade_summary(day_trades)));
+    s.push_str(&collapsible_day_summary(&render_variant_summary(
+        day_trades,
+    )));
+    s.push_str(&collapsible_day_summary(&render_variant_totals_summary(
+        day_trades,
+    )));
     s.push_str(&render_hour_index(dir, date, day_trades));
     s
+}
+
+/// Wraps a `#### Title\n\n<body>` block (as produced by `render_trade_summary` and its two
+/// siblings) in a collapsible `<details>`, keeping the original title text as the visible
+/// `<summary>`. Used only for the day-level `## Day summary` section — a full day's variant
+/// breakdown can run to well over a thousand rows, and with three of these stacked back to
+/// back the file became unwieldy to scroll through (2026-07-16). The same three functions
+/// are also used per-hour in `render_hour_trades_section`, which stays small enough to leave
+/// expanded as-is.
+fn collapsible_day_summary(section: &str) -> String {
+    let (title_line, rest) = section.split_once('\n').unwrap_or((section, ""));
+    let title = title_line.trim_start_matches('#').trim();
+    let body = rest.trim_start_matches('\n');
+    format!("<details>\n<summary>{title}</summary>\n\n{body}</details>\n\n")
 }
 
 /// An "Hours" index table: one row per `trades_{date}_{HH}.md` file that actually exists on
@@ -853,6 +964,54 @@ pub fn regenerate_from_trade_log(
             worldcup_events,
             &day_trades,
         );
+        std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
+        written.push(s_path);
+    }
+    Ok(written)
+}
+
+/// One-off: rebuild every `report_dir/{date}/summary_{date}.md` from the trade log's ground
+/// truth, WITHOUT touching any `trades_{date}_{HH}.md` file. Unlike
+/// `regenerate_from_trade_log`, which rewrites both and in doing so discards each hour's real
+/// market-state/staleness/CPU snapshots (not recoverable from the trade log alone), this only
+/// ever reads `trades_{date}_{HH}.md` filenames (via `render_hour_index`) to build the hour
+/// index table — it never writes them. Use this to backfill a summary-only rendering change
+/// (e.g. a new day-level section) into already-written days without disturbing their
+/// hour-level history. `since_date`, if set, skips any date before it. Added 2026-07-16 to
+/// backfill the collapsible day-summary sections + "Top performing strategies" table.
+pub fn regenerate_summaries_from_trade_log(
+    trade_log_path: &Path,
+    report_dir: &Path,
+    cfg: &SiglabConfig,
+    weather_cities: &[String],
+    worldcup_events: &[String],
+    since_date: Option<NaiveDate>,
+) -> Result<Vec<PathBuf>> {
+    let all_trades = recent_trades(trade_log_path, 0.0);
+
+    let mut day_trades: std::collections::BTreeMap<String, Vec<SiglabTradeRecord>> =
+        std::collections::BTreeMap::new();
+    for t in all_trades {
+        let Some(dt) = Utc
+            .timestamp_opt(t.logged_at.trunc() as i64, 0)
+            .single()
+            .map(|d| d.with_timezone(&hkt()))
+        else {
+            continue;
+        };
+        let date_naive = dt.date_naive();
+        if since_date.is_some_and(|since| date_naive < since) {
+            continue;
+        }
+        let date = dt.format("%Y-%m-%d").to_string();
+        day_trades.entry(date).or_default().push(t);
+    }
+
+    let mut written = Vec::new();
+    for (date, trades) in day_trades.iter().rev() {
+        let dir = day_dir(report_dir, date);
+        let s_path = summary_path(report_dir, date);
+        let s_body = render_summary_body(date, &dir, cfg, weather_cities, worldcup_events, trades);
         std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
         written.push(s_path);
     }
@@ -1226,6 +1385,103 @@ mod tests {
         assert!(summary.contains("| reversal_0.2_0.55 | 3 | 0 | 0 | 0 | 0.2500 |"));
         assert!(summary.contains("| reversal_0.3_0.6 | 1 | 0 | 0 | 0 | 1.0000 |"));
         assert!(summary.contains("Total pnl: 1.2500"));
+    }
+
+    #[test]
+    fn top_strategies_ranks_by_pnl_win_rate_and_pnl_per_trade_independently() {
+        // "a": 4 trades (3 wins), total 14.0, ppt 3.5, win rate 75% — highest total pnl.
+        // "b": 5 trades, all small wins, total 1.0, ppt 0.2, win rate 100% — highest win rate.
+        // "c": 2 trades (1 win), total 8.0, ppt 4.0, win rate 50% — highest pnl per trade.
+        // Each leaderboard should surface a different variant as its #1 row.
+        let trades = vec![
+            mk_trade("XRP-5m", "a", "reversal", 100.0, 5.0),
+            mk_trade("XRP-5m", "a", "reversal", 110.0, 5.0),
+            mk_trade("XRP-5m", "a", "reversal", 120.0, 5.0),
+            mk_trade("XRP-5m", "a", "reversal", 130.0, -1.0),
+            mk_trade("XRP-5m", "b", "reversal", 100.0, 0.2),
+            mk_trade("XRP-5m", "b", "reversal", 110.0, 0.2),
+            mk_trade("XRP-5m", "b", "reversal", 120.0, 0.2),
+            mk_trade("XRP-5m", "b", "reversal", 130.0, 0.2),
+            mk_trade("XRP-5m", "b", "reversal", 140.0, 0.2),
+            mk_trade("XRP-5m", "c", "reversal", 100.0, 9.0),
+            mk_trade("XRP-5m", "c", "reversal", 110.0, -1.0),
+        ];
+        let section = render_top_strategies_section(&trades);
+
+        assert!(section.starts_with("### Top performing strategies\n\n"));
+
+        let pnl_board = section.split("**Top 5 by win rate**").next().unwrap();
+        assert!(pnl_board.contains("**Top 5 by total pnl**"));
+        let a_pnl_line = pnl_board.lines().find(|l| l.starts_with("| a ")).unwrap();
+        assert!(a_pnl_line.contains("14.0000"));
+
+        let win_rate_board = section
+            .split("**Top 5 by win rate**")
+            .nth(1)
+            .unwrap()
+            .split("**Top 5 by pnl per trade**")
+            .next()
+            .unwrap();
+        let b_line = win_rate_board
+            .lines()
+            .find(|l| l.starts_with("| b "))
+            .unwrap();
+        assert!(b_line.contains("100.0%"));
+
+        let ppt_board = section.split("**Top 5 by pnl per trade**").nth(1).unwrap();
+        let c_ppt_line = ppt_board.lines().find(|l| l.starts_with("| c ")).unwrap();
+        assert!(c_ppt_line.contains("4.0000"));
+    }
+
+    #[test]
+    fn top_strategies_handles_no_trades() {
+        let section = render_top_strategies_section(&[]);
+        assert!(section.contains("No trades yet today"));
+        assert!(!section.contains("Top 5 by total pnl"));
+    }
+
+    #[test]
+    fn collapsible_day_summary_wraps_title_in_details_and_keeps_body() {
+        let section = "#### Summary: PnL by market and strategy\n\n\
+             | market | strategy |\n|---|---|\n| XRP-5m | reversal |\n\n\
+             **Total pnl: 1.0000**\n\n";
+        let wrapped = collapsible_day_summary(section);
+        assert!(
+            wrapped.starts_with(
+                "<details>\n<summary>Summary: PnL by market and strategy</summary>\n\n"
+            )
+        );
+        assert!(wrapped.contains("| XRP-5m | reversal |"));
+        assert!(wrapped.contains("**Total pnl: 1.0000**"));
+        assert!(wrapped.trim_end().ends_with("</details>"));
+    }
+
+    #[test]
+    fn day_summary_body_wraps_all_three_tables_and_shows_top_strategies() {
+        let trades = vec![mk_trade(
+            "XRP-5m",
+            "reversal_0.2_0.55",
+            "reversal",
+            100.0,
+            0.1,
+        )];
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = SiglabConfig {
+            markets: vec![],
+            hourly_markets: vec![],
+            variants: vec![],
+        };
+        let body = render_summary_body("2026-07-16", dir.path(), &cfg, &[], &[], &trades);
+
+        assert!(body.contains("### Top performing strategies"));
+        assert!(body.contains("**Top 5 by total pnl**"));
+        // Every one of the three day-summary tables must be inside its own collapsible
+        // <details>, not rendered flat under "## Day summary".
+        assert!(body.contains("<details>\n<summary>Summary: PnL by market and strategy</summary>"));
+        assert!(body.contains("<details>\n<summary>Summary: PnL by market and variant</summary>"));
+        assert!(
+            body.contains("<details>\n<summary>Summary: PnL by variant (all markets)</summary>")
+        );
     }
 
     #[test]
@@ -1633,5 +1889,65 @@ mod tests {
         assert!(!day_dir(report_dir, &day1).exists());
         assert!(day_dir(report_dir, &day2).is_dir());
         assert!(!written2.contains(&summary_path(report_dir, &day1)));
+    }
+
+    #[test]
+    fn regenerate_summaries_only_rewrites_summary_but_leaves_hour_files_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = &dir.path().join("reports");
+        let trade_log = dir.path().join("trades.jsonl");
+
+        let ts = 1_700_000_000.0;
+        let date = Utc
+            .timestamp_opt(ts as i64, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&hkt())
+            .format("%Y-%m-%d")
+            .to_string();
+        let hour = Utc
+            .timestamp_opt(ts as i64, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&hkt())
+            .format("%H")
+            .to_string();
+
+        std::fs::write(
+            &trade_log,
+            format!(
+                "{{\"logged_at\":{ts},\"market_kind\":\"crypto\",\"variant_id\":\"v1\",\"asset\":\"BTC\",\"market\":\"BTC-5m\",\"slug\":\"s\",\"cycle_start\":0.0,\"strategy\":\"reversal\",\"side\":\"UP\",\"entry_ts\":{ts},\"token_price\":0.5,\"exit_price\":0.6,\"outcome\":\"TIMEOUT\",\"pnl\":0.1}}\n"
+            ),
+        )
+        .unwrap();
+
+        let cfg = SiglabConfig {
+            markets: vec![],
+            hourly_markets: vec![],
+            variants: vec![],
+        };
+
+        // Seed a pre-existing hour file carrying "real" market-state content that a full
+        // regenerate_from_trade_log run would normally clobber with a "_Regenerated..._"
+        // placeholder note.
+        let t_path = trades_path(report_dir, &date, &hour);
+        std::fs::create_dir_all(day_dir(report_dir, &date)).unwrap();
+        std::fs::write(&t_path, "REAL SNAPSHOT DATA, NOT REGENERATED\n").unwrap();
+
+        let written =
+            regenerate_summaries_from_trade_log(&trade_log, report_dir, &cfg, &[], &[], None)
+                .unwrap();
+        assert_eq!(written, vec![summary_path(report_dir, &date)]);
+
+        let summary = std::fs::read_to_string(summary_path(report_dir, &date)).unwrap();
+        assert!(summary.contains("v1"));
+        assert!(summary.contains("### Top performing strategies"));
+        assert!(summary.contains(&format!(
+            "[trades_{date}_{hour}.md](trades_{date}_{hour}.md)"
+        )));
+
+        // The hour file itself must be byte-for-byte untouched.
+        let hour_file_after = std::fs::read_to_string(&t_path).unwrap();
+        assert_eq!(hour_file_after, "REAL SNAPSHOT DATA, NOT REGENERATED\n");
     }
 }

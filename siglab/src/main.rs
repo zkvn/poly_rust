@@ -111,11 +111,21 @@ struct Args {
     #[arg(long)]
     regenerate_reports_only: bool,
 
-    /// Only used with --regenerate-reports-only: skip dates before this one (YYYY-MM-DD,
-    /// HKT). Scopes a backfill run to recent days instead of reprocessing the whole trade
-    /// log's history. Unset = process every date found in the log (previous behavior).
+    /// Only used with --regenerate-reports-only or --regenerate-summaries-only: skip dates
+    /// before this one (YYYY-MM-DD, HKT). Scopes a backfill run to recent days instead of
+    /// reprocessing the whole trade log's history. Unset = process every date found in the
+    /// log (previous behavior).
     #[arg(long)]
     regenerate_since: Option<String>,
+
+    /// One-off: rebuild every `{date}/summary_{date}.md` under --report-dir from --log's
+    /// trade-log ground truth (report::regenerate_summaries_from_trade_log), then exit
+    /// immediately. Unlike --regenerate-reports-only, this does NOT touch any
+    /// `{date}/trades_{date}_{HH}.md` file, so it never discards an hour's real
+    /// market-state/staleness/CPU snapshots — use this to backfill a summary-only rendering
+    /// change into already-written days.
+    #[arg(long)]
+    regenerate_summaries_only: bool,
 
     /// One-off: re-render just the merged "Trades this hour" table in every
     /// `trades_{date}_{HH}.md` under --report-dir from --log's ground truth
@@ -171,7 +181,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if args.regenerate_reports_only {
+    if args.regenerate_reports_only || args.regenerate_summaries_only {
         let since_date = args
             .regenerate_since
             .as_deref()
@@ -180,14 +190,25 @@ async fn main() -> Result<()> {
                     .with_context(|| format!("--regenerate-since {s:?}: not a YYYY-MM-DD date"))
             })
             .transpose()?;
-        let paths = report::regenerate_from_trade_log(
-            &args.log,
-            &args.report_dir,
-            &cfg,
-            &weather_cfg.cities,
-            &worldcup_cfg.events,
-            since_date,
-        )?;
+        let paths = if args.regenerate_summaries_only {
+            report::regenerate_summaries_from_trade_log(
+                &args.log,
+                &args.report_dir,
+                &cfg,
+                &weather_cfg.cities,
+                &worldcup_cfg.events,
+                since_date,
+            )?
+        } else {
+            report::regenerate_from_trade_log(
+                &args.log,
+                &args.report_dir,
+                &cfg,
+                &weather_cfg.cities,
+                &worldcup_cfg.events,
+                since_date,
+            )?
+        };
         eprintln!(
             "[siglab] regenerated {} report file(s): {paths:?}",
             paths.len()
