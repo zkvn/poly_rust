@@ -632,7 +632,7 @@ fn render_config_section(
          reversal variants additionally force-close (labeled `UNWIND`) within 10s of the \
          market's own cycle-end regardless of holding time — weather/World Cup buckets have \
          no cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s \
-         doc comment). Crypto markets additionally run the 8-variant V-shape grid above via \
+         doc comment). Crypto markets additionally run the 16-variant V-shape grid above via \
          `v_shape.rs::VShapeEngine` — a self-contained engine like `bucket_reversal.rs` (no \
          `gates.rs`, no delta_pct/Binance-direction requirement), but unlike that module it \
          *does* track real cycle boundaries and reuses the same force-unwind-within-10s-of-\

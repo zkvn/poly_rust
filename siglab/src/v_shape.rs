@@ -12,8 +12,9 @@
 //! — at which point a position opens on that side. `up` and `dn = 1.0 - up` are tracked as
 //! two independent latch chains (same reasoning as `bucket_reversal`'s `saw_low_up`/
 //! `saw_low_dn` split, or `trader::signal::SawLowSignal`'s up/dn instances) — even though
-//! the fixed grid below uses `high1 == high2`, "up reaches 0.7 first" and "dn reaches 0.7
-//! first" are different real price extremes, not mirror-redundant.
+//! the fixed grid's first triple uses `high1 == high2`, "up reaches 0.7 first" and "dn
+//! reaches 0.7 first" are different real price extremes, not mirror-redundant. See
+//! `TRIPLES` in `v_shape_grid()` for the fixed `(high1, low, high2)` combinations traded.
 
 /// One `(high1, low, high2, sl_pnl, unwind_pnl)` V-shape parameter combination.
 #[derive(Debug, Clone, Copy)]
@@ -47,38 +48,41 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
-/// Fixed thresholds (high1=0.7, low=0.3, high2=0.7), crossed with `sl_pnl` in {0.3, 0.6} x
-/// `unwind_pnl` in {0.05, 0.1, 0.15, 0.2} = 8 variants, per explicit request — not a full
-/// grid over the threshold triple itself (unlike `bucket_reversal::reversal_grid`'s 18
-/// combos), just this one triple with sl/unwind varied.
+/// Fixed `(high1, low, high2)` threshold triples, each crossed with `sl_pnl` in {0.3, 0.6} x
+/// `unwind_pnl` in {0.05, 0.1, 0.15, 0.2} = 8 variants per triple, per explicit request — not
+/// a full grid over the threshold triple itself (unlike `bucket_reversal::reversal_grid`'s 18
+/// combos), just these triples with sl/unwind varied. `(0.7, 0.3, 0.7)` was the original
+/// triple; `(0.7, 0.3, 0.55)` (shallower `high2` re-entry bar) added 2026-07-16 per explicit
+/// request, same treatment.
+const TRIPLES: [(f64, f64, f64); 2] = [(0.7, 0.3, 0.7), (0.7, 0.3, 0.55)];
+
 pub fn v_shape_grid() -> Vec<(String, VShapeParams)> {
-    const HIGH1: f64 = 0.7;
-    const LOW: f64 = 0.3;
-    const HIGH2: f64 = 0.7;
     const SL: [f64; 2] = [0.3, 0.6];
     const UNWIND: [f64; 4] = [0.05, 0.1, 0.15, 0.2];
 
-    let mut out = Vec::with_capacity(SL.len() * UNWIND.len());
-    for sl in SL {
-        for unwind in UNWIND {
-            let id = format!(
-                "v_{}_{}_{}_{}_{}",
-                fmt_threshold(HIGH1),
-                fmt_threshold(LOW),
-                fmt_threshold(HIGH2),
-                fmt_threshold(sl),
-                fmt_threshold(unwind),
-            );
-            out.push((
-                id,
-                VShapeParams {
-                    high1: HIGH1,
-                    low: LOW,
-                    high2: HIGH2,
-                    sl_pnl: sl,
-                    unwind_pnl: unwind,
-                },
-            ));
+    let mut out = Vec::with_capacity(TRIPLES.len() * SL.len() * UNWIND.len());
+    for (high1, low, high2) in TRIPLES {
+        for sl in SL {
+            for unwind in UNWIND {
+                let id = format!(
+                    "v_{}_{}_{}_{}_{}",
+                    fmt_threshold(high1),
+                    fmt_threshold(low),
+                    fmt_threshold(high2),
+                    fmt_threshold(sl),
+                    fmt_threshold(unwind),
+                );
+                out.push((
+                    id,
+                    VShapeParams {
+                        high1,
+                        low,
+                        high2,
+                        sl_pnl: sl,
+                        unwind_pnl: unwind,
+                    },
+                ));
+            }
         }
     }
     out
@@ -301,15 +305,17 @@ mod tests {
     }
 
     #[test]
-    fn v_shape_grid_has_8_unique_combos() {
+    fn v_shape_grid_has_16_unique_combos() {
         let grid = v_shape_grid();
-        assert_eq!(grid.len(), 8);
+        assert_eq!(grid.len(), 16);
         let mut ids: Vec<_> = grid.iter().map(|(id, _)| id.clone()).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 16);
         assert!(grid.iter().any(|(id, _)| id == "v_0.7_0.3_0.7_0.3_0.05"));
         assert!(grid.iter().any(|(id, _)| id == "v_0.7_0.3_0.7_0.6_0.2"));
+        assert!(grid.iter().any(|(id, _)| id == "v_0.7_0.3_0.55_0.3_0.05"));
+        assert!(grid.iter().any(|(id, _)| id == "v_0.7_0.3_0.55_0.6_0.2"));
     }
 
     #[test]
