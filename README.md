@@ -217,6 +217,11 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`price_high_rev` gate only checks the pre-retry signal price, not the realized fill —
+  found 2026-07-16.** A reversal entry that passes the gate at the signal price can still fill
+  well above it if the first FAK attempt hits a thin book and `aggressive_entry_price()` escalates
+  the retry toward `max_buy_price`; nothing re-validates the ceiling against the actual cost basis.
+  Full writeup: `trader/doc/incident_btc_late_high_price_reversal_2026-07-16.md`.
 - **`gamma_recorder`'s new `idx_market_resolutions_slug` index not yet live — added 2026-07-16,
   pending a restart.** `trade_reconcile.py` now queries `market_resolutions` by `slug` (see
   `trader/doc/plan_daily_recon_gamma_db_2026-07-16.md`), and the matching index was added to
