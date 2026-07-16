@@ -980,8 +980,9 @@ apparent source for the rest. Root cause: `total_pnl` correctly includes every t
 for that (asset, strategy) — including 2 TIMEOUT trades (`-0.1697`, `-0.2516`) that summed exactly
 with the STOPLOSS to `-1.1579` — but the per-asset line's format string only showed W/L/SL/UW,
 never `TO`, unlike the aggregate `Session:` line above it which already did. Math was never wrong;
-added the missing `{}TO` field. Not yet deployed to Oracle (separate step). Full writeup:
-`trader/doc/incident_wrong_telegram_pnl_2026-07-16.md`.
+added the missing `{}TO` field. Deployed to Oracle 2026-07-16 17:30 HKT
+(`scripts/deploy_trader.sh`, dry-run previewed first; `trader-live.service` restarted cleanly).
+Full writeup: `trader/doc/incident_wrong_telegram_pnl_2026-07-16.md`.
 
 ### `trade_reconcile.py`'s "CLOB Price History (token held)" audit table removed — never once showed real in-hold price action (2026-07-16, fixed)
 

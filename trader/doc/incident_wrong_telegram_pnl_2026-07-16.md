@@ -96,6 +96,6 @@ change to `total_pnl`, `stoplosses`, or any other accounting logic, since none o
   --all-targets --all-features -- -D warnings` (clean), `cargo fmt --all --check` (clean).
 - Manually rendered the new format string against BNB's actual persisted numbers
   (`0W/0L/1SL/0UW/2TO  $-1.1579`) — matches the state file exactly.
-- **Not yet deployed** — `trader-live.service` on Oracle is running live capital; redeploying it is
-  a separate, explicit step (`scripts/deploy_trader.sh` per the main README), not bundled into this
-  fix without asking first.
+- **Deployed to Oracle** 2026-07-16 17:30 HKT via `scripts/deploy_trader.sh` (`--dry-run` previewed
+  first — trader binary + config only, `poly-collector` untouched). `trader-live.service` restarted
+  cleanly (PID 231836, `systemctl status` active, no errors in the restart journal).
