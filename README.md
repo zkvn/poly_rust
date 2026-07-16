@@ -916,6 +916,21 @@ code). Summary:
 
 ## Trading engine — known incidents
 
+### Host `cron.service` was dead for ~9h (06:25–15:22), silently skipping this project's cron jobs (2026-07-16, fixed)
+
+`unattended-upgrades`' automatic 06:00–07:00 security-update window triggered `needrestart` to
+issue 7 rapid `systemctl restart cron.service` calls within ~12 seconds (one per small dpkg
+transaction), tripping systemd's start-limit and leaving `cron.service` in a `failed
+(start-limit-hit)` state for the rest of the day — no cron job on the host ran at all until it was
+manually restarted at 15:22 HKT. For poly_rust this meant `trader/scripts/bash/run_daily_recon.bash`
+(`20 */2 * * *`) missed its 08:20/10:20/12:20/14:20 firings; `price_feed/scripts/sync_oracle.sh`
+(daily at 18:00) wasn't due yet so it was unaffected. No data was lost — `run_daily_recon.bash`
+reconciles a full rolling day window each run, so the 16:20 firing catches up automatically. The
+`siglab-report-push.timer` (systemd `--user`, not system cron) kept firing hourly throughout,
+unaffected. A `cron-watchdog.service`/`.timer` (checks `systemctl is-failed cron.service` every
+10 min and restarts it) was added host-wide to catch recurrence. Root cause fully documented in the
+sibling repo: `order_trade_machine/doc/incident_failed_cron_2026-07-16.md`.
+
 ### WS stream-merge could silently overwrite a fresh price with a stale one — corrupted recorded data and exposed live trading (2026-07-16, fixed)
 
 Investigating an "impossible" `siglab` incident (reversal/v_shape strategies logging identical
