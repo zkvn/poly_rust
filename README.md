@@ -914,10 +914,10 @@ code). Summary:
 <details>
 <summary><strong>Trading engine — known incidents</strong></summary>
 
-## Cron jobs
+## Cron / long-running process
 
-All scheduled automation for this project, in one place. Two different mechanisms are in play —
-know which one a given job uses before debugging it.
+All scheduled automation and always-on local processes for this project, in one place. Three
+different mechanisms are in play — know which one a given job uses before debugging it.
 
 ### User crontab (`crontab -l`, runs as `kev`)
 
@@ -950,6 +950,18 @@ Not a cron job, but the deploy step that follows a `siglab` code change: `siglab
 runs `cargo test`/`clippy`/`fmt --check` then `docker compose -f siglab/docker-compose.yml up --build -d`
 to rebuild the image and restart the `siglab-siglab-1` container so it picks up the new binary
 (`--skip-checks` to skip the Rust checks, `--logs` to follow container logs after restart).
+
+### `gamma_recorder` (always-on local process, not cron)
+
+Native local process (no Docker/systemd packaging yet — see `## TODO`), started with
+`gamma_recorder/scripts/run_local.sh` (builds release, backgrounds with `nohup`, writes
+`gamma_recorder.pid` so a second run refuses to start a duplicate). Runs
+`./target/release/gamma_recorder resolve --db data/gamma.db` continuously, polling Gamma for
+market resolutions and seeding/recording them into the local SQLite db
+(`gamma_recorder/data/gamma.db`). Inspect: `logs/continuous.log` (periodic
+`checked=N resolved=N seeded=N gap_recovered=N` heartbeats), or check the process directly —
+`ps aux | grep gamma_recorder`. No supervisor/restart-on-crash yet; if it dies it stays dead
+until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
