@@ -67,6 +67,19 @@ while already running fails loudly instead of starting a duplicate process.
 - Tracked asset list is derived dynamically from `price_feed/raw*/` filenames (`--assets` to
   override, e.g. `--assets BTC,ETH`).
 
+### How the sweep works / resource footprint
+
+7 assets × 3 durations (5m/15m/4h) = **21 tracked market-streams**, but continuous mode doesn't
+poll all 21 continuously — each one only becomes "due" once its own slot closes and it's still
+`UNRESOLVED`. Every 30s the sweep wakes up, runs one cheap gap-reconciliation query across all 21
+streams, then queries the DB's partial index for whatever's actually due (usually 0-2 rows in
+steady state), fires one Gamma HTTP request per due row (100ms spacing if there are several), and
+sleeps 30s again. Roughly every 5 minutes a new 5m slot closes across all 7 assets at once,
+producing a brief `checked=7`-ish spike that resolves the same or next cycle. Measured locally:
+**~13.4MB RSS, ~0% CPU** (`ps` rounds accumulated CPU time to `00:00:00` after 18+ minutes of
+runtime) — it's asleep almost all the time and does one lightweight HTTP call + SQLite write only
+when a row is actually due.
+
 **Status as of 2026-07-15: local-only, not deployed to Oracle.** Backfilled 2026-06-12 →
 2026-07-15 (88,990 rows, 7 assets × 3 durations), spot-checked 15 random rows against live Gamma
 (0 mismatches), verified idempotent re-backfill (0 drift across 88,990 pre-existing rows), and
