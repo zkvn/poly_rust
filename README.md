@@ -965,6 +965,20 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### `trade_reconcile.py`'s "CLOB Price History (token held)" audit table removed — never once showed real in-hold price action (2026-07-16, fixed)
+
+Investigating a specific SOL STOPLOSS row (`21:58:41`, hold 21:58:21→21:58:41) surfaced that the
+table's two ~10-min-spaced CLOB samples (`prices-history`'s finest available fidelity, a
+Polymarket API floor imposed after this feature was first written) landed 8.5 min before entry and
+1.3 min after exit — nowhere near the actual price action. Checked every STOPLOSS/UNWIND trade
+ever logged (69/69): hold durations run 2.6s–75s, always far under the 10-min bar spacing, so no
+sample has ever landed inside an actual hold window — the table always showed generic before/after
+market context, never the trade itself, and duplicated information the `quality` verdict
+(COSTLY/GOOD, WIN-EQUIVALENT/LOSS-UNWIND) already states more reliably from the real Gamma
+resolution. Removed the fetch (`_fetch_token_ids_for_slug`/`_fetch_clob_price_history`) and render
+logic; `Verdict`/`Entry token price`/`Exit price`/`PnL`/`Failed attempts` fields are unaffected.
+131 tests pass; today's report regenerated and the section inspected post-change.
+
 ### Host `cron.service` was dead for ~9h (06:25–15:22), silently skipping this project's cron jobs (2026-07-16, fixed)
 
 `unattended-upgrades`' automatic 06:00–07:00 security-update window triggered `needrestart` to
