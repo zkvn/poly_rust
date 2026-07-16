@@ -192,6 +192,21 @@ issue applies there independently — see the TODO below.
 
 Full writeups in `doc/incident_ws_2026-07-13.md` unless noted.
 
+### 2026-07-16 — `reversal` and `v_shape` sharing entry/exit timestamps on BNB-5m — **investigated, not a bug**
+12 `reversal` variants and 8 `v_shape` variants (two separate engines — `v_shape` never touches
+`trader::machine::Machine` or Binance) logged the identical millisecond `entry_ts`, and a subset
+shared the identical exit timestamp and pnl too. Confirmed not a regression of the 07-14 fix
+below (that bug was cross-*duration* correlation via a shared Binance tick; `entry_price_ts ==
+entry_ts` here proves every entry fired off the market's own live poly tick). Root cause: two
+ordinary, independent mechanisms compound — `market.rs` feeds one poly tick to every `Machine`
+*and* every `VShapeEngine` in the same loop iteration, and both strategy families implement a
+structurally similar "dipped, then recovered" entry condition, so one real sharp BNB move (cross-
+checked against `price_feed`'s independently-recorded parquet — genuine, not a data artifact)
+completed both at once; separately, `trader::machine` and `v_shape.rs` each force-close any open
+position within 10s of cycle end at the market's current price, so positions from either strategy
+still open at that boundary exit together. Not caught by the 07-14 fix because `v_shape.rs`
+didn't exist until the day after that investigation. Full writeup: `doc/incident_signal_2026-07-16.md`.
+
 ### 2026-07-14 — Same-market variants sharing entry_ts flagged as suspicious — **investigated, not a bug**
 Two specific trades (BTC-15m 12:22:35, ETH-5m 11:47:18 — several `reversal_0.4_*` variants
 firing together) checked against `price_feed`'s independently-recorded CLOB/Binance data.
@@ -297,6 +312,19 @@ trading it — before the first Docker deployment, so the resource-test numbers 
   see `doc/plan_weather_worldcup_trading_2026-07-13.md`. Not started.
 - Memory growth under full load — see Incidents above — not root-caused, being watched
   rather than fixed for now.
+- **`trader::marketdata::spawn_poly_task` merges two independently-arriving WS streams
+  (`best_bid_ask` + `price_changes`) into one `(bid, ask)` pair with no verified atomicity
+  guarantee** — found 2026-07-16 investigating the `reversal`/`v_shape` correlated-timestamp
+  report (see Incidents above), where a single entry tick's price didn't match
+  `price_feed`'s independently-archived book/poly data by ~4.5¢ and couldn't be conclusively
+  attributed given that archive's 200ms sampling. Needs either an audit of
+  `polymarket_client_sdk_v2`'s `PriceChangeBatchEntry` guarantees or raw per-message (not
+  resampled) logging to close out. Full writeup: `doc/incident_signal_2026-07-16.md`.
+- Force-unwind-near-cycle-end (`trader::machine` and `v_shape.rs`, both at a 10s-before-cycle-end
+  threshold) fills at the raw mid-price with no spread/liquidity check — noticed 2026-07-16 in a
+  cycle that had spreads as wide as 0.80 a few minutes earlier, so paper PnL near cycle-end in
+  thin books may be more optimistic than a real fill could achieve. Not investigated further; see
+  `doc/incident_signal_2026-07-16.md`'s Follow-ups.
 
 </details>
 
