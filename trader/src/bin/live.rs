@@ -806,8 +806,13 @@ impl Driver<'_> {
 
             let sign = if slot.total_pnl >= 0.0 { "+" } else { "" };
             pnl_lines.push(format!(
-                "  {name}: {}W/{}L/{}SL/{}UW  {sign}${:.4}",
-                slot.wins, slot.losses, slot.stoplosses, slot.unwinds, slot.total_pnl
+                "  {name}: {}W/{}L/{}SL/{}UW/{}TO  {sign}${:.4}",
+                slot.wins,
+                slot.losses,
+                slot.stoplosses,
+                slot.unwinds,
+                slot.timeouts,
+                slot.total_pnl
             ));
             pnl_lines.push(format!(
                 "    {:<10} {sign}${:.4}",

@@ -973,6 +973,16 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### `/status`'s per-asset PNL line omitted the timeout count, making totals with TIMEOUT trades look unexplained (2026-07-16, fixed)
+
+BNB showed `0W/0L/1SL/0UW  $-1.1579` — the visible single STOPLOSS trade was only `-0.7366`, no
+apparent source for the rest. Root cause: `total_pnl` correctly includes every trade ever logged
+for that (asset, strategy) — including 2 TIMEOUT trades (`-0.1697`, `-0.2516`) that summed exactly
+with the STOPLOSS to `-1.1579` — but the per-asset line's format string only showed W/L/SL/UW,
+never `TO`, unlike the aggregate `Session:` line above it which already did. Math was never wrong;
+added the missing `{}TO` field. Not yet deployed to Oracle (separate step). Full writeup:
+`trader/doc/incident_wrong_telegram_pnl_2026-07-16.md`.
+
 ### `trade_reconcile.py`'s "CLOB Price History (token held)" audit table removed — never once showed real in-hold price action (2026-07-16, fixed)
 
 Investigating a specific SOL STOPLOSS row (`21:58:41`, hold 21:58:21→21:58:41) surfaced that the
