@@ -217,6 +217,10 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **Take-profit close (`close_position_at_price`) has no `"balance: 0"` cooldown, unlike
+  `close_position` — found 2026-07-16, not fixed.** A settlement-lag race on a fresh entry fill
+  can turn into ~55 rejected sell attempts in under 3 seconds (one per incoming tick, no backoff)
+  before the CLOB balance catches up. See `trader/doc/incident_tp_latency_2026-07-16.md`.
 - **`gamma_recorder` has no Docker/Cross.toml/systemd packaging yet — deferred 2026-07-15.**
   The plan doc's §11 Docker-based CPU/memory soak-test gate and §5/§9's `Cross.toml`/systemd unit
   are specced for the pre-Oracle-deploy hardening pass; today's task was explicitly local-only
