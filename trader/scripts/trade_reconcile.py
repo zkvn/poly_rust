@@ -36,6 +36,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tomllib
@@ -54,7 +55,10 @@ load_dotenv(REPO_ROOT / ".env")
 console = Console()
 
 GAMMA_API = "https://gamma-api.polymarket.com"
-CLOB_API = "https://clob.polymarket.com"
+# gamma_recorder (native local process, see README's "Cron / long-running process") polls
+# Gamma continuously and caches every resolution it sees here — consulted before the live
+# API in fetch_gamma_outcome() below. See trader/doc/plan_daily_recon_gamma_db_2026-07-16.md.
+GAMMA_DB_PATH = REPO_ROOT.parent / "gamma_recorder" / "data" / "gamma.db"
 
 HKT = timezone(timedelta(hours=8))
 
@@ -123,8 +127,42 @@ def _safe_float(val) -> float:
 # Gamma outcome resolution
 # ---------------------------------------------------------------------------
 
+def _fetch_gamma_outcome_from_db(slug: str) -> Optional[str]:
+    """gamma_recorder's local SQLite cache — fast, no network, no rate limit.
+    Returns None for a missing row *or* one still UNRESOLVED there; either
+    way the caller falls back to the live API, since this db is a
+    best-effort cache (recorder downtime, coverage gaps), not a guarantee."""
+    if not GAMMA_DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{GAMMA_DB_PATH}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT outcome FROM market_resolutions WHERE slug = ?", (slug,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if row and row[0] in ("UP", "DOWN"):
+        return row[0]
+    return None
+
+
 def fetch_gamma_outcome(slug: str) -> Optional[str]:
-    """Return 'UP' or 'DOWN' once the market is resolved on Gamma, else None."""
+    """Return 'UP' or 'DOWN' once the market is resolved, else None. Tries
+    gamma_recorder's local db first, falls back to the live Gamma API if
+    the slug isn't resolved there — see
+    trader/doc/plan_daily_recon_gamma_db_2026-07-16.md."""
+    from_db = _fetch_gamma_outcome_from_db(slug)
+    if from_db is not None:
+        return from_db
+    return _fetch_gamma_outcome_from_api(slug)
+
+
+def _fetch_gamma_outcome_from_api(slug: str) -> Optional[str]:
+    """Live Gamma API — fallback when the local db doesn't have this slug
+    resolved yet."""
     import requests
     try:
         resp = requests.get(f"{GAMMA_API}/events?slug={slug}", timeout=10)
@@ -150,53 +188,6 @@ def fetch_gamma_outcome(slug: str) -> Optional[str]:
         return None
     except Exception:
         return None
-
-
-def _fetch_token_ids_for_slug(slug: str) -> Optional[tuple]:
-    import requests
-    try:
-        resp = requests.get(f"{GAMMA_API}/events?slug={slug}", timeout=10)
-        resp.raise_for_status()
-        events = resp.json()
-        if not events:
-            return None
-        markets = events[0].get("markets", [])
-        if not markets:
-            return None
-        ids = markets[0].get("clobTokenIds", [])
-        if isinstance(ids, str):
-            ids = json.loads(ids)
-        if len(ids) < 2:
-            return None
-        return ids[0], ids[1]  # up, dn
-    except Exception:
-        return None
-
-
-def _fetch_clob_price_history(token_id: str) -> list:
-    """fidelity=1 on the "1m" interval range now 400s ("minimum 'fidelity' for
-    '1m' range is 10" — a Polymarket API change since this was first written,
-    found 2026-07-10 while investigating why the Stoploss/Unwind Audit kept
-    coming back empty). fidelity=10 gives ~10-min-spaced bars, which is coarse
-    but still usually lands inside the +/-15min audit window
-    (_build_sl_unwind_audit) for a 5-min-cycle market; fidelity=60 (~1hr
-    spacing) is kept as a last-resort fallback but rarely has a bar close
-    enough to the trade to be useful — see that function's window filter."""
-    import requests
-    for fidelity in (10, 60):
-        try:
-            resp = requests.get(
-                f"{CLOB_API}/prices-history",
-                params={"market": token_id, "interval": "1m", "fidelity": fidelity},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            hist = resp.json().get("history", [])
-            if hist:
-                return sorted(hist, key=lambda x: x["t"])
-        except Exception:
-            pass
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -1560,7 +1551,19 @@ def render_bt_reconciliation(lines: list, live_vs_bt_rows: list, summary: dict, 
 
 
 # ---------------------------------------------------------------------------
-# Stoploss & Unwind audit (CLOB price history around the trade)
+# Stoploss & Unwind audit
+#
+# Used to also fetch a "CLOB Price History (token held)" table from
+# CLOB_API/prices-history around each trade, but removed 2026-07-16: every
+# STOPLOSS/UNWIND trade ever logged (69/69, hold durations 2.6s-75s) closes
+# well under the API's minimum available resolution (10-min bars, itself a
+# floor Polymarket imposed after this feature was first written — see
+# git history), so no sample point has ever landed inside the actual hold
+# window. The two samples shown were always ~10min before/after the trade,
+# not during it — misleading given the "token held" framing, and redundant
+# with `quality` (COSTLY/GOOD, WIN-EQUIVALENT/LOSS-UNWIND) anyway, which
+# already comes from the authoritative Gamma resolution, not an eyeballed
+# price approximation.
 # ---------------------------------------------------------------------------
 
 def _build_sl_unwind_audit(rows: list) -> list:
@@ -1570,10 +1573,7 @@ def _build_sl_unwind_audit(rows: list) -> list:
         if outcome not in ("STOPLOSS", "UNWIND"):
             continue
 
-        slug = row.get("slug", "")
         side = row.get("side", "").strip().upper()
-        is_up = side == "UP"
-        entry_ts = _safe_float(row.get("entry_ts"))
         token_price = _safe_float(row.get("token_price"))
         exit_price = _safe_float(row.get("exit_price"))
         pnl = _safe_float(row.get("pnl"))
@@ -1591,21 +1591,7 @@ def _build_sl_unwind_audit(rows: list) -> list:
             "token_price": token_price, "exit_price": exit_price, "pnl": pnl,
             "exit_attempts": int(row.get("exit_attempts") or 0),
             "exit_last_error": row.get("exit_last_error", ""),
-            "clob_history": [],
         }
-
-        if entry_ts:
-            token_ids = _fetch_token_ids_for_slug(slug)
-            if token_ids:
-                token_id = token_ids[0] if is_up else token_ids[1]
-                hist = _fetch_clob_price_history(token_id)
-                window = 900  # +/- 15 min
-                nearby = [h for h in hist if abs(h["t"] - entry_ts) <= window][:30]
-                if nearby:
-                    audit["clob_history"] = [
-                        {"time_hkt": datetime.fromtimestamp(h["t"], tz=HKT).strftime("%H:%M:%S"), "price": h["p"]}
-                        for h in nearby
-                    ]
 
         results.append(audit)
     return results
@@ -1628,16 +1614,6 @@ def _render_sl_unwind_audit(lines: list, audit: list) -> None:
         if entry["exit_attempts"]:
             lines.append(f"| Last error before exit | {entry['exit_last_error']} |")
         lines.append("")
-        if entry["clob_history"]:
-            lines.append("**CLOB Price History (token held)**")
-            lines.append("")
-            lines.extend(["| Time (HKT) | Price |", "|---|---|"])
-            for h in entry["clob_history"]:
-                lines.append(f"| {h['time_hkt']} | {h['price']:.4f} |")
-            lines.append("")
-        else:
-            lines.append("*No CLOB tick data available — audit based on CSV fields only.*")
-            lines.append("")
 
 
 def _render_failed_exit_audit(lines: list, rows: list) -> None:
@@ -2072,7 +2048,7 @@ def main() -> None:
         raise SystemExit(0)
 
     console.print(f"[dim]Loaded {len(rows)} trades after filtering & dedup.[/dim]")
-    console.print("[dim]Querying Gamma API for market outcomes...[/dim]")
+    console.print("[dim]Resolving market outcomes (gamma_recorder db, live API fallback)...[/dim]")
     gamma_timeout_events = parse_gamma_timeout_events(log_dir / "live.log")
     annotated, summary = annotate_rows(rows, gamma_timeout_events)
     perf_stats = compute_performance_stats(annotated)

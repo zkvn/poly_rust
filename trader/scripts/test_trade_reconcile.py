@@ -14,6 +14,7 @@ No new dependency beyond what trade_reconcile.py itself already needs
     /home/kev/apps/btc_5mins/venv/bin/python trader/scripts/test_trade_reconcile.py
 """
 import importlib.util
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -42,6 +43,90 @@ class SlugCycleTsTests(unittest.TestCase):
     def test_malformed_slug_returns_zero(self):
         self.assertEqual(mod.slug_cycle_ts("not-a-slug-"), 0.0)
         self.assertEqual(mod.slug_cycle_ts(""), 0.0)
+
+
+class FetchGammaOutcomeFromDbTests(unittest.TestCase):
+    """gamma_recorder db-first resolution — see
+    trader/doc/plan_daily_recon_gamma_db_2026-07-16.md. The live-API fallback
+    itself (_fetch_gamma_outcome_from_api) isn't hit in these tests; only
+    that fetch_gamma_outcome() correctly decides when to call it."""
+
+    def _make_db(self, rows: list) -> Path:
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        db_path = Path(d.name) / "gamma.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE market_resolutions (
+                asset TEXT NOT NULL, duration TEXT NOT NULL, slot INTEGER NOT NULL,
+                slug TEXT NOT NULL, condition_id TEXT, open_ts INTEGER NOT NULL,
+                close_ts INTEGER NOT NULL, outcome TEXT NOT NULL,
+                up_token_id TEXT, down_token_id TEXT, resolved_at_ts INTEGER,
+                resolved_at_is_estimated INTEGER NOT NULL DEFAULT 0,
+                check_attempts INTEGER NOT NULL DEFAULT 0, last_checked_ts INTEGER,
+                PRIMARY KEY (asset, duration, slot)
+            )
+            """
+        )
+        for i, (slug, outcome) in enumerate(rows):
+            conn.execute(
+                "INSERT INTO market_resolutions "
+                "(asset, duration, slot, slug, open_ts, close_ts, outcome) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("SOL", "5m", i, slug, 0, 300, outcome),
+            )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_resolved_row_returned_without_hitting_api(self):
+        db_path = self._make_db([("sol-updown-5m-1", "UP")])
+        with patch.object(mod, "GAMMA_DB_PATH", db_path), \
+             patch.object(mod, "_fetch_gamma_outcome_from_api") as api:
+            result = mod.fetch_gamma_outcome("sol-updown-5m-1")
+        self.assertEqual(result, "UP")
+        api.assert_not_called()
+
+    def test_unresolved_row_falls_back_to_api(self):
+        db_path = self._make_db([("sol-updown-5m-2", "UNRESOLVED")])
+        with patch.object(mod, "GAMMA_DB_PATH", db_path), \
+             patch.object(mod, "_fetch_gamma_outcome_from_api", return_value="DOWN") as api:
+            result = mod.fetch_gamma_outcome("sol-updown-5m-2")
+        self.assertEqual(result, "DOWN")
+        api.assert_called_once_with("sol-updown-5m-2")
+
+    def test_slug_missing_from_db_falls_back_to_api(self):
+        db_path = self._make_db([("sol-updown-5m-1", "UP")])
+        with patch.object(mod, "GAMMA_DB_PATH", db_path), \
+             patch.object(mod, "_fetch_gamma_outcome_from_api", return_value="UP") as api:
+            result = mod.fetch_gamma_outcome("sol-updown-5m-999")
+        self.assertEqual(result, "UP")
+        api.assert_called_once_with("sol-updown-5m-999")
+
+    def test_missing_db_file_falls_back_to_api(self):
+        missing_path = Path(tempfile.mkdtemp()) / "does_not_exist.db"
+        with patch.object(mod, "GAMMA_DB_PATH", missing_path), \
+             patch.object(mod, "_fetch_gamma_outcome_from_api", return_value="DOWN") as api:
+            result = mod.fetch_gamma_outcome("sol-updown-5m-1")
+        self.assertEqual(result, "DOWN")
+        api.assert_called_once()
+
+    def test_corrupt_db_file_falls_back_to_api_without_raising(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        bad_path = Path(d.name) / "corrupt.db"
+        bad_path.write_text("not a sqlite file")
+        with patch.object(mod, "GAMMA_DB_PATH", bad_path), \
+             patch.object(mod, "_fetch_gamma_outcome_from_api", return_value="UP") as api:
+            result = mod.fetch_gamma_outcome("sol-updown-5m-1")
+        self.assertEqual(result, "UP")
+        api.assert_called_once()
+
+    def test_db_helper_returns_none_directly_for_unresolved(self):
+        db_path = self._make_db([("sol-updown-5m-3", "UNRESOLVED")])
+        with patch.object(mod, "GAMMA_DB_PATH", db_path):
+            self.assertIsNone(mod._fetch_gamma_outcome_from_db("sol-updown-5m-3"))
 
 
 class ParseBacktestCsvTests(unittest.TestCase):

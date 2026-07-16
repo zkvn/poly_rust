@@ -66,6 +66,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_market_resolutions_history
             ON market_resolutions (asset, duration, close_ts);
+
+        CREATE INDEX IF NOT EXISTS idx_market_resolutions_slug
+            ON market_resolutions (slug);
         "#,
     )?;
     Ok(())
