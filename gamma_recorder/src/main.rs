@@ -343,7 +343,7 @@ async fn run_continuous(
     println!("[gamma_recorder] entering continuous mode, sweep every {SWEEP_INTERVAL:?}");
     loop {
         let now_ts = updown_slots::now_secs();
-        let gap_inserted = reconcile_gaps(conn, assets, now_ts)?;
+        let gap_stats = reconcile_gaps(conn, assets, now_ts)?;
 
         let due = db::due_unresolved(conn, now_ts, SWEEP_RETRY_INTERVAL_SECS)?;
         let mut resolved = 0u64;
@@ -359,10 +359,25 @@ async fn run_continuous(
         }
 
         println!(
-            "[gamma_recorder] heartbeat: checked={checked} resolved={resolved} gap_inserted={gap_inserted}"
+            "[gamma_recorder] heartbeat: checked={checked} resolved={resolved} seeded={} gap_recovered={}",
+            gap_stats.seeded, gap_stats.gap_recovered
         );
         tokio::time::sleep(SWEEP_INTERVAL).await;
     }
+}
+
+/// Result of one `reconcile_gaps` pass.
+struct GapStats {
+    /// Total placeholder rows created this pass, routine + recovered. Since there's no
+    /// separate slot-rollover trigger (see `run_continuous`'s doc comment), this is
+    /// expected to be nonzero once every sweep interval or so as new slots close — not
+    /// itself a health signal.
+    seeded: u64,
+    /// Rows created because more than one slot was missing for an `(asset, duration)` —
+    /// i.e. a genuine gap (a missed slot, not just the newest one closing since the last
+    /// pass). Should be 0 in a healthy steady-state run; nonzero only right after a real
+    /// outage. This is the number plan doc §11 item 5's health check actually cares about.
+    gap_recovered: u64,
 }
 
 /// Inserts missing `UNRESOLVED` placeholders for every already-closed slot between the
@@ -370,8 +385,14 @@ async fn run_continuous(
 /// per tracked `(asset, duration)`. The `close_ts <= now` frontier cap matters: without
 /// it this would insert rows for slots that haven't closed yet, and the sweep would then
 /// waste polls on markets that can't possibly be resolved.
-fn reconcile_gaps(conn: &Connection, assets: &[String], now_ts: i64) -> Result<u64> {
-    let mut inserted = 0u64;
+///
+/// Exactly one missing slot is the routine case — the sweep runs more often than slots
+/// close, so the newest slot is simply "not created yet" for the few seconds until this
+/// pass runs. More than one missing slot means a slot was actually skipped (an outage or
+/// a bug), which gets logged loudly and counted separately in `GapStats::gap_recovered`.
+fn reconcile_gaps(conn: &Connection, assets: &[String], now_ts: i64) -> Result<GapStats> {
+    let mut seeded = 0u64;
+    let mut gap_recovered = 0u64;
     for asset in assets {
         for (duration, interval_u64) in updown_slots::DURATIONS {
             let interval = interval_u64 as i64;
@@ -383,15 +404,28 @@ fn reconcile_gaps(conn: &Connection, assets: &[String], now_ts: i64) -> Result<u
                 // empty table is handled by the startup backfill instead.
                 None => last_closed_slot,
             };
+            if start_slot > last_closed_slot {
+                continue;
+            }
+            let missing = (last_closed_slot - start_slot) / interval + 1;
+            if missing > 1 {
+                println!(
+                    "[gamma_recorder] gap recovered: {asset} {duration} — {missing} missing slot(s) ({start_slot}..{last_closed_slot}) backfilled"
+                );
+                gap_recovered += missing as u64;
+            }
             let mut slot = start_slot;
             while slot <= last_closed_slot {
                 db::insert_placeholder(conn, asset, duration, slot, slot, slot + interval)?;
-                inserted += 1;
+                seeded += 1;
                 slot += interval;
             }
         }
     }
-    Ok(inserted)
+    Ok(GapStats {
+        seeded,
+        gap_recovered,
+    })
 }
 
 /// Polls Gamma for one due row and upserts the result. Returns `true` if it resolved.
@@ -432,6 +466,51 @@ async fn sweep_one(conn: &Connection, client: &reqwest::Client, row: &db::DueRow
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconcile_gaps_treats_single_missing_slot_as_routine_not_a_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open(&dir.path().join("gamma.db")).unwrap();
+        let now_ts = 1_700_000_500;
+        let last_closed_5m = updown_slots::current_slot_for(300, now_ts) - 300;
+        // BTC 5m is exactly one interval behind the frontier — the routine "a new slot
+        // just closed since the last pass" case, not a gap.
+        db::insert_placeholder(
+            &conn,
+            "BTC",
+            "5m",
+            last_closed_5m - 300,
+            last_closed_5m - 300,
+            last_closed_5m,
+        )
+        .unwrap();
+
+        let assets = vec!["BTC".to_string()];
+        let stats = reconcile_gaps(&conn, &assets, now_ts).unwrap();
+        // 5m: 1 routine slot. 15m/4h: no prior history, also seeds exactly the frontier
+        // (routine, per the `None` branch in reconcile_gaps).
+        assert_eq!(stats.seeded, 3);
+        assert_eq!(stats.gap_recovered, 0);
+    }
+
+    #[test]
+    fn reconcile_gaps_flags_multi_slot_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open(&dir.path().join("gamma.db")).unwrap();
+        let now_ts = 1_700_000_500;
+        let last_closed_5m = updown_slots::current_slot_for(300, now_ts) - 300;
+        // BTC 5m is three intervals behind the frontier — a genuine gap (something
+        // skipped two slots), not just the newest one closing.
+        let stale_slot = last_closed_5m - 3 * 300;
+        db::insert_placeholder(&conn, "BTC", "5m", stale_slot, stale_slot, stale_slot + 300)
+            .unwrap();
+
+        let assets = vec!["BTC".to_string()];
+        let stats = reconcile_gaps(&conn, &assets, now_ts).unwrap();
+        // 3 recovered (5m gap) + 1 (15m routine) + 1 (4h routine) = 5 seeded total.
+        assert_eq!(stats.seeded, 5);
+        assert_eq!(stats.gap_recovered, 3);
+    }
 
     #[test]
     fn extract_date_from_daily_filename_remainder() {
