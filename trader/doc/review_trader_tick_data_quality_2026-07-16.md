@@ -13,6 +13,27 @@ reveal something about how a data-quality gap actually reaches a trading decisio
 
 ## 1. `spawn_poly_task`'s stream merge has no atomicity or ordering guarantee
 
+**Why there are two streams for one mid-price in the first place.** They're not two independent
+data sources — they're two client-side-filtered views of the *same single* underlying WS
+connection. Confirmed in the SDK source
+(`polymarket_client_sdk_v2-0.6.0/src/clob/ws/client.rs`): both `subscribe_best_bid_ask`
+(`client.rs:298-306`) and `subscribe_prices` (`client.rs:212-217`) call
+`get_or_create_channel(ChannelType::Market)`, and `ChannelType` (`subscription.rs:67-72`) has
+only two variants (`Market`, `User`) — so every market-data subscription kind (`Book`,
+`LastTradePrice`, `PriceChange`, `BestBidAsk`, `TickSizeChange`) shares **one** real connection,
+fanned out to each subscriber's own filtered `Stream` (exactly the `ConnectionManager`
+one-broadcast-channel-per-connection pattern `siglab/README.md`'s 2026-07-13 CPU incident already
+documented for a different symptom). The server emits `BestBidAsk` (a direct top-of-book push
+whenever it changes) and `PriceChange` (an order-book delta stream that also happens to carry a
+"best bid/ask after this change" convenience snapshot) as two distinct message types over that
+one connection; `spawn_poly_task` subscribes to both, presumably to catch a top-of-book change
+from whichever message type reports it, and merges them locally.
+
+That framing matters for the risk below: the server's own delivery is a single, in-order TCP
+stream, so a well-defined "true order" exists. It's the *client* that splits that single stream
+into two independently-filtered receivers and then reassembles them with no ordering memory —
+discarding a guarantee that existed at the source, not compensating for one that was never there.
+
 ```rust
 // marketdata.rs:172-198
 let bba_u = bba.filter_map(...);   // subscribe_best_bid_ask
@@ -23,20 +44,32 @@ while let Some((bid, ask)) = merged.next().await {
     let up = (bid + ask) / 2.0;
 ```
 
-Two independently-arriving WS subscriptions are merged with `futures::stream::select`, which
-yields whichever stream is ready first — it has no notion of the two streams' original relative
-ordering on the wire, only local poll readiness. Two distinct risks fall out of this:
+Two client-side-filtered views of one shared connection are merged with `futures::stream::select`,
+which yields whichever stream is ready first — it has no notion of the two streams' original
+relative ordering on the wire, only local poll readiness. Two distinct risks fall out of this:
 
 - **Cross-stream reordering.** If `best_bid_ask` and `price_changes` both eventually report the
   same underlying book change, nothing guarantees the merged stream yields them in the order the
   server actually emitted them. A later, already-superseded message from one channel can be
   processed after a newer message from the other channel just because of scheduling luck.
-- **Non-atomic `(best_bid, best_ask)` pairing within a single message.** The code takes each
-  `price_changes` entry's `best_bid`/`best_ask` fields at face value
-  (`marketdata.rs:183-186`), but nothing here confirms the SDK guarantees those two fields are a
-  true simultaneous snapshot rather than one fresh field paired with an echoed/stale one from a
-  partial update. This is opaque without reading `polymarket_client_sdk_v2`'s own source — not
-  confirmed, just not ruled out.
+- **Confirmed, not speculated: the SDK provides exactly the timestamps needed to prevent this,
+  and `spawn_poly_task` throws them away.** Checked
+  `polymarket_client_sdk_v2-0.6.0/src/clob/ws/types/response.rs` directly:
+  `BestBidAsk` carries its own `pub timestamp: i64` (Unix ms, `response.rs:194-196`), and the
+  `PriceChange` wrapper around each `price_changes` batch carries `pub timestamp: i64`
+  (`response.rs:108-109`, one timestamp per batch, shared by every `PriceChangeBatchEntry` in
+  it — not per-entry). `spawn_poly_task` never reads either field
+  (`marketdata.rs:172-191` only pulls `best_bid`/`best_ask`/`asset_id` off each message) and
+  stamps every tick with local `now_secs_f64()` instead (`marketdata.rs:199-204`). The two
+  streams' relative ordering could be reconstructed from these — right now it isn't.
+- **Correction to an earlier hedge:** `PriceChangeBatchEntry.best_bid`/`best_ask` are documented
+  in the SDK as "best bid/ask price *after this change*" (`response.rs:129-134`) — i.e. the SDK's
+  own contract is that these two fields are a coherent snapshot taken together at that specific
+  update, not one fresh field paired with an echoed stale one. So the *within-one-message*
+  non-atomicity concern this document originally raised is weaker than stated; the real risk is
+  entirely the **cross-stream** one above — mixing a `BestBidAsk` update and a
+  `PriceChangeBatchEntry` update that describe two different moments, with no timestamp kept to
+  tell them apart.
 
 Either failure mode produces the same symptom: a `(bid, ask)` pair, and therefore a `mid`
 price, that never corresponded to one real, coherent order-book instant. `siglab`'s 2026-07-16
@@ -85,14 +118,30 @@ tx.send(PolyTick { ts: now_secs_f64(), up, dn: 1.0 - up })
 ```
 
 `now_secs_f64()` is `SystemTime::now()` at the moment this task's loop iteration processes the
-message — not any timestamp the exchange or CLOB emitted. Compare `price_feed`'s own recorder,
-which persists both `server_ts` and `latency_ms` per row (visible directly in its parquet
-schema — confirmed while investigating the 2026-07-16 BNB incident). `trader::marketdata` has no
-equivalent: once a tick is in `PolyTick`/`BinanceTick`, there's no way to later ask "how much
-local processing/scheduling delay sat between the real event and when we saw it," which is
-exactly the question the BNB incident needed answered and couldn't get from this pipeline alone
-(it had to fall back on `price_feed`'s independent archive instead, which has its own coarser
-200ms-sampling limitation).
+message — not any timestamp the exchange or CLOB emitted, **despite the CLOB side of the SDK
+providing one** (see §1's confirmed `BestBidAsk.timestamp`/`PriceChange.timestamp` finding —
+`spawn_poly_task` never reads them). Binance's raw `@trade` WS payload is the same story: the
+code parses the full JSON value (`marketdata.rs:124`) but only ever reads `v["p"]` (price);
+Binance's standard `@trade` schema also includes `E` (event time) and `T` (trade time) fields
+that go unread and unused. Compare `price_feed`'s own recorder, which persists both `server_ts`
+and `latency_ms` per row (visible directly in its parquet schema — confirmed while investigating
+the 2026-07-16 BNB incident). `trader::marketdata` has no equivalent: once a tick is in
+`PolyTick`/`BinanceTick`, there's no way to later ask "how much local processing/scheduling delay
+sat between the real event and when we saw it," which is exactly the question the BNB incident
+needed answered and couldn't get from this pipeline alone (it had to fall back on `price_feed`'s
+independent archive instead, which has its own coarser 200ms-sampling limitation).
+
+**Why this wasn't caught by the existing latency instrumentation.** `TradeRecord` already tracks
+`entry_signal_latency_ms`/`entry_process_latency_ms` (`types.rs:146-157`), which look at a glance
+like they'd need a server timestamp — they don't. `live.rs`'s `latency_ms(from_ts, to_ts)`
+(`bin/live.rs:582-584`) is a plain `(to_ts - from_ts) * 1000.0`, and both endpoints passed to it
+trace back to `now_secs_f64()` calls made at different stages of *our own* pipeline (tick
+captured in `marketdata.rs` → driver receives it → fill confirmed). It's a real, useful measure
+of **internal processing latency** (queueing/scheduling delay inside our own async runtime) —
+but it was never designed to measure, and can't measure, **network/exchange latency** (how stale
+the price itself was relative to when the exchange's book actually changed), because neither
+endpoint is ever anchored to an exchange-side timestamp. The two kinds of latency look similar
+but answer different questions; today only the first is instrumented.
 
 ## 4. No outlier/rate-of-change filtering beyond `is_finite() && > 0`
 
