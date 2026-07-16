@@ -676,13 +676,51 @@ impl Driver<'_> {
     /// / PNL sections. One row per `(asset, strategy)` slot, sorted so a
     /// multi-strategy asset's rows render adjacently (mirrors Python's
     /// per-asset-then-per-strategy `_status()` breakdown).
+    /// Shown at the top of `/status` since the loss-streak halt's daily reset
+    /// hour otherwise isn't visible without checking `/params` per asset.
+    /// Groups by (strategy, hour) rather than assuming one global value per
+    /// strategy, so a config that ever splits `halt_reset_hour_rev`/`_hp` by
+    /// asset still renders correctly instead of silently picking one asset's
+    /// value. See `HaltTracker`'s daily-HKT-reset doc comment in `worker.rs`.
+    fn render_auto_reset_line(assets: &[AssetSlot]) -> String {
+        let mut groups: std::collections::BTreeMap<(&'static str, i64), Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for slot in assets {
+            let hour = if slot.worker.strategy_name == "high_prob" {
+                slot.params.halt_reset_hour_hp
+            } else {
+                slot.params.halt_reset_hour_rev
+            };
+            groups
+                .entry((slot.worker.strategy_name, hour))
+                .or_default()
+                .push(slot.worker.asset.as_str());
+        }
+        if groups.is_empty() {
+            return "Auto-reset (loss-streak halt): n/a".to_string();
+        }
+        let parts: Vec<String> = groups
+            .into_iter()
+            .map(|((strategy, hour), assets)| {
+                format!("{strategy} {hour:02}:00 HKT ({})", assets.join(","))
+            })
+            .collect();
+        format!(
+            "Auto-reset (loss-streak halt, daily): {}",
+            parts.join(" · ")
+        )
+    }
+
     async fn render_status(&self, assets: &[AssetSlot]) -> String {
         let now = hkt_now().format("%H:%M:%S HKT");
         let balance = match self.engine.fetch_balance().await {
             Some(b) => format!("${b:.4}"),
             None => "n/a (fetch failed)".to_string(),
         };
-        let mut sections = vec![format!("📊 <b>STATUS</b>  ({now})\nBalance: {balance}")];
+        let mut sections = vec![format!(
+            "📊 <b>STATUS</b>  ({now})\nBalance: {balance}\n{}",
+            Self::render_auto_reset_line(assets)
+        )];
 
         let mut slots: Vec<&AssetSlot> = assets.iter().collect();
         slots.sort_by(|a, b| {
@@ -2699,5 +2737,47 @@ mod halt_persist_tests {
 
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(&control_log).unwrap();
+    }
+
+    // ── render_auto_reset_line — "list the auto-reset time per strategy" ──────
+
+    #[test]
+    fn auto_reset_line_empty_when_no_assets() {
+        assert_eq!(
+            Driver::render_auto_reset_line(&[]),
+            "Auto-reset (loss-streak halt): n/a"
+        );
+    }
+
+    #[test]
+    fn auto_reset_line_shows_reversal_and_high_prob_hours() {
+        let mut hp = test_slot("ETH", scratch_state_path("auto_reset_hp"));
+        hp.worker = Worker::new_high_prob("ETH", &hp.params);
+        let rev = test_slot("BTC", scratch_state_path("auto_reset_rev"));
+
+        let line = Driver::render_auto_reset_line(&[rev, hp]);
+
+        // test_params(): halt_reset_hour_rev = 2, halt_reset_hour_hp = 8.
+        assert!(
+            line.contains("reversal 02:00 HKT (BTC)"),
+            "line was: {line}"
+        );
+        assert!(
+            line.contains("high_prob 08:00 HKT (ETH)"),
+            "line was: {line}"
+        );
+    }
+
+    #[test]
+    fn auto_reset_line_groups_multiple_assets_on_the_same_strategy_and_hour() {
+        let btc = test_slot("BTC", scratch_state_path("auto_reset_group_btc"));
+        let eth = test_slot("ETH", scratch_state_path("auto_reset_group_eth"));
+
+        let line = Driver::render_auto_reset_line(&[btc, eth]);
+
+        assert!(
+            line.contains("reversal 02:00 HKT (BTC,ETH)"),
+            "same-strategy same-hour assets must be grouped into one entry: {line}"
+        );
     }
 }

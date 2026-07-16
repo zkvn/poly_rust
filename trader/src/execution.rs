@@ -44,8 +44,11 @@ pub struct CloseResult {
     pub shares_sold: f64,
     /// Last retry's error message when `status == Failed`; `None` on success.
     pub error: Option<String>,
-    /// Number of close attempts made (1 = no retry needed). Always 1 for
-    /// `close_position_at_price`, which is single-attempt by design.
+    /// Number of close attempts made (1 = no retry needed). For
+    /// `close_position_at_price`, this counts internal retries against
+    /// `"not enough balance"` (settlement lag) only — every other failure is
+    /// still single-attempt by design, deferring to the caller's next real
+    /// `PolyTick` to retry. See `tp_close_retry_decision`.
     pub attempts: u32,
 }
 
@@ -136,13 +139,19 @@ pub trait ExecutionEngine: Send + Sync {
     async fn close_position(&self, token_id: U256, shares: f64) -> CloseResult;
 
     /// Market SELL (FAK) with a limit price floor — used for take-profit
-    /// ("unwind") closes, where `min_price` is the position's own tp_price. A
-    /// single attempt: if the book can't fill at `min_price` or better right
-    /// now, returns `Failed` immediately rather than retrying internally —
-    /// the caller re-tries on the next real price tick instead (see
+    /// ("unwind") closes, where `min_price` is the position's own tp_price.
+    /// Thin-book failures ("no orders found to match") are single-attempt: if
+    /// the book can't fill at `min_price` or better right now, returns
+    /// `Failed` immediately rather than retrying internally — the caller
+    /// re-tries on the next real price tick instead (see
     /// `worker.rs::on_unwind_failed`), which is both a natural backoff (no
     /// hammering) and price-safe (repeated attempts can't fill worse than
-    /// `min_price`).
+    /// `min_price`). "not enough balance" (the entry BUY hasn't settled on
+    /// Polymarket's balance ledger yet) is retried internally at a short
+    /// fixed cadence instead, since waiting for the next tick for *that*
+    /// failure caused a hammering incident of its own — see
+    /// `tp_close_retry_decision` and
+    /// trader/doc/incident_tp_latency_2026-07-16.md.
     async fn close_position_at_price(
         &self,
         token_id: U256,
@@ -418,6 +427,16 @@ pub struct LiveConfig {
     pub settle_sleep: Duration,
     /// Retries for "no orders found" / "not enough balance" when closing at stop-loss.
     pub close_max_retries: u32,
+    /// Extra retries beyond the first attempt for "not enough balance" specifically
+    /// on `close_position_at_price` (take-profit) — the entry BUY's fill hasn't
+    /// settled on Polymarket's balance ledger yet. Safe to retry internally at a
+    /// short fixed cadence (unlike other close_position_at_price failures, which
+    /// stay single-attempt and wait for the next real PolyTick) because the order
+    /// is always bounded at the caller's `min_price`, so a later attempt can never
+    /// fill worse than the original take-profit target. See
+    /// trader/doc/incident_tp_latency_2026-07-16.md.
+    pub tp_settle_retries: u32,
+    pub tp_settle_sleep: Duration,
 }
 
 impl Default for LiveConfig {
@@ -427,7 +446,32 @@ impl Default for LiveConfig {
             settle_retries: 3,
             settle_sleep: Duration::from_millis(1500),
             close_max_retries: 5,
+            tp_settle_retries: 30,
+            tp_settle_sleep: Duration::from_millis(100),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TpRetryDecision {
+    Retry,
+    Stop,
+}
+
+/// Pure classification of a `close_position_at_price` failure, factored out of
+/// the retry loop so it's unit-testable without a live CLOB connection (the
+/// loop itself hits the real SDK client and isn't mockable — see
+/// `LiveExecutionEngine`'s doc comment below). Only `"not enough balance"`
+/// (the entry BUY hasn't settled on Polymarket's balance ledger yet) retries;
+/// every other failure — including the well-known `"no orders found to match
+/// with FAK order"` thin-book case — stops immediately and lets the caller's
+/// next real `PolyTick` drive the retry instead, exactly as before this fix.
+/// See trader/doc/incident_tp_latency_2026-07-16.md.
+fn tp_close_retry_decision(msg: &str, attempt: u32, max_attempts: u32) -> TpRetryDecision {
+    if attempt < max_attempts && msg.contains("not enough balance") {
+        TpRetryDecision::Retry
+    } else {
+        TpRetryDecision::Stop
     }
 }
 
@@ -902,48 +946,76 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
             };
         };
 
-        // Single attempt, no internal retry loop: unlike close_position, a
-        // no-match here isn't retried immediately at the same price (that
-        // wouldn't help within the same instant) — the caller waits for the
-        // next real price tick before trying again, which is both a natural
-        // backoff and can't produce a worse fill than min_price.
-        let result = self
-            .client
-            .market_order()
-            .token_id(token_id)
-            .side(SdkSide::Sell)
-            .amount(Amount::shares(size_dec).unwrap_or(Amount::shares(Decimal::ZERO).unwrap()))
-            .price(price_dec)
-            .order_type(OrderType::FAK)
-            .build_sign_and_post(&self.signer)
-            .await;
+        // No-match ("no orders found to match with FAK order") isn't retried
+        // immediately at the same price — that wouldn't help within the same
+        // instant — so the caller waits for the next real price tick before
+        // trying again, which is both a natural backoff and can't produce a
+        // worse fill than min_price. "not enough balance" is different: it
+        // means the entry BUY that produced these shares hasn't settled on
+        // Polymarket's balance ledger yet (typically ~1-2s), so it's retried
+        // internally here at a short fixed cadence instead — see
+        // `tp_close_retry_decision`'s doc comment and
+        // trader/doc/incident_tp_latency_2026-07-16.md for why relying on the
+        // next PolyTick for *this specific* error caused a 2.9s, 55-attempt
+        // hammering incident.
+        let max_attempts = 1 + self.cfg.tp_settle_retries;
+        for attempt in 1..=max_attempts {
+            let result = self
+                .client
+                .market_order()
+                .token_id(token_id)
+                .side(SdkSide::Sell)
+                .amount(Amount::shares(size_dec).unwrap_or(Amount::shares(Decimal::ZERO).unwrap()))
+                .price(price_dec)
+                .order_type(OrderType::FAK)
+                .build_sign_and_post(&self.signer)
+                .await;
 
-        match result {
-            Ok(resp) if resp.success => {
-                let filled_usdc: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
-                let sold: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
-                CloseResult {
-                    filled_usdc,
-                    status: SellStatus::Matched,
-                    shares_sold: sold,
-                    error: None,
-                    attempts: 1,
+            match result {
+                Ok(resp) if resp.success => {
+                    let filled_usdc: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
+                    let sold: f64 = resp.making_amount.to_string().parse().unwrap_or(0.0);
+                    return CloseResult {
+                        filled_usdc,
+                        status: SellStatus::Matched,
+                        shares_sold: sold,
+                        error: None,
+                        attempts: attempt,
+                    };
+                }
+                Ok(_) => {
+                    return CloseResult {
+                        filled_usdc: 0.0,
+                        status: SellStatus::Failed,
+                        shares_sold: 0.0,
+                        error: Some("order not successful".to_string()),
+                        attempts: attempt,
+                    };
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if tp_close_retry_decision(&msg, attempt, max_attempts)
+                        == TpRetryDecision::Retry
+                    {
+                        tokio::time::sleep(self.cfg.tp_settle_sleep).await;
+                        continue;
+                    }
+                    return CloseResult {
+                        filled_usdc: 0.0,
+                        status: SellStatus::Failed,
+                        shares_sold: 0.0,
+                        error: Some(msg),
+                        attempts: attempt,
+                    };
                 }
             }
-            Ok(_) => CloseResult {
-                filled_usdc: 0.0,
-                status: SellStatus::Failed,
-                shares_sold: 0.0,
-                error: Some("order not successful".to_string()),
-                attempts: 1,
-            },
-            Err(e) => CloseResult {
-                filled_usdc: 0.0,
-                status: SellStatus::Failed,
-                shares_sold: 0.0,
-                error: Some(e.to_string()),
-                attempts: 1,
-            },
+        }
+        CloseResult {
+            filled_usdc: 0.0,
+            status: SellStatus::Failed,
+            shares_sold: 0.0,
+            error: Some("TP_SETTLE_RETRIES_EXHAUSTED".to_string()),
+            attempts: max_attempts,
         }
     }
 
@@ -974,6 +1046,39 @@ mod tests {
 
     fn dummy_token() -> U256 {
         U256::from(1u64)
+    }
+
+    // ── tp_close_retry_decision — trader/doc/incident_tp_latency_2026-07-16.md ──
+
+    #[test]
+    fn tp_retry_decision_retries_settlement_lag_error() {
+        let msg = "Status: error(400 Bad Request) making POST call to /order with \
+                    {\"error\":\"not enough balance / allowance: the balance is not \
+                    enough -> balance: 0, order amount: 1360000\"}";
+        assert_eq!(tp_close_retry_decision(msg, 1, 31), TpRetryDecision::Retry);
+    }
+
+    #[test]
+    fn tp_retry_decision_stops_on_last_attempt_even_for_settlement_lag() {
+        let msg = "not enough balance / allowance: the balance is not enough -> balance: 0";
+        assert_eq!(tp_close_retry_decision(msg, 31, 31), TpRetryDecision::Stop);
+    }
+
+    #[test]
+    fn tp_retry_decision_does_not_retry_thin_book_no_match() {
+        // The 2026-07-06 redesign's whole point: a thin-book no-match must NOT
+        // hammer internally — it waits for the next real PolyTick instead.
+        let msg = "no orders found to match with FAK order. FAK orders are partially \
+                    filled or killed if no match is found.";
+        assert_eq!(tp_close_retry_decision(msg, 1, 31), TpRetryDecision::Stop);
+    }
+
+    #[test]
+    fn tp_retry_decision_does_not_retry_unrelated_errors() {
+        assert_eq!(
+            tp_close_retry_decision("invalid amounts, max accuracy of 2 decimals", 1, 31),
+            TpRetryDecision::Stop
+        );
     }
 
     #[tokio::test]

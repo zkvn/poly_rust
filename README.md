@@ -217,10 +217,6 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **Take-profit close (`close_position_at_price`) has no `"balance: 0"` cooldown, unlike
-  `close_position` — found 2026-07-16, not fixed.** A settlement-lag race on a fresh entry fill
-  can turn into ~55 rejected sell attempts in under 3 seconds (one per incoming tick, no backoff)
-  before the CLOB balance catches up. See `trader/doc/incident_tp_latency_2026-07-16.md`.
 - **`gamma_recorder` has no Docker/Cross.toml/systemd packaging yet — deferred 2026-07-15.**
   The plan doc's §11 Docker-based CPU/memory soak-test gate and §5/§9's `Cross.toml`/systemd unit
   are specced for the pre-Oracle-deploy hardening pass; today's task was explicitly local-only
@@ -919,6 +915,28 @@ code). Summary:
 <summary><strong>Trading engine — known incidents</strong></summary>
 
 ## Trading engine — known incidents
+
+### Take-profit close `n_attempts` undercounted retries; settlement-lag race hammered the CLOB API (2026-07-16, fixed)
+
+A BTC take-profit close reported `n_attempts=1 process_latency=2891ms` — misleadingly clean-looking
+for what was actually the 56th close attempt. `close_position_at_price()` always returned
+`attempts: 1` by design, hiding that 55 prior attempts had been rejected with `"not enough
+balance"` (the entry BUY hadn't settled on Polymarket's balance ledger yet), one attempt per
+incoming `PolyTick` with no cooldown between them. Fixed by retrying that specific error internally
+at a fixed 100ms cadence (`LiveConfig::tp_settle_sleep`, capped at `tp_settle_retries = 30` extra
+attempts — a ~3s ceiling), bounded at the same `min_price` as before so a later fill can never be
+worse than the original take-profit target; `CloseResult.attempts` now reports the real count.
+Every other failure (thin book, etc.) is untouched — still single-attempt, still deferring to the
+next real tick, per the 2026-07-06 redesign. Full writeup:
+`trader/doc/incident_tp_latency_2026-07-16.md`.
+
+### `/status` now lists each strategy's daily loss-streak-halt auto-reset time up top (2026-07-16, added)
+
+The halt reset hour (`halt_reset_hour_rev`/`halt_reset_hour_hp`, HKT) was only visible via
+`/params` per asset. `bin/live.rs::Driver::render_auto_reset_line` now prints one line at the top
+of `/status`, grouped by (strategy, hour) so a future per-asset override wouldn't silently render
+as one asset's value — e.g. `Auto-reset (loss-streak halt, daily): reversal 02:00 HKT
+(BTC,ETH,SOL) · high_prob 08:00 HKT (ETH)`.
 
 ### Backtest reconciliation had no visibility into live's real halt state — fixed (2026-07-15)
 

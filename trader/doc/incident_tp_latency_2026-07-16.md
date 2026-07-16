@@ -116,16 +116,28 @@ land) would have left the position open past the intended exit and re-armed for 
 condition (stop-loss/timeout) instead — that didn't happen here, but it's the realistic bad
 outcome of this pattern.
 
-## 6. Not implemented — for review
+## 6. Fix (implemented 2026-07-16)
 
-No code changes made. Worth discussing before deciding on a fix:
+`close_position_at_price()` (`trader/src/execution.rs`) now special-cases `"not enough balance"`
+specifically: it retries internally at a fixed `tp_settle_sleep` cadence (100ms, `LiveConfig`
+default) for up to `tp_settle_retries` extra attempts (30, i.e. a 3.0s ceiling — comfortably above
+this incident's observed ~2.8s resolution time), and returns the real attempt count in
+`CloseResult.attempts`. Every other failure (thin book, etc.) is untouched — still single-attempt,
+still deferring to the next real `PolyTick`, exactly as the 2026-07-06 redesign intended. The
+retry decision itself is factored into a pure `tp_close_retry_decision(msg, attempt, max_attempts)`
+function so it's unit-testable without a live CLOB connection (`LiveExecutionEngine` talks to the
+real SDK client directly and isn't mockable).
 
-- Give `close_position_at_price()` (or the take-profit re-fire path in `worker.rs`) the same
-  kind of `"not enough balance"`-specific cooldown `close_position()` already has, so a
-  settlement-lag race gets absorbed in ~1-2 tries instead of racing every incoming tick.
-- Alternatively/additionally, distinguish `"balance: 0"` from other failures in the take-profit
-  re-arm path so it doesn't necessarily re-fire on the *very next* tick when the failure is known
-  to be a settlement race rather than a thin book.
-- Either way, `n_attempts` in the Telegram alert should probably reflect cross-tick retries too
-  (or a separate counter should), since the current field actively undersells how much retry
-  activity happened.
+This fixes both original complaints in one change: the settlement-lag race now resolves inside a
+single call at a controlled 100ms cadence instead of hammering the API once per incoming tick, and
+`n_attempts` in the Telegram alert now reports how many attempts that call actually made (so a
+future version of this incident would read e.g. `n_attempts=23`, not a misleading `n_attempts=1`).
+Cross-*tick* re-fires (if the internal budget is ever exhausted) still aren't summed into
+`n_attempts` — that's an accepted residual gap, expected to be rare now that the common case
+resolves within the internal retry loop.
+
+New tests: `tp_retry_decision_*` (execution.rs, pure classification logic) and
+`auto_reset_line_*` (bin/live.rs — unrelated `/status` addition done in the same pass, see
+README's "Latency & observability infrastructure" section). Full suite (207 lib + 34 `live.rs` bin
+tests) green, `cargo clippy --all-targets --all-features -- -D warnings` and
+`cargo fmt --all --check` both clean.
