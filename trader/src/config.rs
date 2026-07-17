@@ -21,6 +21,17 @@ pub struct StrategyToml {
     pub spread_discount_limit: f64,
     pub max_price_age_secs: f64,
     pub har_pup_enabled: bool,
+    /// Subscribe to the standalone indicator module's `indicator.<ASSET>` NATS
+    /// subject (requires `--nats-url`; see trader/doc/feature_vol_2026-07-18.md).
+    /// Phase 1 is log-only — no gate consumes the values. `#[serde(default)]`
+    /// (= false) keeps every pre-existing strategy_*.toml parsing and behaving
+    /// unchanged.
+    #[serde(default)]
+    pub indicator_enabled: bool,
+    /// Snapshots older than this read as absent — a dead indicator process
+    /// must look like "no indicator", same posture as `max_price_age_secs`.
+    #[serde(default = "default_indicator_max_age_secs")]
+    pub indicator_max_age_secs: f64,
     /// FAK BUY retry knob — process-wide, not per-asset (execution.rs's
     /// `LiveConfig`). Previously the live binary ignored this and used
     /// `LiveConfig::default()`'s hardcoded 2, silently diverging from whatever
@@ -112,6 +123,10 @@ pub struct StrategyToml {
     /// See trader/doc/feature_new_markets_2026-07-17.md §4.1.
     #[serde(default)]
     pub market_durations: HashMap<String, Vec<String>>,
+}
+
+fn default_indicator_max_age_secs() -> f64 {
+    5.0
 }
 
 /// Resolved per-asset parameters (all scalars).

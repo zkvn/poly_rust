@@ -39,6 +39,7 @@ use trader::execution::{
     ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus, SimExecutionEngine,
     local_signer_from_key, signature_type_from_env,
 };
+use trader::indicator_store::{IndicatorSnapshot, IndicatorStore};
 use trader::marketdata::{
     MarketDuration, PolySub, clob_client, current_slot, fetch_gamma_resolution, fetch_meta,
     hourly_et_coin_name, http_client, now_secs_f64, spawn_binance_task,
@@ -1651,6 +1652,10 @@ async fn main() -> Result<()> {
     // single-threaded step() loop.
     let (api_result_tx, mut api_result_rx) =
         mpsc::unbounded_channel::<(String, &'static str, Option<bool>)>();
+    // Indicator snapshots from the standalone indicator module (feature_vol_
+    // 2026-07-18.md). Channel exists unconditionally so the select! arm below
+    // always compiles; senders are only spawned when indicator_enabled.
+    let (indicator_tx, mut indicator_rx) = mpsc::unbounded_channel::<IndicatorSnapshot>();
 
     // One `AssetSlot` per (asset, strategy) pair — strategy list always comes from
     // the shared TOML's `AssetParams.strategies` (e.g. ETH -> [high_prob, reversal]),
@@ -1855,6 +1860,35 @@ async fn main() -> Result<()> {
                     }
                 }
             });
+
+            // Indicator module consumption (feature_vol_2026-07-18.md, phase 1:
+            // log-only). Malformed payloads are dropped silently — the subject
+            // is additive, never load-bearing.
+            if toml.indicator_enabled {
+                let mut sub = nc
+                    .subscribe(format!("indicator.{asset}"))
+                    .await
+                    .context("NATS indicator subscribe")?;
+                let out = indicator_tx.clone();
+                let a = asset.clone();
+                tokio::spawn(async move {
+                    let mut n: u64 = 0;
+                    while let Some(msg) = sub.next().await {
+                        if let Some(snap) = IndicatorSnapshot::parse(&msg.payload) {
+                            n += 1;
+                            if n == 1 {
+                                println!(
+                                    "[NATS] first indicator snapshot for {a}: {}",
+                                    snap.render()
+                                );
+                            }
+                            if out.send(snap).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
         }
         println!("[live] NATS subscriptions active — connecting to execution engine…");
     }
@@ -1984,8 +2018,16 @@ async fn main() -> Result<()> {
     let mut poly_subs: std::collections::HashMap<String, PolySub> =
         std::collections::HashMap::new();
 
+    // Latest indicator snapshot per asset — single-owner inside this loop, so
+    // no locking. Stale entries read as absent via `fresh()`.
+    let mut indicator_store = IndicatorStore::default();
+
     loop {
         tokio::select! {
+            Some(snap) = indicator_rx.recv() => {
+                indicator_store.update(snap);
+            }
+
             Some((asset, tick, server_ts)) = binance_rx.recv() => {
                 for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
                     slot.last_binance = tick.price;
@@ -2035,7 +2077,15 @@ async fn main() -> Result<()> {
                         // `current_slot_val + period - now` exactly
                         // (cycle_end_ts is set to slot+period at CycleOpen).
                         let time_left = slot.worker.cycle_end_ts() - now;
-                        println!("[live] heartbeat {} ({}) slug={slug} T-{time_left:.0}s binance={:.4} up={:.4} dn={:.4}",
+                        // Phase-1 indicator visibility: appended to the existing
+                        // heartbeat rather than a separate line so the live log
+                        // stays greppable per slot. Empty string when disabled,
+                        // stale, or not yet received.
+                        let ind = indicator_store
+                            .fresh(&slot.worker.asset, now, toml.indicator_max_age_secs)
+                            .map(|s| format!(" ind[{}]", s.render()))
+                            .unwrap_or_default();
+                        println!("[live] heartbeat {} ({}) slug={slug} T-{time_left:.0}s binance={:.4} up={:.4} dn={:.4}{ind}",
                             slot.market_key(), slot.worker.strategy_name, slot.last_binance, slot.last_poly_up, slot.last_poly_dn);
                     }
                 }

@@ -4,6 +4,7 @@ pub mod config;
 pub mod config_log;
 pub mod execution;
 pub mod gates;
+pub mod indicator_store;
 pub mod machine;
 pub mod marketdata;
 pub mod redemption;
