@@ -3,16 +3,26 @@
 //! deterministic — the parity harness (`indicator replay`) runs exactly these
 //! against the Python originals on identical inputs.
 
-/// Student-t CDF via the regularized incomplete beta function:
-/// `I_x(ν/2, 1/2)` with `x = ν/(ν+t²)` — the same identity scipy's `stdtr`
-/// (cephes) uses, so agreement is at f64 rounding level.
+/// Student-t CDF via the regularized incomplete beta function in its
+/// **symmetric** form: `cdf = 0.5 ± 0.5·I_x(1/2, ν/2)` with `x = t²/(ν+t²)`.
+///
+/// The textbook form `1 − 0.5·I_{ν/(ν+t²)}(ν/2, 1/2)` is catastrophically
+/// ill-conditioned for small |t| (x → 1 pushes `betai` into its cancellation
+/// regime: t = 1e-6 came back as 0.995 instead of 0.5000004) — caught by the
+/// 2026-07-17 BTC parity run, where all mismatched rows sat at |z| ≈ 1e-4.
+/// The symmetric form sends x → 0 instead and matches scipy's `stdtr` to
+/// ~1e-12 across the full range (verified against the same parity data).
 pub fn student_t_cdf(nu: f64, t: f64) -> f64 {
     if !t.is_finite() {
         return if t > 0.0 { 1.0 } else { 0.0 };
     }
-    let x = nu / (nu + t * t);
-    let ib = puruspe::betai(nu / 2.0, 0.5, x);
-    if t >= 0.0 { 1.0 - 0.5 * ib } else { 0.5 * ib }
+    let x = t * t / (nu + t * t);
+    let ib = puruspe::betai(0.5, nu / 2.0, x);
+    if t >= 0.0 {
+        0.5 + 0.5 * ib
+    } else {
+        0.5 - 0.5 * ib
+    }
 }
 
 /// Standard normal CDF — `Φ(z) = (1 + erf(z/√2)) / 2`, matching Python's
