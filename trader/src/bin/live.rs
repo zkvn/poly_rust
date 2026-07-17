@@ -36,12 +36,12 @@ use futures::StreamExt as _;
 use trader::balance::{BalanceGuard, GammaBalanceTracker, seconds_until_next_check};
 use trader::config::AssetParams;
 use trader::execution::{
-    ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus, local_signer_from_key,
-    signature_type_from_env,
+    ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus, SimExecutionEngine,
+    local_signer_from_key, signature_type_from_env,
 };
 use trader::marketdata::{
-    PolySub, clob_client, current_slot, fetch_gamma_resolution, fetch_meta, http_client, make_slug,
-    now_secs_f64, spawn_binance_task,
+    MarketDuration, PolySub, clob_client, current_slot, fetch_gamma_resolution, fetch_meta,
+    hourly_et_coin_name, http_client, now_secs_f64, spawn_binance_task,
 };
 use trader::telegram::commands::{Command, parse_command};
 use trader::telegram::render::HELP_TEXT;
@@ -124,9 +124,28 @@ struct Args {
     balance_check_offset_secs: u64,
 
     /// Subscribe to price ticks from a price_feed NATS publisher instead of opening
-    /// direct Binance/Poly WS connections (e.g. nats://localhost:4222).
+    /// direct Binance/Poly WS connections (e.g. nats://localhost:4222). Non-5m
+    /// markets (see `[market_durations]` in strategy_*.toml) always open their own
+    /// direct CLOB WS subscriptions regardless — price_feed only publishes the 5m
+    /// market's poly ticks (trader/doc/feature_new_markets_2026-07-17.md §5.3).
     #[arg(long)]
     nats_url: Option<String>,
+
+    /// Paper mode: no engine connection, no credentials needed, every
+    /// PlaceBuy/ClosePosition is simulated as an instant full fill at the
+    /// signal price (`SimExecutionEngine`), Telegram messages are prefixed
+    /// [DRY]. For local/Docker validation — running the real order path
+    /// locally would double-trade the same wallet as Oracle's live process
+    /// (the 2026-07-03 double-process incident class). Default OFF.
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+
+    /// Path to a weather_*.toml (cities + one reversal parameter set — see
+    /// trader::weather). Absent (the default, and the default in every
+    /// production invocation) ⇒ the weather module never runs at all.
+    /// trader/doc/feature_new_markets_2026-07-17.md §7.
+    #[arg(long)]
+    weather_config: Option<String>,
 }
 
 /// Current time in Hong Kong (UTC+8), matching the Python bot's `_HKT` convention.
@@ -142,11 +161,16 @@ fn hkt_now() -> chrono::DateTime<chrono::FixedOffset> {
 /// still not "the whole thing" the way the 25%-drawdown backstop is, since idle
 /// (`Watching`) slots are untouched. Pure and free of `AssetSlot` so it's unit-testable
 /// against plain `Worker`s.
-fn confirming_asset_labels<'a>(workers: impl IntoIterator<Item = &'a Worker>) -> Vec<String> {
-    workers
+/// `labeled` pairs each worker with its market label (`AssetSlot::market_key()`
+/// at the real call site — bare asset for 5m, `"BTC@15m"`-style otherwise) so
+/// a Confirming BTC-15m slot reads distinctly from a Confirming BTC-5m one.
+fn confirming_asset_labels<'a>(
+    labeled: impl IntoIterator<Item = (String, &'a Worker)>,
+) -> Vec<String> {
+    labeled
         .into_iter()
-        .filter(|w| w.is_confirming())
-        .map(|w| format!("{}/{}", w.asset, w.strategy_name))
+        .filter(|(_, w)| w.is_confirming())
+        .map(|(label, w)| format!("{}/{}", label, w.strategy_name))
         .collect()
 }
 
@@ -301,6 +325,49 @@ fn csv_sanitize(s: &str) -> String {
     s.replace(',', ";").replace('\n', " ")
 }
 
+const WEATHER_CSV_HEADER: &str =
+    "logged_at,city,bucket,entry_ts,exit_ts,entry_price,exit_price,shares,outcome,pnl";
+
+/// Weather trades get their own file + schema (`live_trades_weather.csv`) —
+/// they have no slug/strategy/side in the crypto sense, so gluing them into
+/// the per-asset CSVs would corrupt every consumer of those.
+fn append_weather_csv_header_if_new(path: &str) -> Result<()> {
+    use std::io::Write as _;
+    if std::path::Path::new(path).exists() {
+        return Ok(());
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    writeln!(f, "{WEATHER_CSV_HEADER}")?;
+    Ok(())
+}
+
+fn log_weather_trade(path: &str, t: &trader::weather::WeatherTrade) -> Result<()> {
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(
+        f,
+        "{},{},{},{},{},{},{},{},{},{}",
+        trader::marketdata::now_secs_f64(),
+        csv_sanitize(&t.city),
+        csv_sanitize(&t.bucket),
+        t.entry_ts,
+        t.exit_ts,
+        t.entry_price,
+        t.exit_price,
+        t.shares,
+        t.outcome,
+        t.pnl
+    )?;
+    Ok(())
+}
+
 fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
     use std::io::Write as _;
     let mut f = std::fs::OpenOptions::new()
@@ -430,9 +497,14 @@ fn log_control_event(slot: &AssetSlot, event: &str) {
         is_halted: bool,
     }
     let now = chrono::Utc::now();
+    // 5m slots log the bare asset (byte-identical to pre-duration entries, so
+    // trade_reconcile.py's halt-timeline reconstruction is unaffected);
+    // non-5m slots log "BTC@15m"-style keys, which that script's per-(asset,
+    // strategy) 5m matching simply never selects.
+    let market_key = slot.market_key();
     let entry = ControlLogEntry {
         ts: now.timestamp() as f64 + now.timestamp_subsec_millis() as f64 / 1000.0,
-        asset: &slot.worker.asset,
+        asset: &market_key,
         strategy: slot.worker.strategy_name,
         event,
         entry_suppressed: slot.worker.manually_suppressed(),
@@ -591,6 +663,16 @@ fn latency_ms(from_ts: f64, to_ts: f64) -> f64 {
 struct AssetSlot {
     worker: Worker,
     params: AssetParams,
+    /// Which market family this slot trades (trader/doc/
+    /// feature_new_markets_2026-07-17.md). 5m slots behave exactly as before
+    /// this field existed; non-5m slots differ only in slug construction,
+    /// rotation period, direct-WS poly feed, and duration-tagged file names.
+    duration: MarketDuration,
+    /// This slot's own last-seen cycle slot (epoch multiple of its period) —
+    /// per-slot because different durations cross boundaries at different
+    /// instants. `0` = no boundary seen yet this process run (drives the
+    /// startup mid-cycle suppression check, per slot).
+    slot_val: u64,
     up_id: U256,
     dn_id: U256,
     current_token_id: Option<U256>,
@@ -651,12 +733,41 @@ struct AssetSlot {
     last_poly_ts: Option<f64>,
 }
 
+impl AssetSlot {
+    /// The slot's market identity: bare `"BTC"` for 5m (so every pre-existing
+    /// key — NATS poly routing, resolution-watcher handoff, control_log asset
+    /// field, display strings — is byte-identical to before durations
+    /// existed), `"BTC@15m"` / `"BTC@1h-et"` / `"BTC@4h"` otherwise. Used as
+    /// the poly-tick routing key (a BTC-5m tick must never reach a BTC-15m
+    /// worker — different CLOB tokens), the Gamma-watcher reply key, the
+    /// control_log asset label (so trade_reconcile.py's 5m halt-timeline
+    /// reconstruction never sees non-5m events under a 5m key), and the
+    /// human-facing market label in logs/Telegram.
+    fn market_key(&self) -> String {
+        if self.duration.is_5m() {
+            self.worker.asset.clone()
+        } else {
+            format!("{}@{}", self.worker.asset, self.duration.suffix())
+        }
+    }
+}
+
 /// Shared context (account connection + Telegram) threaded through the
 /// recursive action loop. Holds no per-asset state — that all lives in
 /// `AssetSlot` — so it only needs `&self`, letting multiple assets share one
 /// `Driver` without fighting over a mutable borrow.
 struct Driver<'a> {
-    engine: &'a LiveExecutionEngine<Signer>,
+    /// The order-execution boundary — the real `LiveExecutionEngine` in
+    /// production, `SimExecutionEngine` under `--dry-run` (instant simulated
+    /// fills, no network, no credentials).
+    engine: &'a dyn ExecutionEngine,
+    /// The concrete live engine when one exists (`None` under `--dry-run`) —
+    /// only for the non-trait extras: `fetch_balance` in `/status` and the
+    /// periodic balance-guard sampling.
+    live_engine: Option<&'a LiveExecutionEngine<Signer>>,
+    /// Prefixes every Telegram message with `[DRY]` so a paper run can never
+    /// be misread as production output.
+    dry_run: bool,
     telegram: Option<Arc<TelegramBot>>,
     http: reqwest::Client,
     api_result_tx: mpsc::UnboundedSender<(String, &'static str, Option<bool>)>,
@@ -665,7 +776,12 @@ struct Driver<'a> {
 impl Driver<'_> {
     async fn notify(&self, text: &str) {
         if let Some(bot) = &self.telegram {
-            match bot.send(text).await {
+            let text = if self.dry_run {
+                format!("[DRY] {text}")
+            } else {
+                text.to_string()
+            };
+            match bot.send(&text).await {
                 Ok(_) => println!("[telegram] sent: {}", text.lines().next().unwrap_or("")),
                 Err(e) => eprintln!("[telegram] send error: {e:#}"),
             }
@@ -713,9 +829,12 @@ impl Driver<'_> {
 
     async fn render_status(&self, assets: &[AssetSlot]) -> String {
         let now = hkt_now().format("%H:%M:%S HKT");
-        let balance = match self.engine.fetch_balance().await {
-            Some(b) => format!("${b:.4}"),
-            None => "n/a (fetch failed)".to_string(),
+        let balance = match self.live_engine {
+            Some(engine) => match engine.fetch_balance().await {
+                Some(b) => format!("${b:.4}"),
+                None => "n/a (fetch failed)".to_string(),
+            },
+            None => "n/a (dry-run)".to_string(),
         };
         let mut sections = vec![format!(
             "📊 <b>STATUS</b>  ({now})\nBalance: {balance}\n{}",
@@ -724,8 +843,11 @@ impl Driver<'_> {
 
         let mut slots: Vec<&AssetSlot> = assets.iter().collect();
         slots.sort_by(|a, b| {
-            (a.worker.asset.as_str(), a.worker.strategy_name)
-                .cmp(&(b.worker.asset.as_str(), b.worker.strategy_name))
+            (a.worker.asset.as_str(), a.duration, a.worker.strategy_name).cmp(&(
+                b.worker.asset.as_str(),
+                b.duration,
+                b.worker.strategy_name,
+            ))
         });
 
         let mut ta_lines = Vec::new();
@@ -736,7 +858,8 @@ impl Driver<'_> {
         let mut seen_markets = std::collections::HashSet::new();
 
         for slot in &slots {
-            let name = &slot.worker.asset;
+            // "BTC" for 5m (unchanged), "BTC@15m" etc. for other durations.
+            let name = slot.market_key();
             let halted = slot.worker.is_halted();
             // Surfaces *why* it's halted — `/resume` only clears `suppressed`,
             // never `loss-streak` (that needs `/reset_losses` or the daily
@@ -913,7 +1036,7 @@ impl Driver<'_> {
                 );
                 println!(
                     "[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
-                    slot.worker.asset,
+                    slot.market_key(),
                     result.placed,
                     result.filled_shares,
                     result.cost,
@@ -927,7 +1050,7 @@ impl Driver<'_> {
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
                         "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
-                        slot.worker.asset, arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
+                        slot.market_key(), arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
                     Some(Event::OrderFilled {
                         filled_shares: result.filled_shares,
@@ -938,7 +1061,7 @@ impl Driver<'_> {
                 } else {
                     self.notify(&format!(
                         "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | n_attempts={} | error={}",
-                        slot.worker.asset, arrow_side(*side), slot.worker.strategy_name,
+                        slot.market_key(), arrow_side(*side), slot.worker.strategy_name,
                         result.attempts,
                         result.error.as_deref().unwrap_or("unknown")
                     )).await;
@@ -955,7 +1078,10 @@ impl Driver<'_> {
                 let confirmed_ts = now_secs_f64();
                 println!(
                     "[ORDER] {} LIMIT SELL {shares:.4} @ {price:.4} -> status={:?} order_id={:?} err={:?}",
-                    slot.worker.asset, r.status, r.order_id, r.error
+                    slot.market_key(),
+                    r.status,
+                    r.order_id,
+                    r.error
                 );
                 // No external signal_ts for this action (it's an internal
                 // follow-up to the entry fill, not driven by a market tick) —
@@ -978,7 +1104,7 @@ impl Driver<'_> {
                 if matches!(reason, CloseReason::StopLoss) {
                     println!(
                         "[SL] {} stop-loss triggered — closing {shares:.4} shares (sl_pnl floor crossed; up to 5 retries)",
-                        slot.worker.asset
+                        slot.market_key()
                     );
                     // Only alert on the first trigger for this position — worker.rs
                     // intentionally keeps re-firing ClosePosition{StopLoss} every
@@ -1007,14 +1133,14 @@ impl Driver<'_> {
                         let delta_pct = slot.worker.delta_pct() * 100.0;
                         self.notify(&format!(
                             "🛑 <b>{}</b> STOP LOSS triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | delta={delta_pct:+.3}%",
-                            slot.worker.asset, arrow_side(side), slot.worker.strategy_name
+                            slot.market_key(), arrow_side(side), slot.worker.strategy_name
                         )).await;
                     }
                 }
                 if matches!(reason, CloseReason::Timeout) {
                     println!(
                         "[TIMEOUT] {} max holding time elapsed — closing {shares:.4} shares (unwind_time floor crossed; up to 5 retries)",
-                        slot.worker.asset
+                        slot.market_key()
                     );
                     // Same first-trigger-only guard as stop-loss — worker.rs
                     // re-fires ClosePosition{Timeout} every PolyTick until the
@@ -1036,7 +1162,7 @@ impl Driver<'_> {
                             (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
                         self.notify(&format!(
                             "⏱️ <b>{}</b> TIME LIMIT triggered | {dt} | T-{time_left}s | {} | {}\nprice={trigger_price:.4} | max holding time elapsed — closing at market",
-                            slot.worker.asset, arrow_side(side), slot.worker.strategy_name
+                            slot.market_key(), arrow_side(side), slot.worker.strategy_name
                         )).await;
                     }
                 }
@@ -1065,7 +1191,7 @@ impl Driver<'_> {
                 let clob_latency_str = format!("clob_latency={}", fmt_latency(clob_latency_ms));
                 println!(
                     "[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
-                    slot.worker.asset,
+                    slot.market_key(),
                     result.status,
                     result.shares_sold,
                     result.filled_usdc,
@@ -1088,7 +1214,7 @@ impl Driver<'_> {
                     };
                     self.notify(&format!(
                         "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | {clob_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
-                        slot.worker.asset, slot.worker.strategy_name, result.filled_usdc, result.attempts
+                        slot.market_key(), slot.worker.strategy_name, result.filled_usdc, result.attempts
                     )).await;
                 }
                 let event = match (matched, reason) {
@@ -1127,7 +1253,7 @@ impl Driver<'_> {
             }
             Action::CancelLimitSell { order_id } => {
                 let ok = self.engine.cancel_limit_sell(order_id).await;
-                println!("[ORDER] {} CANCEL {order_id} -> {ok}", slot.worker.asset);
+                println!("[ORDER] {} CANCEL {order_id} -> {ok}", slot.market_key());
                 None
             }
             Action::Persist
@@ -1200,7 +1326,7 @@ impl Driver<'_> {
                         let delta_pct = slot.worker.delta_pct() * 100.0;
                         self.notify(&format!(
                             "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | cycle: ${:.2}→${:.2} | delta={delta_pct:+.3}% | pnl={sign}${:.4} | {}W/{}L",
-                            slot.worker.asset, rec.outcome.as_str(), hkt_now().format("%H:%M:%S"),
+                            slot.market_key(), rec.outcome.as_str(), hkt_now().format("%H:%M:%S"),
                             arrow_side(rec.side), slot.worker.strategy_name,
                             rec.token_price, rec.exit_price,
                             slot.worker.cycle_open_binance(), slot.last_binance,
@@ -1211,7 +1337,12 @@ impl Driver<'_> {
                             self.http.clone(),
                             rec.slug.clone(),
                             rec.side,
-                            slot.worker.asset.clone(),
+                            // The watcher's reply key: must be the slot's full
+                            // market identity, not the bare asset — a BTC-5m and
+                            // a BTC-15m reversal slot can both be Confirming at
+                            // once, and (asset, strategy) alone can't tell them
+                            // apart. Bare asset for 5m — unchanged.
+                            slot.market_key(),
                             slot.worker.strategy_name,
                             GammaPollCadence {
                                 deadline_secs: slot.params.gamma_poll_deadline_secs,
@@ -1243,7 +1374,7 @@ impl Driver<'_> {
                         slot.total_pnl += record.pnl - previous_pnl;
                         self.notify(&format!(
                             "⚠️ <b>{} RESULT CORRECTED</b> | {} | {}\nestimated={} → API={} | pnl {}{:.4} → {}{:.4}",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
+                            slot.market_key(), hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
                             previous_outcome.as_str(), record.outcome.as_str(),
                             if *previous_pnl >= 0.0 { "+" } else { "" }, previous_pnl,
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
@@ -1268,7 +1399,7 @@ impl Driver<'_> {
                         };
                         self.notify(&format!(
                             "{icon} <b>{} STOP {verdict}</b> | {} | {}\n{note}",
-                            slot.worker.asset,
+                            slot.market_key(),
                             hkt_now().format("%H:%M:%S"),
                             slot.worker.strategy_name
                         ))
@@ -1286,14 +1417,14 @@ impl Driver<'_> {
                         };
                         self.notify(&format!(
                             "🟡 <b>{} HALTED</b> | {} | {}\n{halt_n} consecutive losses — new entries suppressed until the next daily reset (or /resume).",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
+                            slot.market_key(), hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }
                     Action::HaltReset => {
                         log_control_event(slot, "halt_reset");
                         self.notify(&format!(
                             "🟢 <b>{} HALT RESET</b> | {} | {}\nDaily loss-streak reset — new entries re-armed.",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
+                            slot.market_key(), hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }
                     // A Gamma correction (Loss -> Win) pulled the loss-streak count
@@ -1304,7 +1435,7 @@ impl Driver<'_> {
                         log_control_event(slot, "halt_cleared_by_correction");
                         self.notify(&format!(
                             "🟢 <b>{} HALT CLEARED</b> | {} | {}\nA Gamma correction reversed one of the counted losses — new entries re-armed.",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
+                            slot.market_key(), hkt_now().format("%H:%M:%S"), slot.worker.strategy_name
                         )).await;
                     }
                     // Gamma never resolved within gamma_poll_deadline_secs of the position
@@ -1315,11 +1446,13 @@ impl Driver<'_> {
                         log_control_event(slot, "gamma_halt_engaged");
                         println!(
                             "[live] {} gave up waiting for Gamma resolution of {} — halting new entries ({})",
-                            slot.worker.asset, record.slug, slot.worker.strategy_name
+                            slot.market_key(),
+                            record.slug,
+                            slot.worker.strategy_name
                         );
                         self.notify(&format!(
                             "🔴 <b>{} GAMMA UNRESOLVED — HALTED</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). New entries suppressed until /resume; please verify manually.",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
+                            slot.market_key(), hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
                             record.slug, slot.params.gamma_poll_deadline_secs, record.outcome.as_str(),
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
                         )).await;
@@ -1335,7 +1468,9 @@ impl Driver<'_> {
                     } => {
                         println!(
                             "[live] {} gave up waiting for Gamma resolution of {} — balance up since last cycle's checkpoint, continuing ({})",
-                            slot.worker.asset, record.slug, slot.worker.strategy_name
+                            slot.market_key(),
+                            record.slug,
+                            slot.worker.strategy_name
                         );
                         let suffix = if *entry_suppressed {
                             " (new entries remain suppressed by a separate halt already in effect.)"
@@ -1344,7 +1479,7 @@ impl Driver<'_> {
                         };
                         self.notify(&format!(
                             "🟠 <b>{} GAMMA UNRESOLVED — CONTINUING</b> | {} | {}\nNo Polymarket resolution for {} within {:.0}s of cycle close — kept provisional {} (pnl {}{:.4}, unverified). Balance is up since last cycle's checkpoint, so not halting.{suffix} Please verify manually.",
-                            slot.worker.asset, hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
+                            slot.market_key(), hkt_now().format("%H:%M:%S"), slot.worker.strategy_name,
                             record.slug, slot.params.gamma_poll_deadline_secs, record.outcome.as_str(),
                             if record.pnl >= 0.0 { "+" } else { "" }, record.pnl
                         )).await;
@@ -1371,13 +1506,21 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    dotenvy::from_path(&args.env_file).with_context(|| format!("load {}", args.env_file))?;
-    let key = std::env::var("POLY_PRIVATE_KEY").context("POLY_PRIVATE_KEY not set")?;
-    let signer = local_signer_from_key(&key)?;
-    let funder_raw =
-        std::env::var("FUND_ADDRESS").unwrap_or_else(|_| DEFAULT_FUND_ADDRESS.to_string());
-    let funder = Address::from_str(&funder_raw)?;
-    let signature_type = signature_type_from_env()?;
+    // Credentials (and the env file itself) are only *required* for real
+    // trading — `--dry-run` must be runnable with no wallet material at all
+    // (its whole point is local/Docker validation without touching the
+    // production account). Signer/funder are read later, inside the
+    // engine-connect branch that actually needs them.
+    if args.dry_run {
+        if let Err(e) = dotenvy::from_path(&args.env_file) {
+            println!(
+                "[live] dry-run: env file {} not loaded ({e}) — continuing without credentials.",
+                args.env_file
+            );
+        }
+    } else {
+        dotenvy::from_path(&args.env_file).with_context(|| format!("load {}", args.env_file))?;
+    }
 
     std::fs::create_dir_all(&args.log_dir).with_context(|| format!("create {}", args.log_dir))?;
 
@@ -1390,7 +1533,13 @@ async fn main() -> Result<()> {
         args.max_trades,
         args.log_dir
     );
-    println!("[live] REAL MONEY — this will place live orders on production Polymarket.");
+    if args.dry_run {
+        println!(
+            "[live] DRY RUN — no orders will be placed; every fill below is simulated (SimExecutionEngine)."
+        );
+    } else {
+        println!("[live] REAL MONEY — this will place live orders on production Polymarket.");
+    }
 
     // Route CLOB writes through the EC2 HTTP proxy when running from a geo-restricted
     // region (same var that Python's _patch_clob_proxy reads; empty = direct connect).
@@ -1457,8 +1606,15 @@ async fn main() -> Result<()> {
     }
 
     let http = http_client()?;
-    // Clob client only needed for direct Poly WS subscriptions (not the NATS path).
-    let clob = if args.nats_url.is_none() {
+    // Clob client needed for direct Poly WS subscriptions: always in non-NATS
+    // mode, and — regardless of NATS — whenever any non-5m market is
+    // configured, since price_feed only publishes the 5m market's poly ticks
+    // (trader/doc/feature_new_markets_2026-07-17.md §5.3).
+    let any_non_5m = args
+        .asset
+        .iter()
+        .any(|a| toml.durations_for(a).iter().any(|d| d != "5m"));
+    let clob = if args.nats_url.is_none() || any_non_5m {
         Some(clob_client())
     } else {
         None
@@ -1486,105 +1642,144 @@ async fn main() -> Result<()> {
     // position/win-loss state, matching Python's per-asset Worker holding a list of
     // strategy objects that each fire/track independently.
     let mut assets: Vec<AssetSlot> = Vec::new();
+    // Direct-WS mode only: one Binance connection per unique *asset*, shared by
+    // every (strategy, duration) slot of that asset — previously this spawned
+    // one per (asset, strategy), the dormant duplication noted in README's TODO
+    // (production always uses NATS, which never hits this path). With durations
+    // multiplying the slot count, deduplicating here keeps direct-WS mode's
+    // connection count flat instead of × strategies × durations.
+    let mut binance_spawned: std::collections::HashSet<String> = std::collections::HashSet::new();
     for asset in &args.asset {
-        let mut params = toml.resolve(asset)?;
-        params.trade_size_usdc = args.size_usdc;
-        let max_buy_price = params.max_buy_price;
-        if params.strategies.is_empty() {
-            anyhow::bail!(
-                "no strategies configured for asset {asset} (missing both a `{asset}` and `default` entry in the config's [strategies] table)"
-            );
-        }
-
-        for strategy in &params.strategies {
-            let mut worker = match strategy.as_str() {
-                "reversal" => Worker::new_reversal(asset, &params),
-                "high_prob" => Worker::new_high_prob(asset, &params),
-                "v_shape" => Worker::new_v_shape(asset, &params),
-                other => {
-                    anyhow::bail!("unknown strategy `{other}` for asset {asset} (from config)")
-                }
+        for dur_label in toml.durations_for(asset) {
+            let Some(duration) = MarketDuration::parse(&dur_label) else {
+                anyhow::bail!(
+                    "unknown market duration `{dur_label}` for asset {asset} in [market_durations] \
+                     (valid: 5m, 15m, 1h-et, 4h — note the slot-based `1h` market does not exist \
+                     on Polymarket; the 60-minute family is `1h-et`)"
+                );
             };
-            let lower = asset.to_lowercase();
-            let log_path = format!("{}/live_trades_{lower}_{strategy}.csv", args.log_dir);
-            let state_file = format!("{}/live_state_{lower}_{strategy}.json", args.log_dir);
-            append_csv_header_if_new(&log_path)?;
-
-            // Restore halt state + /status counters from before the last
-            // restart (position/cycle state is deliberately NOT restored here
-            // — see README's "Restart behavior" section). `halt_max`/
-            // `halt_reset_hour` always come from the config just loaded above,
-            // never from this file, so a config change takes effect immediately.
-            let stats = match load_persisted_slot(&state_file) {
-                Some(persisted) => {
-                    worker.restore_halt(
-                        persisted.worker.entry_suppressed,
-                        persisted.worker.halt_losses,
-                        persisted.worker.halt_last_session,
-                    );
-                    persisted.stats
-                }
-                None => PersistedStats::default(),
-            };
-
-            if args.nats_url.is_none() {
-                let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<BinanceTick>();
-                spawn_binance_task(asset, raw_tx);
-                let out = binance_tx.clone();
-                let a = asset.clone();
-                tokio::spawn(async move {
-                    while let Some(tick) = raw_rx.recv().await {
-                        if out.send((a.clone(), tick, None)).is_err() {
-                            return;
-                        }
-                    }
-                });
+            if duration == MarketDuration::HourlyEt && hourly_et_coin_name(asset).is_none() {
+                anyhow::bail!(
+                    "asset {asset} has no known hourly-ET coin name (see \
+                     marketdata::hourly_et_coin_name) — cannot trade 1h-et"
+                );
+            }
+            // For "5m" this is exactly the pre-duration `toml.resolve(asset)`.
+            let mut params = toml.resolve_for_duration(asset, &dur_label)?;
+            params.trade_size_usdc = args.size_usdc;
+            let max_buy_price = params.max_buy_price;
+            if params.strategies.is_empty() {
+                anyhow::bail!(
+                    "no strategies configured for asset {asset} (missing both a `{asset}` and `default` entry in the config's [strategies] table)"
+                );
             }
 
-            assets.push(AssetSlot {
-                worker,
-                params: params.clone(),
-                up_id: U256::from(0u64),
-                dn_id: U256::from(0u64),
-                current_token_id: None,
-                max_buy_price,
-                log_path,
-                state_file,
-                control_log_path: format!("{}/control_log.jsonl", args.log_dir),
-                cycle_trades: 0,
-                sl_notified: false,
-                timeout_notified: false,
-                wins: stats.wins,
-                losses: stats.losses,
-                stoplosses: stats.stoplosses,
-                unwinds: stats.unwinds,
-                timeouts: stats.timeouts,
-                total_pnl: stats.total_pnl,
-                last_trade: stats.last_trade,
-                current_slug: None,
-                last_binance: 0.0,
-                last_poly_up: 0.0,
-                last_poly_dn: 0.0,
-                poly_sub: None,
-                last_binance_server_ts: None,
-                last_poly_server_ts: None,
-                last_binance_ts: None,
-                last_poly_ts: None,
-            });
-            // A restart-restored halt (or lack of one) is otherwise invisible
-            // to control_log.jsonl — the previous process's own halt/resume/
-            // reset_losses events are already in the log, but nothing marks
-            // *this* process picking that state back up. Log a snapshot so
-            // trade_reconcile.py's timeline reconstruction has a starting
-            // point right after every restart, not just gaps between them.
-            log_control_event(assets.last().unwrap(), "startup");
+            for strategy in &params.strategies {
+                let mut worker = match strategy.as_str() {
+                    "reversal" => Worker::new_reversal(asset, &params),
+                    "high_prob" => Worker::new_high_prob(asset, &params),
+                    "v_shape" => Worker::new_v_shape(asset, &params),
+                    other => {
+                        anyhow::bail!("unknown strategy `{other}` for asset {asset} (from config)")
+                    }
+                };
+                let lower = asset.to_lowercase();
+                // 5m keeps the exact legacy names; other durations get their own
+                // suffix-tagged files (fresh, collision-free — nothing migrated).
+                let file_tag = if duration.is_5m() {
+                    String::new()
+                } else {
+                    format!("_{}", duration.suffix())
+                };
+                let log_path = format!(
+                    "{}/live_trades_{lower}_{strategy}{file_tag}.csv",
+                    args.log_dir
+                );
+                let state_file = format!(
+                    "{}/live_state_{lower}_{strategy}{file_tag}.json",
+                    args.log_dir
+                );
+                append_csv_header_if_new(&log_path)?;
+
+                // Restore halt state + /status counters from before the last
+                // restart (position/cycle state is deliberately NOT restored here
+                // — see README's "Restart behavior" section). `halt_max`/
+                // `halt_reset_hour` always come from the config just loaded above,
+                // never from this file, so a config change takes effect immediately.
+                let stats = match load_persisted_slot(&state_file) {
+                    Some(persisted) => {
+                        worker.restore_halt(
+                            persisted.worker.entry_suppressed,
+                            persisted.worker.halt_losses,
+                            persisted.worker.halt_last_session,
+                        );
+                        persisted.stats
+                    }
+                    None => PersistedStats::default(),
+                };
+
+                if args.nats_url.is_none() && binance_spawned.insert(asset.clone()) {
+                    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<BinanceTick>();
+                    spawn_binance_task(asset, raw_tx);
+                    let out = binance_tx.clone();
+                    let a = asset.clone();
+                    tokio::spawn(async move {
+                        while let Some(tick) = raw_rx.recv().await {
+                            if out.send((a.clone(), tick, None)).is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+
+                assets.push(AssetSlot {
+                    worker,
+                    params: params.clone(),
+                    duration,
+                    slot_val: 0,
+                    up_id: U256::from(0u64),
+                    dn_id: U256::from(0u64),
+                    current_token_id: None,
+                    max_buy_price,
+                    log_path,
+                    state_file,
+                    control_log_path: format!("{}/control_log.jsonl", args.log_dir),
+                    cycle_trades: 0,
+                    sl_notified: false,
+                    timeout_notified: false,
+                    wins: stats.wins,
+                    losses: stats.losses,
+                    stoplosses: stats.stoplosses,
+                    unwinds: stats.unwinds,
+                    timeouts: stats.timeouts,
+                    total_pnl: stats.total_pnl,
+                    last_trade: stats.last_trade,
+                    current_slug: None,
+                    last_binance: 0.0,
+                    last_poly_up: 0.0,
+                    last_poly_dn: 0.0,
+                    poly_sub: None,
+                    last_binance_server_ts: None,
+                    last_poly_server_ts: None,
+                    last_binance_ts: None,
+                    last_poly_ts: None,
+                });
+                // A restart-restored halt (or lack of one) is otherwise invisible
+                // to control_log.jsonl — the previous process's own halt/resume/
+                // reset_losses events are already in the log, but nothing marks
+                // *this* process picking that state back up. Log a snapshot so
+                // trade_reconcile.py's timeline reconstruction has a starting
+                // point right after every restart, not just gaps between them.
+                log_control_event(assets.last().unwrap(), "startup");
+            }
         }
     }
 
     for slot in &assets {
         println!(
             "[live]   {} -> strategy={}",
-            slot.worker.asset, slot.worker.strategy_name
+            slot.market_key(),
+            slot.worker.strategy_name
         );
     }
 
@@ -1651,32 +1846,87 @@ async fn main() -> Result<()> {
         order_max_retries: toml.order_max_retries,
         ..LiveConfig::default()
     };
-    let engine =
-        LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, live_config)
-            .await?;
+    let live_engine: Option<Arc<LiveExecutionEngine<Signer>>> = if args.dry_run {
+        None
+    } else {
+        let key = std::env::var("POLY_PRIVATE_KEY").context("POLY_PRIVATE_KEY not set")?;
+        let signer = local_signer_from_key(&key)?;
+        let funder_raw =
+            std::env::var("FUND_ADDRESS").unwrap_or_else(|_| DEFAULT_FUND_ADDRESS.to_string());
+        let funder = Address::from_str(&funder_raw)?;
+        let signature_type = signature_type_from_env()?;
+        let engine =
+            LiveExecutionEngine::connect(CLOB_HOST, signer, funder, signature_type, live_config)
+                .await?;
 
-    // Real-time USER-channel fill logger (diagnostic sidecar — doesn't feed
-    // back into trading decisions). Subscribes to all markets for this
-    // account (empty `markets` list — see unwind.rs's `run()` doc comment).
-    {
-        let watcher = trader::unwind::UnwindWatcher::new();
-        let credentials = engine.credentials();
-        tokio::spawn(async move {
-            if let Err(e) = watcher
-                .run(UNWIND_WS_HOST, credentials, funder, vec![])
-                .await
-            {
-                eprintln!("[unwind] watcher exited: {e:#}");
-            }
-        });
-    }
+        // Real-time USER-channel fill logger (diagnostic sidecar — doesn't feed
+        // back into trading decisions). Subscribes to all markets for this
+        // account (empty `markets` list — see unwind.rs's `run()` doc comment).
+        // No account, no fills to log — skipped entirely in dry-run.
+        {
+            let watcher = trader::unwind::UnwindWatcher::new();
+            let credentials = engine.credentials();
+            tokio::spawn(async move {
+                if let Err(e) = watcher
+                    .run(UNWIND_WS_HOST, credentials, funder, vec![])
+                    .await
+                {
+                    eprintln!("[unwind] watcher exited: {e:#}");
+                }
+            });
+        }
+        Some(Arc::new(engine))
+    };
+    // The trait-object handle order execution goes through everywhere — the
+    // live engine or the dry-run sim. `Arc` because the weather tasks (if
+    // enabled) need a 'static clone; the Driver just borrows it.
+    let exec_engine: Arc<dyn ExecutionEngine> = match &live_engine {
+        Some(e) => e.clone(),
+        None => Arc::new(SimExecutionEngine::new()),
+    };
 
     let driver = Driver {
-        engine: &engine,
+        engine: exec_engine.as_ref(),
+        live_engine: live_engine.as_deref(),
+        dry_run: args.dry_run,
         telegram: telegram_send.clone(),
         http: http.clone(),
         api_result_tx: api_result_tx.clone(),
     };
+
+    // ── Weather markets (Phase B, feature_new_markets_2026-07-17.md §7) ──
+    // Inert without --weather-config: no config, no tasks, no subscriptions.
+    let (weather_tx, mut weather_rx) = mpsc::unbounded_channel::<trader::weather::WeatherTrade>();
+    let weather_log_path = format!("{}/live_trades_weather.csv", args.log_dir);
+    if let Some(ref path) = args.weather_config {
+        let wcfg = trader::weather::load_weather_config(path)?;
+        append_weather_csv_header_if_new(&weather_log_path)?;
+        println!(
+            "[live] weather enabled: {} cities ({}), band {:.2}/{:.2}, size=${:.2}{}",
+            wcfg.cities.len(),
+            wcfg.cities.join(","),
+            wcfg.low,
+            wcfg.high,
+            wcfg.trade_size_usdc,
+            if args.dry_run { " [DRY]" } else { "" }
+        );
+        let sinks = Arc::new(trader::weather::WeatherSinks {
+            engine: exec_engine.clone(),
+            http: http.clone(),
+            trade_tx: weather_tx.clone(),
+        });
+        for city in &wcfg.cities {
+            tokio::spawn(trader::weather::run_city(
+                city.clone(),
+                wcfg.clone(),
+                sinks.clone(),
+            ));
+        }
+    }
+    // Original sender dropped here: with no weather tasks the channel closes
+    // immediately and the select arm below goes permanently quiet; with tasks,
+    // their `WeatherSinks` clone keeps it open.
+    drop(weather_tx);
     let asset_strategy_summary = assets
         .iter()
         .map(|s| format!("{}:{}", s.worker.asset, s.worker.strategy_name))
@@ -1707,7 +1957,14 @@ async fn main() -> Result<()> {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut current_slot_val: u64 = 0;
+    // Direct-WS poly subscriptions for non-5m markets: one per (asset,
+    // duration) market — keyed by `market_key()` — shared by every strategy
+    // slot trading it, and replaced (old task aborted via PolySub's Drop) at
+    // that market's own cycle boundary. 5m slots never appear here: they use
+    // NATS (production) or their own per-slot `slot.poly_sub` (direct-WS
+    // mode, unchanged).
+    let mut poly_subs: std::collections::HashMap<String, PolySub> =
+        std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -1730,8 +1987,15 @@ async fn main() -> Result<()> {
                 }
             }
 
-            Some((asset, tick, server_ts)) = poly_rx.recv() => {
-                for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
+            Some((market, tick, server_ts)) = poly_rx.recv() => {
+                // Poly ticks are market-scoped, not asset-scoped: a BTC-5m and a
+                // BTC-15m market have different CLOB tokens, so their prices must
+                // never cross-feed. The routing key is `market_key()` — the bare
+                // asset for 5m (NATS publishes it that way; unchanged), and
+                // "ASSET@dur" for non-5m direct subscriptions. (Binance below
+                // stays asset-scoped on purpose: one reference price feeds every
+                // duration of that asset.)
+                for slot in assets.iter_mut().filter(|s| s.market_key() == market) {
                     slot.last_poly_up = tick.up;
                     slot.last_poly_dn = tick.dn;
                     slot.last_poly_server_ts = server_ts;
@@ -1744,57 +2008,82 @@ async fn main() -> Result<()> {
             }
 
             _ = heartbeat.tick() => {
-                let time_left = current_slot_val as f64 + args.period_secs as f64 - now_secs_f64();
+                let now = now_secs_f64();
                 for slot in &assets {
                     if let Some(slug) = &slot.current_slug {
+                        // Per-slot time-left: durations rotate on different
+                        // clocks, so there is no single process-wide T-value.
+                        // For a 5m slot this equals the old global
+                        // `current_slot_val + period - now` exactly
+                        // (cycle_end_ts is set to slot+period at CycleOpen).
+                        let time_left = slot.worker.cycle_end_ts() - now;
                         println!("[live] heartbeat {} ({}) slug={slug} T-{time_left:.0}s binance={:.4} up={:.4} dn={:.4}",
-                            slot.worker.asset, slot.worker.strategy_name, slot.last_binance, slot.last_poly_up, slot.last_poly_dn);
+                            slot.market_key(), slot.worker.strategy_name, slot.last_binance, slot.last_poly_up, slot.last_poly_dn);
                     }
                 }
             }
 
             _ = ticker.tick() => {
-                let slot_now = current_slot(args.period_secs);
-                if slot_now != current_slot_val {
-                    let is_first_tick = current_slot_val == 0;
-                    current_slot_val = slot_now;
+                // Per-tick guard: several strategy slots can share one non-5m
+                // market; its direct WS subscription is refreshed once per
+                // boundary, not once per slot.
+                let mut resubscribed: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                // Boundary detection is per slot (durations rotate on different
+                // clocks). For a 5m-only config every slot's boundary fires at
+                // exactly the instants the old single global `current_slot_val`
+                // check did — same `current_slot(300)` value, same 1s ticker.
+                for slot in assets.iter_mut() {
+                    let period = slot.duration.period_secs();
+                    let slot_now = current_slot(period);
+                    if slot_now == slot.slot_val {
+                        continue;
+                    }
+                    let is_first_tick = slot.slot_val == 0;
+                    slot.slot_val = slot_now;
                     let elapsed_into_slot = now_secs_f64() - slot_now as f64;
 
                     if should_suppress_startup_cycle(is_first_tick, elapsed_into_slot) {
                         println!(
-                            "[live] startup landed {elapsed_into_slot:.0}s into an already-open cycle (slot={slot_now}) — suppressing entries until the next clean cycle boundary (trader/doc/fix_live_deploy_2026-07-15.md)"
+                            "[live] startup landed {elapsed_into_slot:.0}s into an already-open {} cycle (slot={slot_now}) — suppressing entries until the next clean cycle boundary (trader/doc/fix_live_deploy_2026-07-15.md)",
+                            slot.market_key()
                         );
                         continue;
                     }
 
-                    for slot in assets.iter_mut() {
-                        let asset = slot.worker.asset.clone();
-                        if slot.current_slug.is_some() {
-                            let actions = slot.worker.step(Event::CycleClose);
-                            // CycleClose never produces PlaceBuy/ClosePosition, so the
-                            // feed tag is unused here — Clob is an arbitrary default.
-                            driver.process_actions(slot, actions, Feed::Clob).await;
-                        }
-                        if slot.last_binance <= 0.0 {
-                            slot.current_slug = None;
-                            continue;
-                        }
-                        // Fresh cycle, fresh allowance — never carried over from
-                        // the cycle that just closed.
-                        slot.cycle_trades = 0;
-                        slot.sl_notified = false;
-                        slot.timeout_notified = false;
+                    let asset = slot.worker.asset.clone();
+                    if slot.current_slug.is_some() {
+                        let actions = slot.worker.step(Event::CycleClose);
+                        // CycleClose never produces PlaceBuy/ClosePosition, so the
+                        // feed tag is unused here — Clob is an arbitrary default.
+                        driver.process_actions(slot, actions, Feed::Clob).await;
+                    }
+                    if slot.last_binance <= 0.0 {
+                        slot.current_slug = None;
+                        continue;
+                    }
+                    // Fresh cycle, fresh allowance — never carried over from
+                    // the cycle that just closed.
+                    slot.cycle_trades = 0;
+                    slot.sl_notified = false;
+                    slot.timeout_notified = false;
 
-                        let slug = make_slug(&asset, slot_now, "5m");
-                        match fetch_meta(&http, &slug).await {
-                            Ok((u, d)) => {
-                                slot.up_id = u;
-                                slot.dn_id = d;
+                    let slug = slot.duration.slug(&asset, slot_now);
+                    match fetch_meta(&http, &slug).await {
+                        Ok((u, d)) => {
+                            slot.up_id = u;
+                            slot.dn_id = d;
 
-                                // Direct Poly WS subscription only when not using NATS;
-                                // in the NATS path the subscription is already running
-                                // from startup (price_feed publishes price.poly.<ASSET>).
-                                if let Some(ref clob) = clob {
+                            if slot.duration.is_5m() {
+                                // 5m, direct-WS mode only: per-slot subscription,
+                                // routing key = bare asset — exactly the
+                                // pre-duration behavior. In the NATS path the
+                                // subscription is already running from startup
+                                // (price_feed publishes price.poly.<ASSET>).
+                                // `args.nats_url.is_none()` must be checked
+                                // explicitly now that `clob` can exist in NATS
+                                // mode too (for non-5m markets).
+                                if args.nats_url.is_none() && let Some(ref clob) = clob {
                                     let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<PolyTick>();
                                     slot.poly_sub = Some(PolySub::start(clob, u, raw_tx));
                                     let out = poly_tx.clone();
@@ -1807,18 +2096,39 @@ async fn main() -> Result<()> {
                                         }
                                     });
                                 }
-
-                                let ctx = CycleContext {
-                                    start_ts: slot_now as f64, end_ts: (slot_now + args.period_secs) as f64, open_binance: slot.last_binance,
-                                };
-                                println!("[live] new cycle {asset} ({}) slug={slug} open_binance={}", slot.worker.strategy_name, slot.last_binance);
-                                let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone() });
-                                // CycleOpen never produces PlaceBuy/ClosePosition either — see note above.
-                                driver.process_actions(slot, actions, Feed::Clob).await;
-                                slot.current_slug = Some(slug);
+                            } else {
+                                // Non-5m: always a direct WS subscription (NATS
+                                // never carries these markets), one per (asset,
+                                // duration), routing key = "ASSET@dur" so these
+                                // ticks can never reach a 5m worker or vice versa.
+                                let key = slot.market_key();
+                                if resubscribed.insert(key.clone()) {
+                                    let clob = clob.as_ref().expect(
+                                        "clob client is always constructed when non-5m markets are configured",
+                                    );
+                                    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<PolyTick>();
+                                    poly_subs.insert(key.clone(), PolySub::start(clob, u, raw_tx));
+                                    let out = poly_tx.clone();
+                                    tokio::spawn(async move {
+                                        while let Some(tick) = raw_rx.recv().await {
+                                            if out.send((key.clone(), tick, None)).is_err() {
+                                                return;
+                                            }
+                                        }
+                                    });
+                                }
                             }
-                            Err(e) => eprintln!("[live] meta fetch failed for {asset} {slug}: {e:#}"),
+
+                            let ctx = CycleContext {
+                                start_ts: slot_now as f64, end_ts: (slot_now + period) as f64, open_binance: slot.last_binance,
+                            };
+                            println!("[live] new cycle {} ({}) slug={slug} open_binance={}", slot.market_key(), slot.worker.strategy_name, slot.last_binance);
+                            let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone() });
+                            // CycleOpen never produces PlaceBuy/ClosePosition either — see note above.
+                            driver.process_actions(slot, actions, Feed::Clob).await;
+                            slot.current_slug = Some(slug);
                         }
+                        Err(e) => eprintln!("[live] meta fetch failed for {} {slug}: {e:#}", slot.market_key()),
                     }
                 }
             }
@@ -1878,7 +2188,7 @@ async fn main() -> Result<()> {
                     }
                     Command::ResetLosses { asset } => {
                         let matched: Vec<&mut AssetSlot> = assets.iter_mut()
-                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset))
+                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset) || s.market_key().eq_ignore_ascii_case(&asset))
                             .collect();
                         if matched.is_empty() {
                             Some(format!("this driver doesn't manage {asset} — trading {}", args.asset.join(", ")))
@@ -1895,7 +2205,7 @@ async fn main() -> Result<()> {
                     // indicators; with a strategy given, scope to that slot only.
                     Command::Halt { asset, strategy } => {
                         let matched: Vec<&mut AssetSlot> = assets.iter_mut()
-                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset)
+                            .filter(|s| (s.worker.asset.eq_ignore_ascii_case(&asset) || s.market_key().eq_ignore_ascii_case(&asset))
                                 && match &strategy {
                                     Some(st) => s.worker.strategy_name.eq_ignore_ascii_case(st),
                                     None => true,
@@ -1918,7 +2228,7 @@ async fn main() -> Result<()> {
                     }
                     Command::Resume { asset, strategy } => {
                         let matched: Vec<&mut AssetSlot> = assets.iter_mut()
-                            .filter(|s| s.worker.asset.eq_ignore_ascii_case(&asset)
+                            .filter(|s| (s.worker.asset.eq_ignore_ascii_case(&asset) || s.market_key().eq_ignore_ascii_case(&asset))
                                 && match &strategy {
                                     Some(st) => s.worker.strategy_name.eq_ignore_ascii_case(st),
                                     None => true,
@@ -1939,7 +2249,7 @@ async fn main() -> Result<()> {
                             };
                             let mut msg = format!("▶️ Resumed {label}.");
                             let scoped = assets.iter().filter(|s| {
-                                s.worker.asset.eq_ignore_ascii_case(&asset)
+                                (s.worker.asset.eq_ignore_ascii_case(&asset) || s.market_key().eq_ignore_ascii_case(&asset))
                                     && match &strategy {
                                         Some(st) => s.worker.strategy_name.eq_ignore_ascii_case(st),
                                         None => true,
@@ -1959,8 +2269,23 @@ async fn main() -> Result<()> {
                 }
             }
 
-            Some((asset, strategy, result)) = api_result_rx.recv() => {
-                if let Some(slot) = assets.iter_mut().find(|s| s.worker.asset == asset && s.worker.strategy_name == strategy) {
+            Some(trade) = weather_rx.recv() => {
+                if let Err(e) = log_weather_trade(&weather_log_path, &trade) {
+                    eprintln!("[weather] trade log error: {e:#}");
+                }
+                let icon = if trade.pnl >= 0.0 { "✅" } else { "❌" };
+                let sign = if trade.pnl >= 0.0 { "+" } else { "-" };
+                driver.notify(&format!(
+                    "{icon} <b>WEATHER {} {}</b> | {} | {}\nentry={:.4} → exit={:.4} | {:.4} shares | pnl={sign}${:.4}",
+                    trade.city, trade.outcome, hkt_now().format("%H:%M:%S"), trade.bucket,
+                    trade.entry_price, trade.exit_price, trade.shares, trade.pnl.abs()
+                )).await;
+            }
+
+            Some((market, strategy, result)) = api_result_rx.recv() => {
+                // `market` is the slot's `market_key()` (bare asset for 5m) —
+                // see the spawn_resolution_watcher call site.
+                if let Some(slot) = assets.iter_mut().find(|s| s.market_key() == market && s.worker.strategy_name == strategy) {
                     let event = match result {
                         Some(won) => Event::ApiResult { won },
                         // Unknown/failed verdict (`increased()` returns `None`) fails
@@ -1977,7 +2302,13 @@ async fn main() -> Result<()> {
             }
 
             _ = tokio::time::sleep_until(balance_deadline) => {
-                let bal = engine.fetch_balance().await;
+                // Dry-run has no account: `bal` stays None, which both trackers
+                // treat as "unknown ⇒ don't act" (see balance.rs) — the whole
+                // arm is inert on paper runs.
+                let bal = match &live_engine {
+                    Some(engine) => engine.fetch_balance().await,
+                    None => None,
+                };
                 gamma_balance.record(bal);
 
                 // Scoped halt (2026-07-11, trader/doc/plan_gammapi_2026-07-11.md): balance
@@ -1988,7 +2319,9 @@ async fn main() -> Result<()> {
                 // triggering this, same "unknown ⇒ don't act" convention as the Gamma-timeout
                 // override below.
                 if gamma_balance.increased() == Some(false) {
-                    let halted = confirming_asset_labels(assets.iter().map(|s| &s.worker));
+                    let halted = confirming_asset_labels(
+                        assets.iter().map(|s| (s.market_key(), &s.worker)),
+                    );
                     if !halted.is_empty() {
                         println!(
                             "[live] balance decreased vs last cycle's checkpoint — halting new entries on: {}",
@@ -2442,7 +2775,7 @@ mod balance_halt_scope_tests {
         let btc_watching = Worker::new_reversal("BTC", &btc_params);
 
         let workers = [&eth_hp, &btc_watching];
-        let halted = confirming_asset_labels(workers);
+        let halted = confirming_asset_labels(workers.map(|w| (w.asset.clone(), w)));
         assert_eq!(halted, vec!["ETH/reversal".to_string()]);
     }
 
@@ -2451,7 +2784,7 @@ mod balance_halt_scope_tests {
         let btc_params = test_params("BTC");
         let btc_watching = Worker::new_reversal("BTC", &btc_params);
         let workers = [&btc_watching];
-        assert!(confirming_asset_labels(workers).is_empty());
+        assert!(confirming_asset_labels(workers.map(|w| (w.asset.clone(), w))).is_empty());
     }
 
     #[test]
@@ -2468,7 +2801,7 @@ mod balance_halt_scope_tests {
         drive_to_confirming(&mut doge_rev, "doge-updown-5m-1000");
 
         let workers = [&eth_hp, &doge_rev];
-        let mut halted = confirming_asset_labels(workers);
+        let mut halted = confirming_asset_labels(workers.map(|w| (w.asset.clone(), w)));
         halted.sort();
         assert_eq!(
             halted,
@@ -2547,6 +2880,8 @@ mod halt_persist_tests {
         AssetSlot {
             worker: Worker::new_reversal(asset, &params),
             params,
+            duration: MarketDuration::M5,
+            slot_val: 0,
             up_id: U256::from(0u64),
             dn_id: U256::from(0u64),
             current_token_id: None,
@@ -2574,6 +2909,47 @@ mod halt_persist_tests {
             last_binance_ts: None,
             last_poly_ts: None,
         }
+    }
+
+    // ── market_key routing (feature_new_markets_2026-07-17.md §5.3) ──
+
+    /// 5m slots key as the bare asset — byte-identical to every key that
+    /// existed before durations (NATS routing, control_log, watcher replies).
+    #[test]
+    fn market_key_is_bare_asset_for_5m_and_tagged_otherwise() {
+        let slot = test_slot("BTC", scratch_state_path("mk5m"));
+        assert_eq!(slot.market_key(), "BTC");
+
+        let mut slot15 = test_slot("BTC", scratch_state_path("mk15m"));
+        slot15.duration = MarketDuration::M15;
+        assert_eq!(slot15.market_key(), "BTC@15m");
+
+        let mut slot1h = test_slot("BTC", scratch_state_path("mk1h"));
+        slot1h.duration = MarketDuration::HourlyEt;
+        assert_eq!(slot1h.market_key(), "BTC@1h-et");
+    }
+
+    /// The poly-tick cross-feed guard: a tick keyed "BTC" (the 5m/NATS key)
+    /// must match only the 5m slot, and a "BTC@15m" tick only the 15m slot —
+    /// same-asset different-duration markets have different CLOB tokens, so a
+    /// leak either way trades on the wrong market's prices.
+    #[test]
+    fn poly_routing_key_never_crosses_durations() {
+        let slot5 = test_slot("BTC", scratch_state_path("route5"));
+        let mut slot15 = test_slot("BTC", scratch_state_path("route15"));
+        slot15.duration = MarketDuration::M15;
+        let slots = [&slot5, &slot15];
+
+        let matches = |key: &str| -> Vec<String> {
+            slots
+                .iter()
+                .filter(|s| s.market_key() == key)
+                .map(|s| s.market_key())
+                .collect()
+        };
+        assert_eq!(matches("BTC"), vec!["BTC"]);
+        assert_eq!(matches("BTC@15m"), vec!["BTC@15m"]);
+        assert!(matches("ETH").is_empty());
     }
 
     /// The actual scenario `trader/doc/plan_halt_persist_2026-07-11.md` closes: a

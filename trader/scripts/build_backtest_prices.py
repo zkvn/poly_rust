@@ -34,6 +34,12 @@ to the same price_feed/raw/ sourcing as poly.
 Usage:
     python build_backtest_prices.py --asset ETH,BTC,DOGE --date 2026-07-03
     python build_backtest_prices.py --asset ETH --date 2026-07-03 --out-dir /tmp/bt_prices
+    # 15m/4h markets (added 2026-07-17, trader/doc/feature_new_markets_2026-07-17.md §6):
+    # reads price_feed/raw_15_mins/ (or raw_4hr/) for poly and writes
+    # {asset}_poly_15m_{date}.parquet (or _4h_) so nothing 5m-named is ever touched.
+    # Binance always comes from raw/ (the only dir recording it — period-independent)
+    # and keeps its usual {asset}_binance_{date}.parquet name for every source.
+    python build_backtest_prices.py --asset BTC --date 2026-07-16 --source 15m
 """
 import argparse
 import sys
@@ -43,8 +49,25 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-RAW_DIR = SCRIPT_DIR.parent.parent / "price_feed" / "raw"
+PRICE_FEED_DIR = SCRIPT_DIR.parent.parent / "price_feed"
+RAW_DIR = PRICE_FEED_DIR / "raw"
 DEFAULT_OUT_DIR = SCRIPT_DIR.parent / "backtest_prices"
+
+# Poly raw subdir + output-filename tag per market duration. "5m" must keep
+# reading raw/ and writing the untagged legacy names — trader backtest's
+# default path and trade_reconcile.py both depend on those exact names.
+# poly_subdir None means "use RAW_DIR", resolved at call time (not baked in
+# here) so tests patching RAW_DIR keep working.
+SOURCES = {
+    "5m": {"poly_subdir": None, "poly_tag": ""},
+    "15m": {"poly_subdir": "raw_15_mins", "poly_tag": "15m_"},
+    "4h": {"poly_subdir": "raw_4hr", "poly_tag": "4h_"},
+}
+
+
+def _poly_dir(source: str) -> Path:
+    sub = SOURCES[source]["poly_subdir"]
+    return RAW_DIR if sub is None else PRICE_FEED_DIR / sub
 
 sys.path.insert(0, str(SCRIPT_DIR.parent.parent / "price_feed" / "scripts"))
 # recover_live_tmp.py was renamed to recover_rust_parquet.py (poly/binance/book
@@ -68,32 +91,38 @@ def _read_or_recover(path: Path, recover_fn) -> pd.DataFrame:
         return recover_fn(str(path))
 
 
-def _gather_shards(asset: str, kind: str, date: str, recover_fn) -> list:
+def _gather_shards(asset: str, kind: str, date: str, recover_fn, raw_dir: Path = None) -> list:
     """Collect the daily file + sealed hourly shards + any still-open .tmp
-    for {asset}_{kind}_{date}* from price_feed/raw/ — shared by build_poly
+    for {asset}_{kind}_{date}* from `raw_dir` (price_feed/raw/ by default;
+    raw_15_mins/ / raw_4hr/ for --source 15m/4h poly) — shared by build_poly
     and build_binance, which differ only in the recovery decoder and the
-    columns kept afterward."""
+    columns kept afterward. `raw_dir=None` resolves to RAW_DIR at call time
+    (a def-time default would freeze the module constant and silently ignore
+    test monkey-patching of RAW_DIR)."""
+    if raw_dir is None:
+        raw_dir = RAW_DIR
     frames = []
 
-    daily = RAW_DIR / f"{asset}_{kind}_{date}.parquet"
+    daily = raw_dir / f"{asset}_{kind}_{date}.parquet"
     if daily.exists():
         frames.append(_read_or_recover(daily, recover_fn))
 
-    sealed = sorted(RAW_DIR.glob(f"{asset}_{kind}_{date}_*.parquet"))
+    sealed = sorted(raw_dir.glob(f"{asset}_{kind}_{date}_*.parquet"))
     for f in sealed:
         frames.append(_read_or_recover(f, recover_fn))
 
-    tmp_files = sorted(RAW_DIR.glob(f"{asset}_{kind}_{date}_*.parquet.tmp"))
+    tmp_files = sorted(raw_dir.glob(f"{asset}_{kind}_{date}_*.parquet.tmp"))
     for f in tmp_files:
         frames.append(_read_or_recover(f, recover_fn))
 
     return frames
 
 
-def build_poly(asset: str, date: str, out_dir: Path) -> None:
-    frames = _gather_shards(asset, "poly", date, recover_rust_poly_parquet)
+def build_poly(asset: str, date: str, out_dir: Path, source: str = "5m") -> None:
+    poly_dir = _poly_dir(source)
+    frames = _gather_shards(asset, "poly", date, recover_rust_poly_parquet, raw_dir=poly_dir)
     if not frames:
-        print(f"  {asset}: no poly files found for {date} in {RAW_DIR}")
+        print(f"  {asset}: no poly files found for {date} in {poly_dir}")
         return
 
     df = pd.concat(frames, ignore_index=True, sort=False)
@@ -102,7 +131,7 @@ def build_poly(asset: str, date: str, out_dir: Path) -> None:
     df = df[["ts", "up", "dn", "slug"]].drop_duplicates(subset=["ts", "slug"]).sort_values("ts")
     after = len(df)
 
-    out_path = out_dir / f"{asset}_poly_{date}.parquet"
+    out_path = out_dir / f"{asset}_poly_{SOURCES[source]['poly_tag']}{date}.parquet"
     df.to_parquet(out_path, index=False)
     print(f"  {asset} poly: {before} -> {after} rows -> {out_path}")
 
@@ -128,6 +157,13 @@ def main() -> None:
     ap.add_argument("--asset", required=True, help="comma-separated, e.g. BTC,ETH,DOGE")
     ap.add_argument("--date", required=True, help="YYYY-MM-DD (HKT calendar day)")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
+    ap.add_argument(
+        "--source",
+        default="5m",
+        choices=sorted(SOURCES),
+        help="market duration to build poly data for (default 5m — legacy behavior, "
+        "byte-identical filenames); binance always comes from raw/ regardless",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -135,7 +171,7 @@ def main() -> None:
 
     for asset in [a.strip().upper() for a in args.asset.split(",") if a.strip()]:
         print(f"[{asset} / {args.date}]")
-        build_poly(asset, args.date, out_dir)
+        build_poly(asset, args.date, out_dir, source=args.source)
         build_binance(asset, args.date, out_dir)
 
 

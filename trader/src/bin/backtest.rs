@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use trader::backtest::{load_price_data, run_backtest};
+use trader::backtest::{load_price_data_for_duration, run_backtest};
 use trader::config::{load_file, load_latest};
 use trader::types::TradeRecord;
 
@@ -56,6 +56,14 @@ struct Args {
     #[arg(long, help = "Disable halt (sets halt_rev=halt_prob=0)")]
     no_halt: bool,
 
+    /// Market duration to replay: "5m" (default — today's exact filenames and
+    /// behavior), "15m", or "4h" (load the `{ASSET}_poly_{dur}_{date}.parquet`
+    /// files `build_backtest_prices.py --source` writes, resolve `@{dur}`
+    /// config overrides). Hourly-ET/weather have no recorded ticks — not
+    /// accepted here. See trader/doc/feature_new_markets_2026-07-17.md §6.
+    #[arg(long, default_value = "5m")]
+    duration: String,
+
     #[arg(long, value_enum, default_value_t = OutputFormat::Table, help = "Output format")]
     format: OutputFormat,
 }
@@ -63,18 +71,29 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    if !matches!(args.duration.as_str(), "5m" | "15m" | "4h") {
+        anyhow::bail!(
+            "--duration must be one of 5m/15m/4h (got `{}`) — hourly-ET and weather \
+             markets have no recorded tick history to replay",
+            args.duration
+        );
+    }
+
     let toml = match &args.config_file {
         Some(path) => load_file(path)?,
         None => load_latest(&args.config_dir)?,
     };
-    let mut params = toml.resolve(&args.asset)?;
+    // For "5m" this is exactly `toml.resolve(&args.asset)` — see
+    // config.rs::resolve_for_duration.
+    let mut params = toml.resolve_for_duration(&args.asset, &args.duration)?;
     if args.no_halt {
         params.halt_rev = 0;
         params.halt_prob = 0;
         params.halt_v = 0;
     }
 
-    let (b_rows, p_rows) = load_price_data(&args.asset, &args.date, &args.prices_dir)?;
+    let (b_rows, p_rows) =
+        load_price_data_for_duration(&args.asset, &args.date, &args.prices_dir, &args.duration)?;
     let trades = run_backtest(&params, b_rows, p_rows);
 
     let out = match args.format {

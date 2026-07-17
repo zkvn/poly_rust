@@ -28,6 +28,128 @@ pub fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
     format!("{}-updown-{}-{}", asset.to_lowercase(), suffix, slot)
 }
 
+// ── Market durations (2026-07-17, trader/doc/feature_new_markets_2026-07-17.md) ──
+
+/// One market family a crypto asset can trade. Binds slug suffix and cycle
+/// period together in a single value **by design**: 900/3600/14400 are exact
+/// multiples of 300, so a mismatched (period, suffix) pair would *successfully*
+/// resolve a real 5m market and silently trade it on the wrong clock (the
+/// `plan_15_2026-07-08.md` §1.1 aliasing bug) — an enum makes that state
+/// unrepresentable, where two independent CLI flags would invite it.
+///
+/// `HourlyEt` is Polymarket's real 60-minute family (`polymarket.com/crypto/hourly`);
+/// a slot-based `{asset}-updown-1h-{slot}` market does not exist (checked live
+/// 2026-07-13 by siglab and re-checked 2026-07-17: `1h`/`60m`/`1hr`/`hourly` all
+/// return 0 events). Its slug is ET-calendar-hour based (see `hourly_et_slug`),
+/// but because the ET offset is a whole number of hours, its cycle boundaries
+/// coincide with UTC hour boundaries — `current_slot(3600)` is exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MarketDuration {
+    M5,
+    M15,
+    HourlyEt,
+    H4,
+}
+
+impl MarketDuration {
+    /// Parse a config-facing duration label. `None` for anything unrecognized —
+    /// callers must fail loudly at startup, never skip silently.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "5m" => Some(Self::M5),
+            "15m" => Some(Self::M15),
+            "1h-et" => Some(Self::HourlyEt),
+            "4h" => Some(Self::H4),
+            _ => None,
+        }
+    }
+
+    /// The config/display label; for slot-slug families this is also the slug
+    /// suffix `make_slug` takes.
+    pub fn suffix(&self) -> &'static str {
+        match self {
+            Self::M5 => "5m",
+            Self::M15 => "15m",
+            Self::HourlyEt => "1h-et",
+            Self::H4 => "4h",
+        }
+    }
+
+    pub fn period_secs(&self) -> u64 {
+        match self {
+            Self::M5 => 300,
+            Self::M15 => 900,
+            Self::HourlyEt => 3600,
+            Self::H4 => 14400,
+        }
+    }
+
+    pub fn is_5m(&self) -> bool {
+        matches!(self, Self::M5)
+    }
+
+    /// The market slug for `asset` at slot `slot` (a Unix-epoch multiple of
+    /// `period_secs()`, from `current_slot`).
+    pub fn slug(&self, asset: &str, slot: u64) -> String {
+        match self {
+            Self::HourlyEt => hourly_et_slug(asset, slot),
+            _ => make_slug(asset, slot, self.suffix()),
+        }
+    }
+}
+
+/// Polymarket's full coin name for the hourly-ET slug family — the only market
+/// family that doesn't use the ticker. Unknown assets return `None` (fail loud
+/// at startup, same posture as `MarketDuration::parse`).
+pub fn hourly_et_coin_name(asset: &str) -> Option<&'static str> {
+    match asset.to_uppercase().as_str() {
+        "BTC" => Some("bitcoin"),
+        "ETH" => Some("ethereum"),
+        "SOL" => Some("solana"),
+        "XRP" => Some("xrp"),
+        "DOGE" => Some("dogecoin"),
+        "BNB" => Some("bnb"),
+        _ => None,
+    }
+}
+
+/// Slug for the hourly-ET market whose cycle starts at `slot` (a Unix-epoch
+/// multiple of 3600): `{coin_name}-up-or-down-{month}-{day}-{year}-{h}{am|pm}-et`,
+/// e.g. `bitcoin-up-or-down-july-17-2026-1am-et` (verified live 2026-07-17).
+/// Month name lowercase, day and 12-hour hour unpadded. Ported from siglab's
+/// `rotation.rs::Rotation::HourlyEt` (in production there since 2026-07-13),
+/// reparametrized from "now" to an explicit slot so the caller's rotation clock
+/// and the slug can never disagree. Falls back to the ticker lowercased if the
+/// asset has no known coin name — callers are expected to have validated via
+/// `hourly_et_coin_name` at startup.
+pub fn hourly_et_slug(asset: &str, slot: u64) -> String {
+    use chrono::{Datelike as _, TimeZone as _, Timelike as _};
+    let coin = hourly_et_coin_name(asset)
+        .map(str::to_string)
+        .unwrap_or_else(|| asset.to_lowercase());
+    let et = chrono_tz::America::New_York
+        .timestamp_opt(slot as i64, 0)
+        .single()
+        .unwrap_or_else(|| {
+            chrono_tz::America::New_York
+                .timestamp_opt(0, 0)
+                .single()
+                .unwrap()
+        });
+    let h24 = et.hour();
+    let h12 = match h24 % 12 {
+        0 => 12,
+        h => h,
+    };
+    let ampm = if h24 < 12 { "am" } else { "pm" };
+    format!(
+        "{coin}-up-or-down-{}-{}-{}-{h12}{ampm}-et",
+        et.format("%B").to_string().to_lowercase(),
+        et.day(),
+        et.year(),
+    )
+}
+
 fn d2f(d: &polymarket_client_sdk_v2::types::Decimal) -> f64 {
     d.to_string().parse::<f64>().unwrap_or(f64::NAN)
 }
@@ -323,6 +445,91 @@ mod tests {
     fn poly_update_zero_or_negative_last_accepted_timestamp_always_accepts_next() {
         assert!(should_accept_poly_update(Some(0), 5));
         assert!(should_accept_poly_update(Some(-1), 5));
+    }
+
+    // ── MarketDuration / hourly-ET slugs (feature_new_markets_2026-07-17.md) ──
+
+    #[test]
+    fn market_duration_parse_roundtrip_and_periods() {
+        for (label, period) in [("5m", 300), ("15m", 900), ("1h-et", 3600), ("4h", 14400)] {
+            let d = MarketDuration::parse(label).expect(label);
+            assert_eq!(d.suffix(), label);
+            assert_eq!(d.period_secs(), period);
+        }
+        assert!(MarketDuration::parse("5m").unwrap().is_5m());
+        assert!(!MarketDuration::parse("15m").unwrap().is_5m());
+        // The aliasing-bug guard: unknown labels (including the slot-based "1h"
+        // that does not exist on Polymarket) must not parse.
+        for bad in ["1h", "60m", "1hr", "hourly", "", "5M"] {
+            assert!(MarketDuration::parse(bad).is_none(), "{bad} must not parse");
+        }
+    }
+
+    #[test]
+    fn slot_family_slugs_match_make_slug() {
+        assert_eq!(
+            MarketDuration::M5.slug("BTC", 1_784_266_500),
+            "btc-updown-5m-1784266500"
+        );
+        assert_eq!(
+            MarketDuration::M15.slug("ETH", 1_784_266_200),
+            "eth-updown-15m-1784266200"
+        );
+        assert_eq!(
+            MarketDuration::H4.slug("DOGE", 1_784_260_800),
+            "doge-updown-4h-1784260800"
+        );
+    }
+
+    #[test]
+    fn hourly_et_slug_matches_live_verified_example() {
+        // 2026-07-17 05:00:00 UTC == 1:00am EDT — the exact slug fetched live
+        // (1 event, ["Up","Down"]) while writing the plan doc.
+        assert_eq!(
+            MarketDuration::HourlyEt.slug("BTC", 1_784_264_400),
+            "bitcoin-up-or-down-july-17-2026-1am-et"
+        );
+    }
+
+    #[test]
+    fn hourly_et_slug_noon_and_midnight_use_12() {
+        // 2026-07-17 16:00 UTC == 12pm EDT (noon).
+        assert_eq!(
+            hourly_et_slug("ETH", 1_784_304_000),
+            "ethereum-up-or-down-july-17-2026-12pm-et"
+        );
+        // 2026-07-17 04:00 UTC == 12am EDT (midnight).
+        assert_eq!(
+            hourly_et_slug("SOL", 1_784_260_800),
+            "solana-up-or-down-july-17-2026-12am-et"
+        );
+    }
+
+    #[test]
+    fn hourly_et_slug_handles_est_winter_offset() {
+        // 2026-01-15 17:00 UTC == 12pm EST (UTC-5, not EDT's UTC-4) — the date
+        // formatting must follow the ET calendar, not UTC's.
+        assert_eq!(
+            hourly_et_slug("BTC", 1_768_496_400),
+            "bitcoin-up-or-down-january-15-2026-12pm-et"
+        );
+    }
+
+    #[test]
+    fn hourly_et_coin_names_cover_all_six_assets() {
+        for (asset, coin) in [
+            ("BTC", "bitcoin"),
+            ("ETH", "ethereum"),
+            ("SOL", "solana"),
+            ("XRP", "xrp"),
+            ("DOGE", "dogecoin"),
+            ("BNB", "bnb"),
+        ] {
+            assert_eq!(hourly_et_coin_name(asset), Some(coin));
+            // Case-insensitive on the ticker.
+            assert_eq!(hourly_et_coin_name(&asset.to_lowercase()), Some(coin));
+        }
+        assert_eq!(hourly_et_coin_name("HYPE"), None, "no hourly-ET market");
     }
 
     #[test]

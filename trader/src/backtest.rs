@@ -250,6 +250,30 @@ fn merge_ticks(b_cycle: &[BinanceRow], p_cycle: &[PolyRow]) -> Vec<MergedTick> {
 
 const CYCLE_LENGTH_S: f64 = 300.0;
 
+/// Cycle length implied by the slug's own duration suffix
+/// (`{asset}-updown-{suffix}-{slot}`): 300/900/14400 for 5m/15m/4h. Any other
+/// shape — including every pre-2026-07-17 5m slug and any parse failure —
+/// returns the historical `CYCLE_LENGTH_S` (300.0), so existing 5m replays are
+/// bit-identical. Deriving the period from the data being replayed (rather
+/// than a CLI flag) means a 15m parquet can never be replayed on a 5m clock,
+/// the silent-corruption failure mode `plan_15_2026-07-08.md` §1.1 warned
+/// about. Hourly-ET and weather slugs deliberately don't parse here — those
+/// families have no recorded ticks and aren't backtestable.
+fn cycle_period_from_slug(slug: &str) -> f64 {
+    let mut parts = slug.split('-');
+    while let Some(p) = parts.next() {
+        if p == "updown" {
+            return match parts.next() {
+                Some("5m") => 300.0,
+                Some("15m") => 900.0,
+                Some("4h") => 14400.0,
+                _ => CYCLE_LENGTH_S,
+            };
+        }
+    }
+    CYCLE_LENGTH_S
+}
+
 fn replay_cycle(
     slug: &str,
     b_cycle: &[BinanceRow],
@@ -264,7 +288,7 @@ fn replay_cycle(
     }
 
     let slug_ts: f64 = slug.rsplit('-').next().unwrap().parse().unwrap();
-    let cycle_end_ts = slug_ts + CYCLE_LENGTH_S;
+    let cycle_end_ts = slug_ts + cycle_period_from_slug(slug);
 
     // cycle_open_binance = first binance tick sorted by ts
     let mut b_sorted = b_cycle.to_vec();
@@ -584,12 +608,119 @@ pub fn load_price_data(
     filter_by_date(b_rows, p_rows, date)
 }
 
+/// Duration-aware variant (trader/doc/feature_new_markets_2026-07-17.md §6):
+/// `"5m"` delegates to `load_price_data` — today's exact filenames and
+/// fallback behavior, untouched. `"15m"`/`"4h"` load the duration-tagged poly
+/// file `build_backtest_prices.py --source` writes
+/// (`{asset}_poly_{duration}_{date}.parquet`) alongside the shared,
+/// period-independent Binance file (only `raw/` records Binance; the same
+/// dated file serves every duration). No merged-file fallback for non-5m —
+/// those files never existed in any legacy layout.
+pub fn load_price_data_for_duration(
+    asset: &str,
+    date: &str,
+    prices_dir: &str,
+    duration: &str,
+) -> Result<(Vec<BinanceRow>, Vec<PolyRow>)> {
+    if duration == "5m" {
+        return load_price_data(asset, date, prices_dir);
+    }
+    let dir = prices_dir.trim_end_matches('/');
+    let b_dated = format!("{dir}/{asset}_binance_{date}.parquet");
+    let p_dated = format!("{dir}/{asset}_poly_{duration}_{date}.parquet");
+    let b_rows = load_binance(&b_dated)?;
+    let p_rows = load_poly(&p_dated)?;
+    Ok((rebucket_binance_slugs(b_rows, asset, duration), p_rows))
+}
+
+/// Re-key Binance rows to `duration`'s own slot slugs. The shared Binance
+/// file comes from `price_feed/raw/`, whose rows were recorded (and slug-
+/// tagged) by the *5m* task — `run_backtest` groups both feeds by slug, so
+/// without this every non-5m cycle would find zero Binance rows and be
+/// silently skipped (`replay_cycle` returns empty on an empty side). Binance
+/// ticks are period-independent; re-bucketing by the tick's own timestamp is
+/// exactly how price_feed's own 15m/4h tasks tag their recorded copies.
+fn rebucket_binance_slugs(
+    mut b_rows: Vec<BinanceRow>,
+    asset: &str,
+    duration: &str,
+) -> Vec<BinanceRow> {
+    let period = match duration {
+        "15m" => 900u64,
+        "4h" => 14400u64,
+        _ => return b_rows,
+    };
+    let prefix = asset.to_lowercase();
+    for r in &mut b_rows {
+        let slot = (r.ts as u64) / period * period;
+        r.slug = format!("{prefix}-updown-{duration}-{slot}");
+    }
+    b_rows
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    // ── cycle_period_from_slug (feature_new_markets_2026-07-17.md §6) ──
+
+    /// Every existing 5m slug — and anything unparseable — must map to the
+    /// historical 300.0 constant, keeping 5m replays bit-identical.
+    #[test]
+    fn cycle_period_five_minute_and_fallback() {
+        assert_eq!(cycle_period_from_slug("btc-updown-5m-1784266500"), 300.0);
+        assert_eq!(cycle_period_from_slug("eth-updown-5m-1783046100"), 300.0);
+        // Garbage / non-slot shapes fall back to 300.0, never panic.
+        assert_eq!(cycle_period_from_slug(""), 300.0);
+        assert_eq!(cycle_period_from_slug("not-a-slug"), 300.0);
+        assert_eq!(cycle_period_from_slug("btc-updown-"), 300.0);
+        assert_eq!(
+            cycle_period_from_slug("bitcoin-up-or-down-july-17-2026-1am-et"),
+            300.0,
+            "hourly-ET slugs are not backtestable; fallback is inert"
+        );
+    }
+
+    #[test]
+    fn cycle_period_new_durations() {
+        assert_eq!(cycle_period_from_slug("btc-updown-15m-1784266200"), 900.0);
+        assert_eq!(cycle_period_from_slug("doge-updown-4h-1784260800"), 14400.0);
+    }
+
+    /// Binance rows from raw/ carry 5m slugs; a 15m replay must re-key them to
+    /// the 15m slot containing each tick's own timestamp, or every cycle is
+    /// silently skipped for want of Binance data (found live-testing the first
+    /// 15m backtest, 2026-07-17).
+    #[test]
+    fn rebucket_binance_slugs_rekeys_to_duration_slots() {
+        let rows = vec![
+            BinanceRow {
+                ts: 1_784_130_300.0, // exactly a 15m boundary
+                price: 100.0,
+                slug: "btc-updown-5m-1784130300".to_string(),
+            },
+            BinanceRow {
+                ts: 1_784_131_199.9, // last instant of the same 15m slot
+                price: 101.0,
+                slug: "btc-updown-5m-1784131000".to_string(),
+            },
+            BinanceRow {
+                ts: 1_784_131_200.0, // first instant of the next slot
+                price: 102.0,
+                slug: "btc-updown-5m-1784131200".to_string(),
+            },
+        ];
+        let out = rebucket_binance_slugs(rows.clone(), "BTC", "15m");
+        assert_eq!(out[0].slug, "btc-updown-15m-1784130300");
+        assert_eq!(out[1].slug, "btc-updown-15m-1784130300");
+        assert_eq!(out[2].slug, "btc-updown-15m-1784131200");
+        // Unknown duration: passthrough, untouched.
+        let out = rebucket_binance_slugs(rows, "5m", "5m");
+        assert_eq!(out[0].slug, "btc-updown-5m-1784130300");
+    }
 
     /// Golden parity test: Rust backtest on BTC 2026-06-20 must match Python bt1,
     /// plus one additional trade from the poly-triggered-entry change

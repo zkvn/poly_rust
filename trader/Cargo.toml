@@ -30,6 +30,7 @@ path = "src/bin/telegram_probe.rs"
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 arrow = { version = "54", features = ["prettyprint"] }
 parquet = { version = "54", features = ["arrow"] }
 serde = { version = "1", features = ["derive"] }

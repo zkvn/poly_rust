@@ -12,4 +12,5 @@ pub mod strategies;
 pub mod telegram;
 pub mod types;
 pub mod unwind;
+pub mod weather;
 pub mod worker;

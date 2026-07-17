@@ -104,6 +104,14 @@ pub struct StrategyToml {
     pub har_beta: HashMap<String, Vec<f64>>,
     #[serde(default)]
     pub har_nu: HashMap<String, f64>,
+
+    /// Which market durations each asset trades — `"5m"`, `"15m"`, `"1h-et"`,
+    /// `"4h"` (see `marketdata::MarketDuration`). `#[serde(default)]` and a
+    /// `["5m"]` fallback in `durations_for` mean a config without this table
+    /// (every config before 2026-07-17) behaves exactly as before: 5m only.
+    /// See trader/doc/feature_new_markets_2026-07-17.md §4.1.
+    #[serde(default)]
+    pub market_durations: HashMap<String, Vec<String>>,
 }
 
 /// Resolved per-asset parameters (all scalars).
@@ -171,84 +179,132 @@ pub fn get_asset<T: Copy>(map: &HashMap<String, T>, asset: &str) -> Option<T> {
     map.get(asset).or_else(|| map.get("default")).copied()
 }
 
-fn req<T: Copy>(map: &HashMap<String, T>, asset: &str, field: &str) -> Result<T> {
-    get_asset(map, asset).with_context(|| {
-        format!("config field `{field}` missing default and no entry for `{asset}`")
+/// First hit along an ordered key chain — the generalization of `get_asset`'s
+/// `asset` → `"default"` lookup that duration-scoped resolution needs (e.g.
+/// `"BTC@15m"` → `"default@15m"` → `"BTC"` → `"default"`). `get_asset(m, a)`
+/// is exactly `get_chain(m, &[a, "default"])`.
+fn get_chain<T: Copy>(map: &HashMap<String, T>, keys: &[&str]) -> Option<T> {
+    keys.iter().find_map(|k| map.get(*k)).copied()
+}
+
+fn req_chain<T: Copy>(map: &HashMap<String, T>, keys: &[&str], field: &str) -> Result<T> {
+    get_chain(map, keys).with_context(|| {
+        format!(
+            "config field `{field}` missing default and no entry for `{}`",
+            keys.first().copied().unwrap_or("?")
+        )
     })
 }
 
 impl StrategyToml {
+    /// Durations `asset` trades: its own `[market_durations]` entry, else the
+    /// table's `default`, else `["5m"]` — so configs predating the table (or
+    /// not mentioning this asset) mean exactly what they always did. Labels
+    /// are returned as-is; callers validate via `MarketDuration::parse` and
+    /// must fail loudly on anything unrecognized.
+    pub fn durations_for(&self, asset: &str) -> Vec<String> {
+        self.market_durations
+            .get(asset)
+            .or_else(|| self.market_durations.get("default"))
+            .cloned()
+            .unwrap_or_else(|| vec!["5m".to_string()])
+    }
+
+    /// Resolve per-asset params exactly as always — the 5m path. Delegates to
+    /// the same chain-based lookup as `resolve_for_duration` with the classic
+    /// `asset` → `"default"` chain, which is behaviorally identical to the
+    /// pre-2026-07-17 implementation (`get_asset`).
     pub fn resolve(&self, asset: &str) -> Result<AssetParams> {
+        self.resolve_keys(asset, &[asset, "default"])
+    }
+
+    /// Duration-aware resolution (trader/doc/feature_new_markets_2026-07-17.md
+    /// §4.2): any per-asset map may carry `"{ASSET}@{dur}"` / `"default@{dur}"`
+    /// override keys, consulted before the plain asset/default keys. For
+    /// `"5m"` this **skips the `@` keys entirely and delegates to `resolve`**,
+    /// so 5m resolution provably cannot change.
+    pub fn resolve_for_duration(&self, asset: &str, duration: &str) -> Result<AssetParams> {
+        if duration == "5m" {
+            return self.resolve(asset);
+        }
+        let asset_dur = format!("{asset}@{duration}");
+        let default_dur = format!("default@{duration}");
+        self.resolve_keys(asset, &[&asset_dur, &default_dur, asset, "default"])
+    }
+
+    fn resolve_keys(&self, asset: &str, keys: &[&str]) -> Result<AssetParams> {
         Ok(AssetParams {
             asset: asset.to_string(),
-            strategies: self
-                .strategies
-                .get(asset)
-                .or_else(|| self.strategies.get("default"))
+            strategies: keys
+                .iter()
+                .find_map(|k| self.strategies.get(*k))
                 .cloned()
                 .unwrap_or_default(),
-            enter_when_time_left: req(&self.enter_when_time_left, asset, "enter_when_time_left")?
-                as f64,
+            enter_when_time_left: req_chain(
+                &self.enter_when_time_left,
+                keys,
+                "enter_when_time_left",
+            )? as f64,
             no_enter_when_time_left: self.no_enter_when_time_left as f64,
-            reversal: req(&self.reversal, asset, "reversal")?,
-            reversal_low_threshold: req(
+            reversal: req_chain(&self.reversal, keys, "reversal")?,
+            reversal_low_threshold: req_chain(
                 &self.reversal_low_threshold,
-                asset,
+                keys,
                 "reversal_low_threshold",
             )?,
-            reversal_start_time: req(&self.reversal_start_time, asset, "reversal_start_time")?
+            reversal_start_time: req_chain(&self.reversal_start_time, keys, "reversal_start_time")?
                 as f64,
-            gamma_poll_delay_secs: req(
+            gamma_poll_delay_secs: req_chain(
                 &self.gamma_poll_delay_secs,
-                asset,
+                keys,
                 "gamma_poll_delay_secs",
             )?,
-            gamma_poll_interval_secs: req(
+            gamma_poll_interval_secs: req_chain(
                 &self.gamma_poll_interval_secs,
-                asset,
+                keys,
                 "gamma_poll_interval_secs",
             )?,
-            gamma_poll_deadline_secs: req(
+            gamma_poll_deadline_secs: req_chain(
                 &self.gamma_poll_deadline_secs,
-                asset,
+                keys,
                 "gamma_poll_deadline_secs",
             )?,
-            price_high_rev: req(&self.price_high_rev, asset, "price_high_rev")?,
-            delta_pct_rev: req(&self.delta_pct_rev, asset, "delta_pct_rev")?,
-            sl_reversal: req(&self.sl_reversal, asset, "sl_reversal")?,
-            unwind_pnl_rev: req(&self.unwind_pnl_rev, asset, "unwind_pnl_rev")?,
-            sl_pnl_rev: req(&self.sl_pnl_rev, asset, "sl_pnl_rev")?,
-            unwind_time_rev: req(&self.unwind_time_rev, asset, "unwind_time_rev")?,
-            price_low: req(&self.price_low, asset, "price_low")?,
-            price_high: req(&self.price_high, asset, "price_high")?,
-            delta_pct_hp: req(&self.delta_pct_hp, asset, "delta_pct_hp")?,
-            sl_high_prob: req(&self.sl_high_prob, asset, "sl_high_prob")?,
-            unwind_pnl_hp: req(&self.unwind_pnl_hp, asset, "unwind_pnl_hp")?,
-            sl_pnl_hp: req(&self.sl_pnl_hp, asset, "sl_pnl_hp")?,
-            unwind_time_hp: req(&self.unwind_time_hp, asset, "unwind_time_hp")?,
+            price_high_rev: req_chain(&self.price_high_rev, keys, "price_high_rev")?,
+            delta_pct_rev: req_chain(&self.delta_pct_rev, keys, "delta_pct_rev")?,
+            sl_reversal: req_chain(&self.sl_reversal, keys, "sl_reversal")?,
+            unwind_pnl_rev: req_chain(&self.unwind_pnl_rev, keys, "unwind_pnl_rev")?,
+            sl_pnl_rev: req_chain(&self.sl_pnl_rev, keys, "sl_pnl_rev")?,
+            unwind_time_rev: req_chain(&self.unwind_time_rev, keys, "unwind_time_rev")?,
+            price_low: req_chain(&self.price_low, keys, "price_low")?,
+            price_high: req_chain(&self.price_high, keys, "price_high")?,
+            delta_pct_hp: req_chain(&self.delta_pct_hp, keys, "delta_pct_hp")?,
+            sl_high_prob: req_chain(&self.sl_high_prob, keys, "sl_high_prob")?,
+            unwind_pnl_hp: req_chain(&self.unwind_pnl_hp, keys, "unwind_pnl_hp")?,
+            sl_pnl_hp: req_chain(&self.sl_pnl_hp, keys, "sl_pnl_hp")?,
+            unwind_time_hp: req_chain(&self.unwind_time_hp, keys, "unwind_time_hp")?,
             // V-shape fields fall back to hardcoded defaults (not `req`) so every
             // pre-v_shape strategy_*.toml still resolves — the canonical
             // v_0.7_0.3_0.7 triple, mid-grid exits, no delta requirement. See
             // trader/doc/plan_v_shape_trader_2026-07-17.md's defaults table.
-            v_high1: get_asset(&self.v_high1, asset).unwrap_or(0.70),
-            v_low: get_asset(&self.v_low, asset).unwrap_or(0.30),
-            v_high2: get_asset(&self.v_high2, asset).unwrap_or(0.70),
-            delta_pct_v: get_asset(&self.delta_pct_v, asset).unwrap_or(0.0),
-            sl_v_shape: get_asset(&self.sl_v_shape, asset).unwrap_or(0.0),
-            sl_pnl_v: get_asset(&self.sl_pnl_v, asset).unwrap_or(0.30),
-            unwind_pnl_v: get_asset(&self.unwind_pnl_v, asset).unwrap_or(0.15),
-            unwind_time_v: get_asset(&self.unwind_time_v, asset).unwrap_or(25.0),
-            halt_rev: req(&self.halt_rev, asset, "halt_rev")?,
-            halt_prob: req(&self.halt_prob, asset, "halt_prob")?,
-            halt_v: get_asset(&self.halt_v, asset).unwrap_or(1),
-            halt_reset_hour_rev: req(&self.halt_reset_hour_rev, asset, "halt_reset_hour_rev")?,
-            halt_reset_hour_hp: req(&self.halt_reset_hour_hp, asset, "halt_reset_hour_hp")?,
-            halt_reset_hour_v: get_asset(&self.halt_reset_hour_v, asset).unwrap_or(2),
+            v_high1: get_chain(&self.v_high1, keys).unwrap_or(0.70),
+            v_low: get_chain(&self.v_low, keys).unwrap_or(0.30),
+            v_high2: get_chain(&self.v_high2, keys).unwrap_or(0.70),
+            delta_pct_v: get_chain(&self.delta_pct_v, keys).unwrap_or(0.0),
+            sl_v_shape: get_chain(&self.sl_v_shape, keys).unwrap_or(0.0),
+            sl_pnl_v: get_chain(&self.sl_pnl_v, keys).unwrap_or(0.30),
+            unwind_pnl_v: get_chain(&self.unwind_pnl_v, keys).unwrap_or(0.15),
+            unwind_time_v: get_chain(&self.unwind_time_v, keys).unwrap_or(25.0),
+            halt_rev: req_chain(&self.halt_rev, keys, "halt_rev")?,
+            halt_prob: req_chain(&self.halt_prob, keys, "halt_prob")?,
+            halt_v: get_chain(&self.halt_v, keys).unwrap_or(1),
+            halt_reset_hour_rev: req_chain(&self.halt_reset_hour_rev, keys, "halt_reset_hour_rev")?,
+            halt_reset_hour_hp: req_chain(&self.halt_reset_hour_hp, keys, "halt_reset_hour_hp")?,
+            halt_reset_hour_v: get_chain(&self.halt_reset_hour_v, keys).unwrap_or(2),
             max_buy_price: self.max_buy_price,
             spread_premium_limit: self.spread_premium_limit,
             spread_discount_limit: self.spread_discount_limit,
             max_price_age_secs: self.max_price_age_secs,
-            trade_size_usdc: req(&self.trade_size_usdc, asset, "trade_size_usdc")?,
+            trade_size_usdc: req_chain(&self.trade_size_usdc, keys, "trade_size_usdc")?,
         })
     }
 }
@@ -399,6 +455,103 @@ mod tests {
         assert!((p.unwind_time_v - 25.0).abs() < 1e-9);
         assert_eq!(p.halt_v, 1);
         assert_eq!(p.halt_reset_hour_v, 2);
+    }
+
+    // ── market_durations / @duration overrides (feature_new_markets_2026-07-17.md) ──
+
+    /// The core no-regression guarantee: a config with no `[market_durations]`
+    /// table (every config before 2026-07-17) resolves to 5m-only for every
+    /// asset, and `resolve_for_duration(_, "5m")` returns exactly what
+    /// `resolve` does.
+    #[test]
+    fn configs_without_market_durations_mean_5m_only() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/config");
+        let toml = load_file(&format!("{dir}/strategy_20260713.toml")).expect("load old config");
+        assert!(toml.market_durations.is_empty());
+        for asset in ["BTC", "ETH", "SOL", "XRP"] {
+            assert_eq!(toml.durations_for(asset), vec!["5m".to_string()]);
+        }
+        let via_resolve = toml.resolve("BTC").expect("resolve");
+        let via_duration = toml.resolve_for_duration("BTC", "5m").expect("resolve 5m");
+        // Spot-check every strategy-relevant scalar family (Debug formatting
+        // covers the whole struct at once).
+        assert_eq!(format!("{via_resolve:?}"), format!("{via_duration:?}"));
+    }
+
+    #[test]
+    fn market_durations_resolution_order() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.market_durations
+            .insert("default".to_string(), vec!["5m".to_string()]);
+        toml.market_durations.insert(
+            "BTC".to_string(),
+            vec!["5m".to_string(), "15m".to_string(), "4h".to_string()],
+        );
+        assert_eq!(toml.durations_for("BTC"), vec!["5m", "15m", "4h"]);
+        assert_eq!(
+            toml.durations_for("SOL"),
+            vec!["5m"],
+            "default-key fallback"
+        );
+    }
+
+    /// `@duration` keys: `"{ASSET}@{dur}"` beats `"default@{dur}"` beats the
+    /// plain asset key beats `"default"` — and plain (non-@) resolution never
+    /// sees them.
+    #[test]
+    fn duration_scoped_overrides_resolve_in_order() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        let base_btc = toml
+            .resolve("BTC")
+            .expect("resolve BTC")
+            .reversal_start_time;
+        toml.reversal_start_time
+            .insert("default@15m".to_string(), 400);
+        toml.reversal_start_time.insert("BTC@15m".to_string(), 500);
+
+        let p = toml
+            .resolve_for_duration("BTC", "15m")
+            .expect("resolve BTC 15m");
+        assert!(
+            (p.reversal_start_time - 500.0).abs() < 1e-9,
+            "ASSET@dur wins"
+        );
+        let p = toml
+            .resolve_for_duration("SOL", "15m")
+            .expect("resolve SOL 15m");
+        assert!(
+            (p.reversal_start_time - 400.0).abs() < 1e-9,
+            "default@dur next"
+        );
+        // A field with no @-keys at all falls through to the plain chain.
+        let p = toml
+            .resolve_for_duration("BTC", "15m")
+            .expect("resolve BTC 15m");
+        assert!(
+            (p.reversal - 0.55).abs() < 1e-9,
+            "plain BTC key still applies"
+        );
+        // Plain resolution (the 5m path) is untouched by the @-keys.
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!((p.reversal_start_time - base_btc).abs() < 1e-9);
+        let p5 = toml.resolve_for_duration("BTC", "5m").expect("resolve 5m");
+        assert!((p5.reversal_start_time - base_btc).abs() < 1e-9);
+    }
+
+    /// `[strategies]` participates in the same duration scoping, so a duration
+    /// can run a different strategy set than 5m does.
+    #[test]
+    fn strategies_can_differ_per_duration() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.strategies
+            .insert("default@4h".to_string(), vec!["high_prob".to_string()]);
+        let p = toml.resolve_for_duration("BTC", "4h").expect("resolve 4h");
+        assert_eq!(p.strategies, vec!["high_prob"]);
+        let p = toml.resolve("BTC").expect("resolve 5m");
+        assert_eq!(p.strategies, vec!["reversal"], "5m list unchanged");
     }
 
     /// `[v_*]` sections present in the TOML must win over the hardcoded defaults,
