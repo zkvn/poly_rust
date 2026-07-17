@@ -132,6 +132,36 @@ A new tracked config `trader/config/strategy_20260717.toml` (copy of `_20260716`
   paper trades log with `strategy=v_shape` and sane entry/exit prices, alongside a
   reversal machine behaving normally in the same run.
 
-## Verification (filled in post-implementation)
+## Verification (filled in post-implementation, same day)
 
-- _pending_
+- **Full suites green**: trader 230 lib tests (incl. the new VShapeSignal/VShapeStrategy/
+  Machine/Worker/config/gates v_shape tests) + bin tests; siglab 64 tests unchanged;
+  `cargo fmt --all --check` and `cargo clippy --all-targets --all-features -- -D warnings`
+  clean in both crates.
+- **Byte-for-byte backtest regression: IDENTICAL.** Pre-change golden captured from
+  `bin/backtest` (release) over BTC/SOL/DOGE × 2026-07-15/16 pinned to
+  `strategy_20260716.toml` (reversal) **plus** ETH × both dates pinned to
+  `strategy_20260709.toml` (exercises high_prob — 16 high_prob trades in the golden);
+  post-change rerun of the identical commands diffed clean. Reversal/high_prob decision
+  paths are untouched.
+- **Deterministic v_shape backtest** (scratch config: `[strategies] = ["reversal",
+  "v_shape"]`, relaxed triple 0.55/0.45/0.55 so the pattern occurs at 5m-BTC frequency):
+  BTC 2026-07-16 produced interleaved v_shape + reversal trades; TP exits landed exactly
+  at entry+`unwind_pnl_v` (0.565→0.715, pnl 0.2655 = (1/0.565)×0.15 ✓), timeouts at the
+  25s cap. **Per-strategy halt isolation confirmed on real data**: a v_shape TIMEOUT loss
+  at ~00:50 HKT tripped `halt_v=1`, v_shape resumed after the 02:00 HKT
+  `halt_reset_hour_v` daily reset, a second loss halted it for the rest of the day — while
+  reversal kept trading independently through all of it.
+- **Live shadow run** (`bin/shadow`, BTC-5m, same scratch config, ~12 min): two real
+  v_shape paper trades on live ticks — a TIMEOUT closed 25.0s after entry
+  (0.55→0.425, pnl −0.2273 = (1/0.55)×(0.425−0.55) ✓) and a take-profit UNWIND at exactly
+  entry+0.15 (0.555→0.705, pnl 0.2703 ✓); `entry_ts == entry_price_ts` on both, confirming
+  entry fired off the poly tick itself with no Binance trigger. Reversal machines ran
+  alongside in the same process without error.
+- **Pre-existing bug found & fixed during verification**: `bin/shadow.rs` predated the
+  rustls≥0.22 `CryptoProvider::install_default()` one-liner that live.rs/siglab/price_feed
+  all carry, and panicked at startup — evidently unrun since that migration. Same fix
+  applied.
+- Note: `bin/shadow` drives raw `Machine`s with no `HaltTracker` (pre-existing behavior,
+  same for reversal/high_prob there) — halt coverage comes from the backtest run above and
+  the `Worker` unit tests, not from shadow.

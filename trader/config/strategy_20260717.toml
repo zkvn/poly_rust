@@ -1,0 +1,214 @@
+# meta
+ts = "2026-07-17T00:00:00+08:00"
+source = "strategy_20260716.toml carried over unchanged (same reversal deploy, same caveats — see that file's meta for the full rationale), plus the new [v_*] V-shape strategy sections added when v_shape became a first-class trader strategy (trader/doc/plan_v_shape_trader_2026-07-17.md). v_shape is configured but NOT traded — [strategies] is unchanged (reversal only), exactly the status high_prob already has. The v_* values are the canonical v_0.7_0.3_0.7 triple with mid-grid exits, matching the code defaults in config.rs::resolve — explicitly NOT validated as good parameters; siglab's live paper-trading grid (siglab/doc/report/) is still collecting per-variant evidence and shows small, mixed samples as of today."
+
+# Trade assets: BTC, SOL, DOGE — reversal only (see [strategies] below).
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "SOL", "DOGE"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Trade size
+[trade_size_usdc]
+default = 1.0
+
+# Reversal only — all traded assets.
+[strategies]
+default = ["reversal"]
+
+# --- Halt ---
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — BTC/SOL/DOGE now share one candidate combo from
+# btc_5mins studies/unwind_safely/summary_2026-07-16_low03_high055_halt1_dailywf.md
+# (see meta.source above for the full rationale + caveats). sl_reversal,
+# reversal_start_time, halt_rev, halt_reset_hour_rev, price_high_rev held
+# unchanged at their strategy_20260715.toml live values throughout that
+# validation run. ETH/BNB/XRP keep their prior strategy_20260715.toml
+# per-asset values unchanged (watch-only, not traded, so inert).
+[delta_pct_rev]
+default = 0.0003
+BTC = 0.0004
+ETH = 0.0006
+SOL = 0.0004
+BNB = 0.0008
+DOGE = 0.0004
+
+[reversal]
+default = 0.60
+BTC = 0.55
+SOL = 0.55
+BNB = 0.50
+XRP = 0.65
+DOGE = 0.55
+
+[reversal_low_threshold]
+default = 0.20
+BTC = 0.30
+SOL = 0.30
+DOGE = 0.30
+
+[sl_reversal]
+default = 0.10
+
+[unwind_pnl_rev]
+default = 0.10
+BTC = 0.15
+SOL = 0.15
+DOGE = 0.15
+
+[sl_pnl_rev]
+default = 0.30
+BNB = 0.40
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. 0 = disabled.
+[unwind_time_rev]
+default = 25.0
+XRP = 20.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# Gamma resolution watcher cadence (2026-07-09) — Gamma "usually won't give you
+# anything until 20-60s after cycle end" (see incident_DOGE_wrong_result doc),
+# so don't start polling immediately; wait gamma_poll_delay_secs, then retry
+# every gamma_poll_interval_secs until gamma_poll_deadline_secs gives up.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
+
+# --- V-shape strategy (added 2026-07-17) — configured but not currently traded (see
+# [strategies] above; enabling it means adding "v_shape" to an asset's strategy list).
+# Entry: price reaches >= v_high1, later dips <= v_low, then recovers >= v_high2 — pure
+# CLOB price action, no Binance-direction requirement (delta_pct_v = 0.0 disables the
+# delta gate). Values are the canonical v_0.7_0.3_0.7 triple + mid-grid exits, identical
+# to config.rs::resolve's code defaults; NOT validated as good parameters (see meta.source).
+[v_high1]
+default = 0.70
+
+[v_low]
+default = 0.30
+
+[v_high2]
+default = 0.70
+
+[delta_pct_v]
+default = 0.0
+
+[sl_v_shape]
+default = 0.0
+
+[sl_pnl_v]
+default = 0.30
+
+[unwind_pnl_v]
+default = 0.15
+
+# Max holding time (seconds), v_shape. 0 = disabled.
+[unwind_time_v]
+default = 25.0
+
+[halt_v]
+default = 1
+
+[halt_reset_hour_v]
+default = 2
+
+# --- High-prob strategy — carried over unchanged; not currently traded (see [strategies] above) ---
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+
+# Max holding time (seconds), high_prob.
+[unwind_time_hp]
+default = 30.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long]
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249

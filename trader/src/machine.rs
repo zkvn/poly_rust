@@ -12,8 +12,9 @@ use crate::config::AssetParams;
 use crate::gates::{GateParams, check_gates};
 use crate::signal::{
     DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
+    VShapeSignal,
 };
-use crate::strategies::{HighProbStrategy, ReversalStrategy};
+use crate::strategies::{HighProbStrategy, ReversalStrategy, VShapeStrategy};
 use crate::types::{BinanceTick, CycleContext, EntryType, Outcome, PolyTick, Side, TradeRecord};
 
 // ── Held position data ────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ pub enum TradeState {
 enum StrategyKind {
     Reversal(ReversalStrategy),
     HighProb(HighProbStrategy),
+    VShape(VShapeStrategy),
 }
 
 // ── Machine ───────────────────────────────────────────────────────────────────
@@ -54,6 +56,11 @@ pub struct Machine {
     // Signals owned by this machine
     saw_low_up: SawLowSignal,
     saw_low_dn: SawLowSignal,
+    // V-shape two-stage latches — always present and updated (cheap, same
+    // pattern as saw_low_* being fed for a high_prob machine), only read by
+    // StrategyKind::VShape.
+    v_up: VShapeSignal,
+    v_dn: VShapeSignal,
     latest_poly: LatestPolySignal,
     spread: SpreadSignal,
     delta_pct: DeltaPctSignal,
@@ -107,6 +114,8 @@ impl Machine {
                 p.reversal_start_time,
                 p.no_enter_when_time_left,
             ),
+            v_up: VShapeSignal::new_up(p.v_high1, p.v_low),
+            v_dn: VShapeSignal::new_dn(p.v_high1, p.v_low),
             latest_poly: LatestPolySignal::new(),
             spread: SpreadSignal::new(),
             delta_pct: DeltaPctSignal::new(),
@@ -128,6 +137,7 @@ impl Machine {
                 max_price_age_secs: p.max_price_age_secs,
                 delta_pct_rev: p.delta_pct_rev,
                 delta_pct_hp: p.delta_pct_hp,
+                delta_pct_v: p.delta_pct_v,
                 max_buy_price: p.max_buy_price,
                 price_high_rev: p.price_high_rev,
             },
@@ -153,6 +163,8 @@ impl Machine {
                 p.reversal_start_time,
                 p.no_enter_when_time_left,
             ),
+            v_up: VShapeSignal::new_up(p.v_high1, p.v_low),
+            v_dn: VShapeSignal::new_dn(p.v_high1, p.v_low),
             latest_poly: LatestPolySignal::new(),
             spread: SpreadSignal::new(),
             delta_pct: DeltaPctSignal::new(),
@@ -174,6 +186,51 @@ impl Machine {
                 max_price_age_secs: p.max_price_age_secs,
                 delta_pct_rev: p.delta_pct_rev,
                 delta_pct_hp: p.delta_pct_hp,
+                delta_pct_v: p.delta_pct_v,
+                max_buy_price: p.max_buy_price,
+                price_high_rev: p.price_high_rev,
+            },
+        }
+    }
+
+    pub fn new_v_shape(p: &AssetParams) -> Self {
+        Self {
+            strategy_name: "v_shape",
+            kind: StrategyKind::VShape(VShapeStrategy::new(p.v_high2, p.no_enter_when_time_left)),
+            saw_low_up: SawLowSignal::new_up(
+                p.reversal_low_threshold,
+                p.reversal_start_time,
+                p.no_enter_when_time_left,
+            ),
+            saw_low_dn: SawLowSignal::new_dn(
+                p.reversal_low_threshold,
+                p.reversal_start_time,
+                p.no_enter_when_time_left,
+            ),
+            v_up: VShapeSignal::new_up(p.v_high1, p.v_low),
+            v_dn: VShapeSignal::new_dn(p.v_high1, p.v_low),
+            latest_poly: LatestPolySignal::new(),
+            spread: SpreadSignal::new(),
+            delta_pct: DeltaPctSignal::new(),
+            latest_binance: LatestBinanceSignal::new(),
+            state: TradeState::Watching,
+            cycle_open_binance: 0.0,
+            last_binance: 0.0,
+            cycle_start_ts: 0.0,
+            cycle_end_ts: 0.0,
+            cycle_slug: String::new(),
+            sl: p.sl_v_shape,
+            sl_pnl: p.sl_pnl_v,
+            unwind_pnl: p.unwind_pnl_v,
+            unwind_time: p.unwind_time_v,
+            trade_size: p.trade_size_usdc,
+            gate_params: GateParams {
+                spread_premium_limit: p.spread_premium_limit,
+                spread_discount_limit: p.spread_discount_limit,
+                max_price_age_secs: p.max_price_age_secs,
+                delta_pct_rev: p.delta_pct_rev,
+                delta_pct_hp: p.delta_pct_hp,
+                delta_pct_v: p.delta_pct_v,
                 max_buy_price: p.max_buy_price,
                 price_high_rev: p.price_high_rev,
             },
@@ -185,12 +242,15 @@ impl Machine {
         // Reset per-cycle signals
         self.saw_low_up.reset(ctx);
         self.saw_low_dn.reset(ctx);
+        self.v_up.reset(ctx);
+        self.v_dn.reset(ctx);
         self.delta_pct.reset(ctx);
         // latest_poly, spread, latest_binance do NOT reset (persist across cycles)
 
         match &mut self.kind {
             StrategyKind::Reversal(r) => r.reset(ctx),
             StrategyKind::HighProb(hp) => hp.reset(ctx),
+            StrategyKind::VShape(v) => v.reset(ctx),
         }
 
         self.cycle_open_binance = ctx.open_binance;
@@ -213,6 +273,8 @@ impl Machine {
         self.spread.on_poly(tick);
         self.saw_low_up.on_poly(tick);
         self.saw_low_dn.on_poly(tick);
+        self.v_up.on_poly(tick);
+        self.v_dn.on_poly(tick);
 
         let h = match &self.state {
             TradeState::Holding(h) => h.clone(),
@@ -354,6 +416,13 @@ impl Machine {
                 &self.delta_pct,
                 &self.latest_binance,
             ),
+            StrategyKind::VShape(v) => v.evaluate(
+                now,
+                &self.v_up,
+                &self.v_dn,
+                &self.latest_poly,
+                &self.latest_binance,
+            ),
         };
 
         let intent = match intent {
@@ -378,6 +447,7 @@ impl Machine {
         match &mut self.kind {
             StrategyKind::Reversal(r) => r.mark_fired(),
             StrategyKind::HighProb(hp) => hp.mark_fired(),
+            StrategyKind::VShape(v) => v.mark_fired(),
         }
         self.state = TradeState::Holding(HoldingData {
             side: intent.side,
@@ -477,10 +547,20 @@ mod tests {
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
             unwind_time_hp: 0.0,
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.05,
+            unwind_time_v: 25.0,
             halt_rev: 2,
             halt_prob: 2,
+            halt_v: 1,
             halt_reset_hour_rev: 2,
             halt_reset_hour_hp: 8,
+            halt_reset_hour_v: 2,
             max_buy_price: 0.95,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
@@ -1046,5 +1126,192 @@ mod tests {
             "pnl={}",
             rec.pnl
         );
+    }
+
+    // ── v_shape (2026-07-17, trader/doc/plan_v_shape_trader_2026-07-17.md) ──────
+    //
+    // Test list mirrors siglab/src/v_shape.rs's engine tests, re-expressed through
+    // Machine's poly/binance tick interface: entry needs the full high1→low→high2
+    // sequence with NO binance tick required (delta_pct_v=0.0), then the shared
+    // exit chain (TP/SL/timeout/cycle-end force-unwind/cycle_close) applies.
+
+    /// Drives the full V on the UP side and lands in Holding at up=0.70, ts=1240 —
+    /// no binance tick is ever fed, proving entry is pure CLOB price action.
+    fn enter_v_shape_up(p: &AssetParams) -> Machine {
+        let mut m = Machine::new_v_shape(p);
+        m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", false);
+        m.on_poly(PolyTick {
+            ts: 1100.0,
+            up: 0.75,
+            dn: 0.25,
+        }); // high1 latched
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.25,
+            dn: 0.75,
+        }); // low-after-high latched
+        m.on_poly(PolyTick {
+            ts: 1240.0,
+            up: 0.70,
+            dn: 0.30,
+        }); // >= high2 -> enters UP at 0.70
+        assert!(m.is_holding(), "setup: expected Holding after full V");
+        m
+    }
+
+    #[test]
+    fn v_shape_enters_without_any_binance_tick_and_takes_profit() {
+        let p = btc_params();
+        let mut m = enter_v_shape_up(&p);
+        // TP at entry + unwind_pnl_v = 0.70 + 0.05 = 0.75.
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1250.0,
+                up: 0.75,
+                dn: 0.25,
+            })
+            .expect("take-profit must fire");
+        assert_eq!(rec.strategy, "v_shape");
+        assert_eq!(rec.outcome, Outcome::Unwind);
+        assert!((rec.exit_price - 0.75).abs() < 1e-9);
+        assert!((rec.pnl - (1.0 * 0.05 / 0.70)).abs() < 1e-4);
+        assert!(!m.is_holding());
+    }
+
+    #[test]
+    fn v_shape_no_entry_without_high1_first() {
+        let p = btc_params();
+        let mut m = Machine::new_v_shape(&p);
+        m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", false);
+        // Dip then recover, but up never reached high1 (0.70) before the dip.
+        m.on_poly(PolyTick {
+            ts: 1100.0,
+            up: 0.25,
+            dn: 0.75,
+        });
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.72,
+            dn: 0.28,
+        });
+        // (dn side latched its own high1 at ts=1100 (dn=0.75) but never dipped to
+        // 0.30 after it, so neither side may fire.)
+        assert!(!m.is_holding(), "V prefix incomplete on both sides");
+    }
+
+    #[test]
+    fn v_shape_stop_loss_fires() {
+        let p = btc_params();
+        let mut m = enter_v_shape_up(&p);
+        // sl_pnl_v = 0.30 -> floor at 0.70 - 0.30 = 0.40; 0.35 clears it with margin.
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1250.0,
+                up: 0.35,
+                dn: 0.65,
+            })
+            .expect("stop-loss must fire");
+        assert_eq!(rec.outcome, Outcome::StopLoss);
+        assert!((rec.exit_price - 0.40).abs() < 1e-9);
+        assert!(rec.pnl < 0.0);
+    }
+
+    #[test]
+    fn v_shape_times_out_after_unwind_time_v() {
+        let p = btc_params(); // unwind_time_v = 25.0 in the fixture
+        let mut m = enter_v_shape_up(&p); // entry_ts = 1240
+        // 0.72 is between SL floor (0.40) and TP (0.75); ts=1265 is 25s after entry
+        // and still outside the 10s cycle-end window (ends 1300) — only timeout fits.
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1265.0,
+                up: 0.72,
+                dn: 0.28,
+            })
+            .expect("timeout must fire at 25s");
+        assert_eq!(rec.outcome, Outcome::Timeout);
+        assert!((rec.exit_price - 0.72).abs() < 1e-9);
+    }
+
+    #[test]
+    fn v_shape_force_unwinds_within_10s_of_cycle_end() {
+        let mut p = btc_params();
+        p.unwind_time_v = 0.0; // disable timeout to isolate the cycle-end rule
+        let mut m = enter_v_shape_up(&p);
+        let rec = m
+            .on_poly(PolyTick {
+                ts: 1291.0, // cycle ends 1300 — inside the 10s window
+                up: 0.71,
+                dn: 0.29,
+            })
+            .expect("must force-unwind near cycle end");
+        assert_eq!(rec.outcome, Outcome::Unwind);
+        assert!((rec.exit_price - 0.71).abs() < 1e-9);
+    }
+
+    #[test]
+    fn v_shape_latches_reset_across_cycles() {
+        let p = btc_params();
+        let mut m = Machine::new_v_shape(&p);
+        m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", false);
+        m.on_poly(PolyTick {
+            ts: 1100.0,
+            up: 0.75,
+            dn: 0.25,
+        });
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.25,
+            dn: 0.75,
+        }); // full prefix latched this cycle
+
+        // New cycle: the recovery alone must NOT fire off last cycle's prefix.
+        m.cycle_open(&ctx(1_300.0), "btc-updown-5m-1300", false);
+        m.on_poly(PolyTick {
+            ts: 1400.0,
+            up: 0.72,
+            dn: 0.28,
+        });
+        assert!(
+            !m.is_holding(),
+            "V prefix from a previous cycle must not carry over"
+        );
+    }
+
+    #[test]
+    fn v_shape_resolves_at_cycle_close_via_binance_direction() {
+        let p = btc_params();
+        let mut m = enter_v_shape_up(&p);
+        // UP position; last_binance (from a late tick) above cycle_open_binance -> WIN.
+        m.on_binance(BinanceTick {
+            ts: 1250.0,
+            price: 60_100.0,
+        });
+        let rec = m.cycle_close().expect("open position resolves at close");
+        assert_eq!(rec.outcome, Outcome::Win);
+        assert!((rec.pnl - (1.0 / 0.70 - 1.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn v_shape_halted_machine_skips_entry() {
+        let p = btc_params();
+        let mut m = Machine::new_v_shape(&p);
+        m.cycle_open(&ctx(1_000.0), "btc-updown-5m-1000", true); // entry_suppressed
+        m.on_poly(PolyTick {
+            ts: 1100.0,
+            up: 0.75,
+            dn: 0.25,
+        });
+        m.on_poly(PolyTick {
+            ts: 1180.0,
+            up: 0.25,
+            dn: 0.75,
+        });
+        m.on_poly(PolyTick {
+            ts: 1240.0,
+            up: 0.70,
+            dn: 0.30,
+        });
+        assert!(!m.is_holding(), "halted v_shape machine must not enter");
     }
 }

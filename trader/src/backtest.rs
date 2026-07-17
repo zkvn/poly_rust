@@ -257,6 +257,7 @@ fn replay_cycle(
     machines: &mut [Machine],
     halted_rev: bool,
     halted_hp: bool,
+    halted_v: bool,
 ) -> Vec<TradeRecord> {
     if b_cycle.is_empty() || p_cycle.is_empty() {
         return vec![];
@@ -280,6 +281,7 @@ fn replay_cycle(
         let suppressed = match m.strategy_name {
             "reversal" => halted_rev,
             "high_prob" => halted_hp,
+            "v_shape" => halted_v,
             _ => false,
         };
         m.cycle_open(&ctx, slug, suppressed);
@@ -498,6 +500,7 @@ pub fn run_backtest(
             match name.as_str() {
                 "reversal" => Machine::new_reversal(params),
                 "high_prob" => Machine::new_high_prob(params),
+                "v_shape" => Machine::new_v_shape(params),
                 _ => Machine::new_reversal(params), // fallback
             }
         })
@@ -505,6 +508,7 @@ pub fn run_backtest(
 
     let mut halt_rev = HaltTracker::new(params.halt_rev, params.halt_reset_hour_rev);
     let mut halt_hp = HaltTracker::new(params.halt_prob, params.halt_reset_hour_hp);
+    let mut halt_v = HaltTracker::new(params.halt_v, params.halt_reset_hour_v);
 
     let mut all_trades: Vec<TradeRecord> = Vec::new();
 
@@ -514,15 +518,18 @@ pub fn run_backtest(
         // Reset session counters
         halt_rev.reset_if_new_session(slug_ts);
         halt_hp.reset_if_new_session(slug_ts);
+        halt_v.reset_if_new_session(slug_ts);
 
         // Determine which strategies are halted
         let halted_rev = halt_rev.is_halted();
         let halted_hp = halt_hp.is_halted();
+        let halted_v = halt_v.is_halted();
 
         // Skip if all strategies are halted
         let any_active = params.strategies.iter().any(|name| match name.as_str() {
             "reversal" => !halted_rev,
             "high_prob" => !halted_hp,
+            "v_shape" => !halted_v,
             _ => true,
         });
         if !any_active {
@@ -532,12 +539,21 @@ pub fn run_backtest(
         let b_cycle = b_by_slug.get(slug).map(|v| v.as_slice()).unwrap_or(&[]);
         let p_cycle = p_by_slug.get(slug).map(|v| v.as_slice()).unwrap_or(&[]);
 
-        let trades = replay_cycle(slug, b_cycle, p_cycle, &mut machines, halted_rev, halted_hp);
+        let trades = replay_cycle(
+            slug,
+            b_cycle,
+            p_cycle,
+            &mut machines,
+            halted_rev,
+            halted_hp,
+            halted_v,
+        );
 
         // Update halt counters AFTER the cycle
         for rec in &trades {
             halt_rev.record_trade(rec, "reversal");
             halt_hp.record_trade(rec, "high_prob");
+            halt_v.record_trade(rec, "v_shape");
         }
 
         all_trades.extend(trades);
@@ -632,10 +648,20 @@ mod tests {
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
             unwind_time_hp: 0.0,
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.15,
+            unwind_time_v: 25.0,
             halt_rev: 2,
             halt_prob: 2,
+            halt_v: 1,
             halt_reset_hour_rev: 2,
             halt_reset_hour_hp: 8,
+            halt_reset_hour_v: 2,
             max_buy_price: 0.95,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,

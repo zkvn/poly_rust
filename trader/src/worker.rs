@@ -18,8 +18,9 @@ use crate::execution::{OrderKind, SellStatus, choose_exit_order_kind};
 use crate::gates::{GateParams, check_gates};
 use crate::signal::{
     DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
+    VShapeSignal,
 };
-use crate::strategies::{HighProbStrategy, ReversalStrategy};
+use crate::strategies::{HighProbStrategy, ReversalStrategy, VShapeStrategy};
 use crate::types::{BinanceTick, CycleContext, EntryType, Outcome, PolyTick, Side, TradeRecord};
 
 // ── Exit arm (how a Holding position's take-profit is worked) ────────────────
@@ -345,6 +346,7 @@ pub struct PersistedState {
 enum StrategyKind {
     Reversal(ReversalStrategy),
     HighProb(HighProbStrategy),
+    VShape(VShapeStrategy),
 }
 
 #[inline]
@@ -401,6 +403,11 @@ pub struct Worker {
     kind: StrategyKind,
     saw_low_up: SawLowSignal,
     saw_low_dn: SawLowSignal,
+    // V-shape two-stage latches — always present and updated (cheap, same pattern
+    // as saw_low_* being fed for a high_prob worker), only read by
+    // StrategyKind::VShape. Mirrors machine.rs's identical fields.
+    v_up: VShapeSignal,
+    v_dn: VShapeSignal,
     latest_poly: LatestPolySignal,
     spread: SpreadSignal,
     delta_pct: DeltaPctSignal,
@@ -466,6 +473,8 @@ impl Worker {
                 p.reversal_start_time,
                 p.no_enter_when_time_left,
             ),
+            v_up: VShapeSignal::new_up(p.v_high1, p.v_low),
+            v_dn: VShapeSignal::new_dn(p.v_high1, p.v_low),
             latest_poly: LatestPolySignal::new(),
             spread: SpreadSignal::new(),
             delta_pct: DeltaPctSignal::new(),
@@ -491,6 +500,7 @@ impl Worker {
                 max_price_age_secs: p.max_price_age_secs,
                 delta_pct_rev: p.delta_pct_rev,
                 delta_pct_hp: p.delta_pct_hp,
+                delta_pct_v: p.delta_pct_v,
                 max_buy_price: p.max_buy_price,
                 price_high_rev: p.price_high_rev,
             },
@@ -529,6 +539,21 @@ impl Worker {
             p.unwind_time_hp,
             p.halt_prob,
             p.halt_reset_hour_hp,
+        )
+    }
+
+    pub fn new_v_shape(asset: &str, p: &AssetParams) -> Self {
+        Self::common(
+            asset,
+            "v_shape",
+            StrategyKind::VShape(VShapeStrategy::new(p.v_high2, p.no_enter_when_time_left)),
+            p,
+            p.sl_v_shape,
+            p.sl_pnl_v,
+            p.unwind_pnl_v,
+            p.unwind_time_v,
+            p.halt_v,
+            p.halt_reset_hour_v,
         )
     }
 
@@ -774,10 +799,13 @@ impl Worker {
         // trader/doc/incident_halt_reset_2026-07-03.md.
         self.saw_low_up.reset(&ctx);
         self.saw_low_dn.reset(&ctx);
+        self.v_up.reset(&ctx);
+        self.v_dn.reset(&ctx);
         self.delta_pct.reset(&ctx);
         match &mut self.kind {
             StrategyKind::Reversal(r) => r.reset(&ctx),
             StrategyKind::HighProb(hp) => hp.reset(&ctx),
+            StrategyKind::VShape(v) => v.reset(&ctx),
         }
         self.cycle_open_binance = ctx.open_binance;
         self.last_binance = ctx.open_binance;
@@ -908,6 +936,13 @@ impl Worker {
                 &self.delta_pct,
                 &self.latest_binance,
             ),
+            StrategyKind::VShape(v) => v.evaluate(
+                now,
+                &self.v_up,
+                &self.v_dn,
+                &self.latest_poly,
+                &self.latest_binance,
+            ),
         };
         let Some(intent) = intent else { return vec![] };
 
@@ -927,6 +962,7 @@ impl Worker {
         match &mut self.kind {
             StrategyKind::Reversal(r) => r.mark_fired(),
             StrategyKind::HighProb(hp) => hp.mark_fired(),
+            StrategyKind::VShape(v) => v.mark_fired(),
         }
         self.state = WorkerState::Entering;
         // Stash the intent's side/entry_type/token_price for when the fill lands.
@@ -947,6 +983,8 @@ impl Worker {
         self.spread.on_poly(tick);
         self.saw_low_up.on_poly(tick);
         self.saw_low_dn.on_poly(tick);
+        self.v_up.on_poly(tick);
+        self.v_dn.on_poly(tick);
 
         let WorkerState::Holding(h) = &self.state else {
             return self.try_enter(tick.ts);
@@ -1514,10 +1552,20 @@ mod tests {
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
             unwind_time_hp: 0.0,
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.05,
+            unwind_time_v: 25.0,
             halt_rev: 2,
             halt_prob: 2,
+            halt_v: 1,
             halt_reset_hour_rev: 2,
             halt_reset_hour_hp: 8,
+            halt_reset_hour_v: 2,
             max_buy_price: 0.95,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
@@ -1609,6 +1657,67 @@ mod tests {
             ]
         );
         assert!(matches!(w.state, WorkerState::Entering));
+    }
+
+    /// v_shape (2026-07-17, trader/doc/plan_v_shape_trader_2026-07-17.md): the full
+    /// high1→low→high2 poly sequence alone fires the entry — no BinanceTick this
+    /// cycle at all (delta_pct_v=0.0 disables the delta gate; the strategy itself
+    /// never reads delta). Also checks the per-cycle latch reset: the same recovery
+    /// price in a fresh cycle without a fresh prefix must NOT fire.
+    #[test]
+    fn v_shape_entry_fires_on_pure_poly_sequence_and_resets_per_cycle() {
+        let p = btc_params();
+        let mut w = Worker::new_v_shape("BTC", &p);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1100.0,
+            up: 0.75,
+            dn: 0.25,
+        })); // high1 latched
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.25,
+            dn: 0.75,
+        })); // low-after-high latched
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.70,
+            dn: 0.30,
+        })); // >= high2 -> entry, no binance tick ever fed
+        assert_eq!(
+            actions,
+            vec![
+                Action::PlaceBuy {
+                    side: Side::Up,
+                    price: 0.70,
+                    size_usdc: 1.0,
+                    signal_ts: 1240.0
+                },
+                Action::Persist,
+            ]
+        );
+        assert!(matches!(w.state, WorkerState::Entering));
+
+        // Reject the order so the worker returns to Watching, then open a new
+        // cycle: last cycle's latched prefix must be gone.
+        w.step(Event::OrderRejected);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_300.0),
+            slug: "btc-updown-5m-1300".to_string(),
+        });
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1400.0,
+            up: 0.72,
+            dn: 0.28,
+        }));
+        assert!(
+            actions.is_empty(),
+            "stale prefix from the previous cycle must not fire: {actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
     }
 
     /// Complementary case to `entry_fires_and_transitions_to_entering`: delta_pct

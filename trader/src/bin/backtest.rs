@@ -71,6 +71,7 @@ fn main() -> anyhow::Result<()> {
     if args.no_halt {
         params.halt_rev = 0;
         params.halt_prob = 0;
+        params.halt_v = 0;
     }
 
     let (b_rows, p_rows) = load_price_data(&args.asset, &args.date, &args.prices_dir)?;

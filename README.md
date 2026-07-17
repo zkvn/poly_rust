@@ -560,6 +560,20 @@ binary resolves each asset's strategy list from `AssetParams.strategies` in that
 TOML (`trader/src/config.rs`) — so an asset like ETH with `[high_prob, reversal]` gets
 two independent workers, and `/status` shows both.
 
+### `v_shape` strategy — supported since 2026-07-17, configured but not traded
+
+The V-shape entry pattern (price reaches `>= v_high1`, later dips `<= v_low`, then
+recovers `>= v_high2` — e.g. the `v_0.7_0.3_0.7` family siglab has been paper-grid-testing
+since 2026-07-15) is a first-class trader strategy alongside `reversal`/`high_prob`: its
+own `[v_*]` config set in `strategy_*.toml` (from `strategy_20260717.toml` on), own halt
+counters (`halt_v`/`halt_reset_hour_v`), `Machine::new_v_shape` (backtest/shadow) and
+`Worker::new_v_shape` (live), selected per-asset via the same `[strategies]` table.
+Deliberately **no Binance-direction requirement** (`delta_pct_v = 0.0` disables that
+gate) — pure CLOB price action, carried over from siglab's standalone engine. No config
+lists `v_shape` in `[strategies]` yet, so nothing trades it live — enabling it is a
+deliberate future config change once siglab's per-variant evidence supports one. Plan +
+verification: `trader/doc/plan_v_shape_trader_2026-07-17.md`.
+
 ### Oracle box is aarch64 — cross-compile locally
 
 Oracle (`10.8.0.1`) is ARM64. The dev machine is x86-64. Use `cross` (Docker-based) to build:

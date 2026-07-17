@@ -68,6 +68,36 @@ pub struct StrategyToml {
     /// Same as `unwind_time_rev`, for high_prob. `0.0` disables it.
     pub unwind_time_hp: HashMap<String, f64>,
 
+    // V-shape strategy (own `_v` set, added 2026-07-17 — see
+    // trader/doc/plan_v_shape_trader_2026-07-17.md). All `#[serde(default)]`
+    // so every pre-existing strategy_*.toml (pinned by backtest --config-file)
+    // still parses; `resolve()` supplies the documented defaults when a map is
+    // empty.
+    #[serde(default)]
+    pub v_high1: HashMap<String, f64>,
+    #[serde(default)]
+    pub v_low: HashMap<String, f64>,
+    #[serde(default)]
+    pub v_high2: HashMap<String, f64>,
+    /// Defaults to 0.0 = disabled: v_shape is pure CLOB price action, no
+    /// Binance-direction requirement (siglab v_shape philosophy).
+    #[serde(default)]
+    pub delta_pct_v: HashMap<String, f64>,
+    /// Absolute SL floor, 0.0 = disabled (mirrors `sl_reversal`'s shape).
+    #[serde(default)]
+    pub sl_v_shape: HashMap<String, f64>,
+    #[serde(default)]
+    pub sl_pnl_v: HashMap<String, f64>,
+    #[serde(default)]
+    pub unwind_pnl_v: HashMap<String, f64>,
+    /// Same as `unwind_time_rev`, for v_shape. `0.0` disables it.
+    #[serde(default)]
+    pub unwind_time_v: HashMap<String, f64>,
+    #[serde(default)]
+    pub halt_v: HashMap<String, i64>,
+    #[serde(default)]
+    pub halt_reset_hour_v: HashMap<String, i64>,
+
     pub trade_size_usdc: HashMap<String, f64>,
 
     #[serde(default)]
@@ -109,11 +139,23 @@ pub struct AssetParams {
     pub sl_pnl_hp: f64,
     pub unwind_time_hp: f64,
 
+    // V-shape (defaults documented in trader/doc/plan_v_shape_trader_2026-07-17.md)
+    pub v_high1: f64,
+    pub v_low: f64,
+    pub v_high2: f64,
+    pub delta_pct_v: f64,
+    pub sl_v_shape: f64,
+    pub sl_pnl_v: f64,
+    pub unwind_pnl_v: f64,
+    pub unwind_time_v: f64,
+
     // Risk
     pub halt_rev: i64,
     pub halt_prob: i64,
+    pub halt_v: i64,
     pub halt_reset_hour_rev: i64,
     pub halt_reset_hour_hp: i64,
+    pub halt_reset_hour_v: i64,
 
     // Gates
     pub max_buy_price: f64,
@@ -184,10 +226,24 @@ impl StrategyToml {
             unwind_pnl_hp: req(&self.unwind_pnl_hp, asset, "unwind_pnl_hp")?,
             sl_pnl_hp: req(&self.sl_pnl_hp, asset, "sl_pnl_hp")?,
             unwind_time_hp: req(&self.unwind_time_hp, asset, "unwind_time_hp")?,
+            // V-shape fields fall back to hardcoded defaults (not `req`) so every
+            // pre-v_shape strategy_*.toml still resolves — the canonical
+            // v_0.7_0.3_0.7 triple, mid-grid exits, no delta requirement. See
+            // trader/doc/plan_v_shape_trader_2026-07-17.md's defaults table.
+            v_high1: get_asset(&self.v_high1, asset).unwrap_or(0.70),
+            v_low: get_asset(&self.v_low, asset).unwrap_or(0.30),
+            v_high2: get_asset(&self.v_high2, asset).unwrap_or(0.70),
+            delta_pct_v: get_asset(&self.delta_pct_v, asset).unwrap_or(0.0),
+            sl_v_shape: get_asset(&self.sl_v_shape, asset).unwrap_or(0.0),
+            sl_pnl_v: get_asset(&self.sl_pnl_v, asset).unwrap_or(0.30),
+            unwind_pnl_v: get_asset(&self.unwind_pnl_v, asset).unwrap_or(0.15),
+            unwind_time_v: get_asset(&self.unwind_time_v, asset).unwrap_or(25.0),
             halt_rev: req(&self.halt_rev, asset, "halt_rev")?,
             halt_prob: req(&self.halt_prob, asset, "halt_prob")?,
+            halt_v: get_asset(&self.halt_v, asset).unwrap_or(1),
             halt_reset_hour_rev: req(&self.halt_reset_hour_rev, asset, "halt_reset_hour_rev")?,
             halt_reset_hour_hp: req(&self.halt_reset_hour_hp, asset, "halt_reset_hour_hp")?,
+            halt_reset_hour_v: get_asset(&self.halt_reset_hour_v, asset).unwrap_or(2),
             max_buy_price: self.max_buy_price,
             spread_premium_limit: self.spread_premium_limit,
             spread_discount_limit: self.spread_discount_limit,
@@ -240,28 +296,27 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // strategy_20260715.toml same-day update (reversal_hourly "By win_rate"
-        // table — updated 2026-07-15 test drift fix). BTC now has explicit
-        // overrides for reversal/delta_pct_rev/unwind_time_rev; everything else
-        // below resolves via the shared "default" entry (unwind_pnl_rev now
-        // converges to 0.10 for every asset under this selection method, so it
-        // has no per-asset override at all).
+        // strategy_20260716.toml (btc_5mins studies/unwind_safely/
+        // summary_2026-07-16_low03_high055_halt1_dailywf.md candidate combo).
+        // BTC now has explicit overrides for reversal/delta_pct_rev/
+        // reversal_low_threshold/unwind_pnl_rev; unwind_time_rev's own BTC
+        // override was removed (BTC now shares the 25.0 default with SOL/DOGE).
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
             "BTC reversal = 0.55 (override)"
         );
-        assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
+        assert!((p.reversal_low_threshold - 0.30).abs() < 1e-9);
         assert!((p.delta_pct_rev - 0.0004).abs() < 1e-9);
         assert_eq!(p.halt_rev, 1);
         assert_eq!(p.halt_reset_hour_rev, 2);
-        assert!((p.unwind_pnl_rev - 0.10).abs() < 1e-9);
+        assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
         assert!((p.sl_pnl_rev - 0.30).abs() < 1e-9);
         assert!((p.unwind_pnl_hp - 0.07).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.35).abs() < 1e-9);
-        // unwind_time_rev has per-asset overrides (BTC=20.0, XRP=20.0); BTC uses
-        // its own 20.0 override, not the 25.0 default. unwind_time_hp is flat
-        // 30.0 for all assets.
-        assert!((p.unwind_time_rev - 20.0).abs() < 1e-9);
+        // unwind_time_rev has one remaining per-asset override (XRP=20.0); BTC
+        // now falls back to the 25.0 default. unwind_time_hp is flat 30.0 for
+        // all assets.
+        assert!((p.unwind_time_rev - 25.0).abs() < 1e-9);
         assert!((p.unwind_time_hp - 30.0).abs() < 1e-9);
         // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
         // README's Gamma-halt section) — flat defaults, no per-asset override yet.
@@ -296,11 +351,10 @@ mod tests {
     fn default_fallback() {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // SOL uses default delta_pct_rev (updated 2026-07-15: BTC gained its own
-        // override, 0.0004, in strategy_20260715.toml's same-day update, so it no
-        // longer falls back — SOL is now the asset that demonstrates the fallback
-        // path).
-        let p = toml.resolve("SOL").expect("resolve SOL");
+        // XRP uses default delta_pct_rev (updated 2026-07-16: SOL gained its own
+        // override, 0.0004, in strategy_20260716.toml, so it no longer falls
+        // back — XRP is now the asset that demonstrates the fallback path).
+        let p = toml.resolve("XRP").expect("resolve XRP");
         assert!((p.delta_pct_rev - 0.0003).abs() < 1e-9);
     }
 
@@ -316,7 +370,7 @@ mod tests {
             pinned.trade_assets, latest.trade_assets,
             "sanity: the pinned historical file must differ from today's latest \
              (strategy_20260713.toml traded ETH too; the latest config narrowed \
-             trade_assets to BTC+BNB only)"
+             trade_assets to BTC+SOL+DOGE)"
         );
         assert!(pinned.trade_assets.contains(&"ETH".to_string()));
     }
@@ -324,5 +378,50 @@ mod tests {
     #[test]
     fn load_file_errors_on_missing_path() {
         assert!(load_file("/nonexistent/strategy_99999999.toml").is_err());
+    }
+
+    /// Pre-v_shape configs (no `[v_*]` sections at all) must still parse and resolve,
+    /// with every v field landing on its documented default — this is what keeps
+    /// backtest `--config-file` pins of historical configs working (see
+    /// trader/doc/plan_v_shape_trader_2026-07-17.md).
+    #[test]
+    fn v_shape_fields_default_when_absent_from_old_configs() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/config");
+        let toml = load_file(&format!("{dir}/strategy_20260713.toml")).expect("load old config");
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!((p.v_high1 - 0.70).abs() < 1e-9);
+        assert!((p.v_low - 0.30).abs() < 1e-9);
+        assert!((p.v_high2 - 0.70).abs() < 1e-9);
+        assert!((p.delta_pct_v - 0.0).abs() < 1e-9, "no delta requirement");
+        assert!((p.sl_v_shape - 0.0).abs() < 1e-9, "absolute SL disabled");
+        assert!((p.sl_pnl_v - 0.30).abs() < 1e-9);
+        assert!((p.unwind_pnl_v - 0.15).abs() < 1e-9);
+        assert!((p.unwind_time_v - 25.0).abs() < 1e-9);
+        assert_eq!(p.halt_v, 1);
+        assert_eq!(p.halt_reset_hour_v, 2);
+    }
+
+    /// `[v_*]` sections present in the TOML must win over the hardcoded defaults,
+    /// including per-asset overrides via the same `get_asset` default-key fallback
+    /// every other per-asset map uses.
+    #[test]
+    fn v_shape_fields_resolve_overrides_when_present() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.v_high1.insert("default".to_string(), 0.65);
+        toml.v_high2.insert("default".to_string(), 0.55);
+        toml.v_high2.insert("ETH".to_string(), 0.60);
+        toml.unwind_pnl_v.insert("default".to_string(), 0.05);
+        toml.halt_v.insert("default".to_string(), 3);
+        let p = toml.resolve("ETH").expect("resolve ETH");
+        assert!((p.v_high1 - 0.65).abs() < 1e-9, "default-key override");
+        assert!((p.v_high2 - 0.60).abs() < 1e-9, "asset-specific override");
+        assert!((p.unwind_pnl_v - 0.05).abs() < 1e-9);
+        assert_eq!(p.halt_v, 3);
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!(
+            (p.v_high2 - 0.55).abs() < 1e-9,
+            "BTC falls back to default key"
+        );
     }
 }

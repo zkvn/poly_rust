@@ -78,6 +78,13 @@ fn log_trade(path: &str, rec: &trader::types::TradeRecord) -> Result<()> {
 #[tokio::main]
 #[allow(unused_assignments, unused_variables)]
 async fn main() -> Result<()> {
+    // Same fix as trader/src/bin/live.rs / siglab / price_feed — required once per
+    // process when multiple crates (reqwest, tokio-tungstenite) share rustls >= 0.22.
+    // shadow predates that fix and had simply not been run since; it panicked at
+    // startup ("Could not automatically determine the process-level CryptoProvider")
+    // until this line was added (2026-07-17, found during v_shape local verification).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args = Args::parse();
 
     append_csv_header_if_new(&args.log)?;
@@ -91,6 +98,7 @@ async fn main() -> Result<()> {
         .map(|name| match name.as_str() {
             "reversal" => Machine::new_reversal(&params),
             "high_prob" => Machine::new_high_prob(&params),
+            "v_shape" => Machine::new_v_shape(&params),
             _ => Machine::new_reversal(&params),
         })
         .collect();

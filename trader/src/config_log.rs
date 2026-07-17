@@ -49,6 +49,28 @@ pub struct ConfigSnapshot {
     pub unwind_pnl_hp: HashMap<String, f64>,
     #[serde(default)]
     pub sl_pnl_hp: HashMap<String, f64>,
+    // v_shape (2026-07-17, trader/doc/plan_v_shape_trader_2026-07-17.md) — same
+    // wholesale per-asset-map copies as the rev/hp fields above.
+    #[serde(default)]
+    pub v_high1: HashMap<String, f64>,
+    #[serde(default)]
+    pub v_low: HashMap<String, f64>,
+    #[serde(default)]
+    pub v_high2: HashMap<String, f64>,
+    #[serde(default)]
+    pub delta_pct_v: HashMap<String, f64>,
+    #[serde(default)]
+    pub sl_v_shape: HashMap<String, f64>,
+    #[serde(default)]
+    pub sl_pnl_v: HashMap<String, f64>,
+    #[serde(default)]
+    pub unwind_pnl_v: HashMap<String, f64>,
+    #[serde(default)]
+    pub unwind_time_v: HashMap<String, f64>,
+    #[serde(default)]
+    pub halt_v: HashMap<String, i64>,
+    #[serde(default)]
+    pub halt_reset_hour_v: HashMap<String, i64>,
 }
 
 /// Build a snapshot for `asset` from the full multi-asset TOML (mirrors
@@ -112,6 +134,16 @@ pub fn build_snapshot(
         sl_pnl_rev: toml.sl_pnl_rev.clone(),
         unwind_pnl_hp: toml.unwind_pnl_hp.clone(),
         sl_pnl_hp: toml.sl_pnl_hp.clone(),
+        v_high1: toml.v_high1.clone(),
+        v_low: toml.v_low.clone(),
+        v_high2: toml.v_high2.clone(),
+        delta_pct_v: toml.delta_pct_v.clone(),
+        sl_v_shape: toml.sl_v_shape.clone(),
+        sl_pnl_v: toml.sl_pnl_v.clone(),
+        unwind_pnl_v: toml.unwind_pnl_v.clone(),
+        unwind_time_v: toml.unwind_time_v.clone(),
+        halt_v: toml.halt_v.clone(),
+        halt_reset_hour_v: toml.halt_reset_hour_v.clone(),
     }
 }
 
@@ -194,9 +226,9 @@ mod tests {
         assert_eq!(e.asset, "BTC");
         assert_eq!(e.event, "startup");
         assert_eq!(e.strategies, vec!["reversal".to_string()]);
-        // BTC has explicit `reversal`/`delta_pct_rev` overrides in strategy_20260715.toml's
-        // same-day update (reversal_hourly "By win_rate" table — updated 2026-07-15 test
-        // drift fix), so both resolve to BTC's own override value here, not "default".
+        // BTC has explicit `reversal`/`delta_pct_rev` overrides in strategy_20260716.toml
+        // (btc_5mins studies/unwind_safely/summary_2026-07-16_low03_high055_halt1_dailywf.md
+        // candidate combo), so both resolve to BTC's own override value here, not "default".
         assert!((e.reversal.get("BTC").unwrap_or(&e.reversal["default"]) - 0.55).abs() < 1e-9);
         assert!(
             (e.delta_pct_rev
@@ -209,11 +241,11 @@ mod tests {
         assert_eq!(*e.halt_rev.get("BTC").unwrap_or(&e.halt_rev["default"]), 1);
         assert!(e.hkt.ends_with(" HKT"));
         assert!(e.assets.contains("BTC"));
-        // trade_assets scoped to BTC/BNB/SOL (2026-07-15 same-day update, switched
-        // from the earlier By-PnL BTC/BNB deploy to the By-win_rate table) — see
-        // strategy_20260715.toml's meta comment. `assets` (monitored/configured)
-        // still covers all 6, `trade_assets` (actually traded) is the narrower set.
-        assert!(e.trade_assets.contains("BNB"));
+        // trade_assets scoped to BTC/SOL/DOGE (2026-07-16 update, dropped BNB in
+        // favor of DOGE) — see strategy_20260716.toml's meta comment. `assets`
+        // (monitored/configured) still covers all 6, `trade_assets` (actually
+        // traded) is the narrower set.
+        assert!(e.trade_assets.contains("DOGE"));
         assert!(e.trade_assets.contains("BTC"));
 
         std::fs::remove_dir_all(&dir).ok();

@@ -686,10 +686,10 @@ impl Driver<'_> {
         let mut groups: std::collections::BTreeMap<(&'static str, i64), Vec<&str>> =
             std::collections::BTreeMap::new();
         for slot in assets {
-            let hour = if slot.worker.strategy_name == "high_prob" {
-                slot.params.halt_reset_hour_hp
-            } else {
-                slot.params.halt_reset_hour_rev
+            let hour = match slot.worker.strategy_name {
+                "high_prob" => slot.params.halt_reset_hour_hp,
+                "v_shape" => slot.params.halt_reset_hour_v,
+                _ => slot.params.halt_reset_hour_rev,
             };
             groups
                 .entry((slot.worker.strategy_name, hour))
@@ -761,10 +761,11 @@ impl Driver<'_> {
             };
             // `low`/`high` are the strategy's entry trigger band — reversal_low_threshold/
             // reversal for reversal (aka "unwind" — the reversal+take-profit-unwind
-            // strategy), price_low/price_high for high_prob.
+            // strategy), price_low/price_high for high_prob, v_low/v_high2 (the dip floor
+            // and the re-entry bar) for v_shape.
             let (sl, delta_gate, low, high, halt_n, unwind_pnl, sl_pnl, unwind_time, start) =
-                if slot.worker.strategy_name == "high_prob" {
-                    (
+                match slot.worker.strategy_name {
+                    "high_prob" => (
                         slot.params.sl_high_prob,
                         slot.params.delta_pct_hp,
                         slot.params.price_low,
@@ -774,9 +775,19 @@ impl Driver<'_> {
                         slot.params.sl_pnl_hp,
                         slot.params.unwind_time_hp,
                         None,
-                    )
-                } else {
-                    (
+                    ),
+                    "v_shape" => (
+                        slot.params.sl_v_shape,
+                        slot.params.delta_pct_v,
+                        slot.params.v_low,
+                        slot.params.v_high2,
+                        slot.params.halt_v,
+                        slot.params.unwind_pnl_v,
+                        slot.params.sl_pnl_v,
+                        slot.params.unwind_time_v,
+                        None,
+                    ),
+                    _ => (
                         slot.params.sl_reversal,
                         slot.params.delta_pct_rev,
                         slot.params.reversal_low_threshold,
@@ -786,7 +797,7 @@ impl Driver<'_> {
                         slot.params.sl_pnl_rev,
                         slot.params.unwind_time_rev,
                         Some(slot.params.reversal_start_time),
-                    )
+                    ),
                 };
             let start_str = match start {
                 Some(s) => format!("  start={s:.0}s"),
@@ -1268,10 +1279,10 @@ impl Driver<'_> {
                     // call sites (Command::Halt, DrawdownHalt).
                     Action::HaltEngaged => {
                         log_control_event(slot, "halt_engaged");
-                        let halt_n = if slot.worker.strategy_name == "high_prob" {
-                            slot.params.halt_prob
-                        } else {
-                            slot.params.halt_rev
+                        let halt_n = match slot.worker.strategy_name {
+                            "high_prob" => slot.params.halt_prob,
+                            "v_shape" => slot.params.halt_v,
+                            _ => slot.params.halt_rev,
                         };
                         self.notify(&format!(
                             "🟡 <b>{} HALTED</b> | {} | {}\n{halt_n} consecutive losses — new entries suppressed until the next daily reset (or /resume).",
@@ -1489,6 +1500,7 @@ async fn main() -> Result<()> {
             let mut worker = match strategy.as_str() {
                 "reversal" => Worker::new_reversal(asset, &params),
                 "high_prob" => Worker::new_high_prob(asset, &params),
+                "v_shape" => Worker::new_v_shape(asset, &params),
                 other => {
                     anyhow::bail!("unknown strategy `{other}` for asset {asset} (from config)")
                 }
@@ -2356,10 +2368,20 @@ mod balance_halt_scope_tests {
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
             unwind_time_hp: 0.0,
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.15,
+            unwind_time_v: 25.0,
             halt_rev: 2,
             halt_prob: 2,
+            halt_v: 1,
             halt_reset_hour_rev: 2,
             halt_reset_hour_hp: 8,
+            halt_reset_hour_v: 2,
             max_buy_price: 0.95,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
@@ -2484,10 +2506,20 @@ mod halt_persist_tests {
             unwind_pnl_hp: 0.05,
             sl_pnl_hp: 0.25,
             unwind_time_hp: 0.0,
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.15,
+            unwind_time_v: 25.0,
             halt_rev: 2,
             halt_prob: 2,
+            halt_v: 1,
             halt_reset_hour_rev: 2,
             halt_reset_hour_hp: 8,
+            halt_reset_hour_v: 2,
             max_buy_price: 0.95,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,

@@ -4,11 +4,13 @@ pub mod delta_pct;
 pub mod latest_binance;
 pub mod latest_poly;
 pub mod saw_low;
+pub mod v_shape;
 
 pub use delta_pct::DeltaPctSignal;
 pub use latest_binance::LatestBinanceSignal;
 pub use latest_poly::{LatestPolySignal, SpreadSignal};
 pub use saw_low::SawLowSignal;
+pub use v_shape::VShapeSignal;
 
 use crate::types::{BinanceTick, CycleContext, PolyTick};
 

@@ -41,6 +41,10 @@ impl Side {
 pub enum EntryType {
     Reversal,
     HighProb,
+    /// V-shape dip-recover-dip pattern (high1 → low → high2), promoted from
+    /// siglab's standalone `v_shape.rs` engine 2026-07-17 — see
+    /// `trader/doc/plan_v_shape_trader_2026-07-17.md`.
+    VShape,
 }
 
 impl EntryType {
@@ -48,6 +52,7 @@ impl EntryType {
         match self {
             EntryType::Reversal => "reversal",
             EntryType::HighProb => "high_prob",
+            EntryType::VShape => "v_shape",
         }
     }
 }

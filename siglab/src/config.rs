@@ -182,10 +182,24 @@ impl VariantCfg {
             unwind_pnl_hp,
             sl_pnl_hp,
             unwind_time_hp,
+            // v_shape params: siglab's own V-shape grid runs through its standalone
+            // `v_shape::VShapeEngine`, never `Machine::new_v_shape`, so these are inert
+            // here — set to trader's documented defaults purely to satisfy the struct
+            // (same relationship the unread halt_*/gamma_poll_* zeros above have).
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.15,
+            unwind_time_v: 25.0,
             halt_rev: 0,
             halt_prob: 0,
+            halt_v: 0,
             halt_reset_hour_rev: 0,
             halt_reset_hour_hp: 0,
+            halt_reset_hour_v: 0,
             max_buy_price: self.max_buy_price,
             spread_premium_limit: self.spread_premium_limit,
             spread_discount_limit: self.spread_discount_limit,

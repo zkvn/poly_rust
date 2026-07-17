@@ -1,10 +1,12 @@
-//! Strategy layer — ReversalStrategy and HighProbStrategy.
+//! Strategy layer — ReversalStrategy, HighProbStrategy, and VShapeStrategy.
 //!
 //! Strategies are pure objects over signal handles. `evaluate` is called after
 //! each BinanceTick (same as Python backtest). Gates (spread, delta_pct,
 //! staleness, max_price, halt) live in `gates.rs`, not here.
 
-use crate::signal::{DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal};
+use crate::signal::{
+    DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, VShapeSignal,
+};
 use crate::types::{CycleContext, EntryType, Side, TradeIntent};
 
 // ── Reversal ──────────────────────────────────────────────────────────────────
@@ -172,6 +174,87 @@ impl HighProbStrategy {
     }
 }
 
+// ── VShape ────────────────────────────────────────────────────────────────────
+
+/// Fires when a side's V-shape prefix (`VShapeSignal`: reached `>= v_high1`, then dipped
+/// `<= v_low`) is latched AND that side's current poly price has recovered `>= v_high2`.
+/// Deliberately **no delta_pct / Binance-direction requirement** — pure CLOB price
+/// action, the defining property carried over from siglab's standalone `v_shape.rs`
+/// engine (see `trader/doc/plan_v_shape_trader_2026-07-17.md`). The `delta_pct_v` gate
+/// value defaults to 0.0 (disabled) in `gates.rs` for the same reason.
+pub struct VShapeStrategy {
+    v_high2: f64,
+    no_enter_when_time_left: f64,
+    pub fired: bool,
+    cycle_end_ts: f64,
+}
+
+impl VShapeStrategy {
+    pub fn new(v_high2: f64, no_enter_when_time_left: f64) -> Self {
+        Self {
+            v_high2,
+            no_enter_when_time_left,
+            fired: false,
+            cycle_end_ts: 0.0,
+        }
+    }
+
+    pub fn reset(&mut self, ctx: &CycleContext) {
+        self.fired = false;
+        self.cycle_end_ts = ctx.end_ts;
+    }
+
+    pub fn mark_fired(&mut self) {
+        self.fired = true;
+    }
+
+    /// Returns Some(TradeIntent) when a side's V-shape completes. `now` is the
+    /// triggering tick's timestamp (poly or binance, same convention as the
+    /// other strategies — entry evaluation runs on both feeds).
+    pub fn evaluate(
+        &self,
+        now: f64,
+        v_up: &VShapeSignal,
+        v_dn: &VShapeSignal,
+        latest_poly: &LatestPolySignal,
+        latest_binance: &LatestBinanceSignal,
+    ) -> Option<TradeIntent> {
+        if self.fired {
+            return None;
+        }
+        let time_left = self.cycle_end_ts - now;
+        if time_left < self.no_enter_when_time_left {
+            return None;
+        }
+        let up = latest_poly.up();
+        let dn = latest_poly.dn();
+        if up <= 0.0 || dn <= 0.0 {
+            return None;
+        }
+        let binance_price = latest_binance.value();
+
+        if v_up.dipped_after_high() && up >= self.v_high2 {
+            return Some(TradeIntent {
+                side: Side::Up,
+                entry_type: EntryType::VShape,
+                up,
+                dn,
+                binance_price,
+            });
+        }
+        if v_dn.dipped_after_high() && dn >= self.v_high2 {
+            return Some(TradeIntent {
+                side: Side::Down,
+                entry_type: EntryType::VShape,
+                up,
+                dn,
+                binance_price,
+            });
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +409,88 @@ mod tests {
         strat.reset(&ctx); // sets cycle_end_ts = 1300
         // at ts=1250, time_left=50, outside enter_when=20
         assert!(strat.evaluate(1250.0, &lp, &dp, &lb).is_none());
+    }
+
+    /// Drives one side's full V prefix (high1 at 0.75 → dip to 0.25) through real
+    /// `VShapeSignal`s and leaves `latest_poly` at `current_up`, ready for `evaluate`.
+    fn v_setup(current_up: f64) -> (VShapeSignal, VShapeSignal, LatestPolySignal, CycleContext) {
+        let ctx = make_ctx(1300.0);
+        let mut v_up = VShapeSignal::new_up(0.7, 0.3);
+        let mut v_dn = VShapeSignal::new_dn(0.7, 0.3);
+        v_up.reset(&ctx);
+        v_dn.reset(&ctx);
+        let mut lp = LatestPolySignal::new();
+        for (ts, up) in [(1010.0, 0.75), (1050.0, 0.25), (1100.0, current_up)] {
+            let t = PolyTick {
+                ts,
+                up,
+                dn: 1.0 - up,
+            };
+            v_up.on_poly(t);
+            v_dn.on_poly(t);
+            lp.on_poly(t);
+        }
+        (v_up, v_dn, lp, ctx)
+    }
+
+    #[test]
+    fn v_shape_fires_up_after_full_v_without_any_binance_tick() {
+        let (v_up, v_dn, lp, ctx) = v_setup(0.72);
+        let lb = LatestBinanceSignal::new(); // never fed — no delta requirement
+        let mut strat = VShapeStrategy::new(0.7, 10.0);
+        strat.reset(&ctx);
+        let intent = strat.evaluate(1110.0, &v_up, &v_dn, &lp, &lb);
+        let i = intent.expect("full V + recovery >= high2 must fire");
+        assert_eq!(i.side, Side::Up);
+        assert_eq!(i.entry_type, EntryType::VShape);
+        assert!((i.token_price() - 0.72).abs() < 1e-9);
+    }
+
+    #[test]
+    fn v_shape_no_fire_below_high2_or_after_fired_or_in_no_enter_window() {
+        let (v_up, v_dn, lp, ctx) = v_setup(0.65); // prefix latched, but 0.65 < high2 0.7
+        let lb = LatestBinanceSignal::new();
+        let mut strat = VShapeStrategy::new(0.7, 10.0);
+        strat.reset(&ctx);
+        assert!(strat.evaluate(1110.0, &v_up, &v_dn, &lp, &lb).is_none());
+
+        let (v_up, v_dn, lp, ctx) = v_setup(0.72);
+        let mut strat = VShapeStrategy::new(0.7, 10.0);
+        strat.reset(&ctx);
+        strat.mark_fired();
+        assert!(
+            strat.evaluate(1110.0, &v_up, &v_dn, &lp, &lb).is_none(),
+            "fired latch must suppress re-entry within the cycle"
+        );
+
+        let mut strat = VShapeStrategy::new(0.7, 10.0);
+        strat.reset(&ctx); // cycle_end_ts = 1300
+        assert!(
+            strat.evaluate(1295.0, &v_up, &v_dn, &lp, &lb).is_none(),
+            "time_left=5 < no_enter_when_time_left=10 must block entry"
+        );
+    }
+
+    #[test]
+    fn v_shape_no_fire_without_prefix() {
+        // Price is at high2 but neither side ever completed high1-then-low.
+        let ctx = make_ctx(1300.0);
+        let mut v_up = VShapeSignal::new_up(0.7, 0.3);
+        let mut v_dn = VShapeSignal::new_dn(0.7, 0.3);
+        v_up.reset(&ctx);
+        v_dn.reset(&ctx);
+        let mut lp = LatestPolySignal::new();
+        let t = PolyTick {
+            ts: 1100.0,
+            up: 0.75,
+            dn: 0.25,
+        };
+        v_up.on_poly(t);
+        v_dn.on_poly(t);
+        lp.on_poly(t);
+        let lb = LatestBinanceSignal::new();
+        let mut strat = VShapeStrategy::new(0.7, 10.0);
+        strat.reset(&ctx);
+        assert!(strat.evaluate(1110.0, &v_up, &v_dn, &lp, &lb).is_none());
     }
 }

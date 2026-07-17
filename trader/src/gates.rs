@@ -39,6 +39,10 @@ pub struct GateParams {
     pub max_price_age_secs: f64,
     pub delta_pct_rev: f64,
     pub delta_pct_hp: f64,
+    /// Min |delta_pct| for v_shape entries — 0.0 (the config default) disables the
+    /// check entirely: v_shape is pure CLOB price action with no Binance-direction
+    /// requirement (see trader/doc/plan_v_shape_trader_2026-07-17.md).
+    pub delta_pct_v: f64,
     pub max_buy_price: f64,
     pub price_high_rev: f64,
 }
@@ -64,10 +68,10 @@ pub fn check_gates(
         return Some(GateBlock::PolyStale);
     }
     let dp = delta_pct.value().abs();
-    let min_delta = if intent.entry_type == EntryType::Reversal {
-        params.delta_pct_rev
-    } else {
-        params.delta_pct_hp
+    let min_delta = match intent.entry_type {
+        EntryType::Reversal => params.delta_pct_rev,
+        EntryType::HighProb => params.delta_pct_hp,
+        EntryType::VShape => params.delta_pct_v,
     };
     if dp < min_delta {
         return Some(GateBlock::MinDeltaPct);
@@ -98,6 +102,7 @@ mod tests {
             max_price_age_secs: 2.0,
             delta_pct_rev: 0.0008,
             delta_pct_hp: 0.0004,
+            delta_pct_v: 0.0,
             max_buy_price: 0.95,
             price_high_rev: 0.90,
         }
@@ -196,6 +201,32 @@ mod tests {
         assert_eq!(
             check_gates(&i, &spread, &lp, &dp, &p, 100.5),
             Some(GateBlock::MinDeltaPct)
+        );
+    }
+
+    /// v_shape intents pass the delta gate with delta_pct_v=0.0 (its config default —
+    /// no Binance-direction requirement), even at a delta that blocks a reversal
+    /// intent, and are exempt from the reversal-only price_high_rev ceiling.
+    #[test]
+    fn v_shape_passes_zero_min_delta_and_skips_price_high_rev() {
+        let (spread, lp, dp) = baseline_signals(50000.0, 50005.0, 100.0); // |dp| = 0.0001
+        let p = default_params();
+        let mut i = intent(Side::Up, 0.75);
+        i.entry_type = EntryType::VShape;
+        assert!(check_gates(&i, &spread, &lp, &dp, &p, 100.5).is_none());
+
+        // 0.91 > price_high_rev=0.90 blocks a reversal intent but not a v_shape one
+        // (max_buy_price=0.95 is still the binding ceiling for v_shape). Use a delta
+        // large enough to pass the reversal min (0.0008) so PriceHighRev — checked
+        // after MinDeltaPct in the fixed gate order — is what actually fires.
+        let (spread, lp, dp) = baseline_signals(50000.0, 50100.0, 100.0); // |dp| = 0.002
+        let mut i = intent(Side::Up, 0.91);
+        i.entry_type = EntryType::VShape;
+        assert!(check_gates(&i, &spread, &lp, &dp, &p, 100.5).is_none());
+        let i = intent(Side::Up, 0.91); // reversal: still blocked
+        assert_eq!(
+            check_gates(&i, &spread, &lp, &dp, &p, 100.5),
+            Some(GateBlock::PriceHighRev)
         );
     }
 }
