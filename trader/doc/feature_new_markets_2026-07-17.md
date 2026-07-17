@@ -389,3 +389,62 @@ addressing DeepSeek #6's schema-drift concern directly); `--period-secs` on
 `bin/backtest.rs` (this plan derives the period from each slug instead — strictly safer,
 can't disagree with the data being replayed, and covers mixed-duration files for free);
 and the old plan's §2.4 deploy changes (unneeded — same binary, same unit, config-gated).
+
+---
+
+## 12. Implementation, soak, and deploy record (same day, appended post-hoc)
+
+**Implemented 2026-07-17** (commits `7b58270` code, `4a9075e` dry-run fill-pricing fix,
+`73c04c4` enablement config): everything in §4–§7 as planned, plus two things the plan
+missed that testing found:
+
+1. **Binance slug re-bucketing for non-5m backtests** (`backtest.rs::
+   rebucket_binance_slugs`): `raw/`'s Binance rows carry *5m* slugs; `run_backtest`
+   groups both feeds by slug, so the first real 15m replay silently produced zero
+   trades (every cycle "had no Binance data"). Re-keyed by each tick's own timestamp
+   into the duration's slots. Caught because the loose-config validation run
+   suspiciously returned "No trades." against 137 candidate dip-recover patterns.
+2. **Dry-run close pricing**: `SimExecutionEngine::close_position` returns
+   `filled_usdc: 0.0` (fine for unit tests, which only check state transitions) — the
+   soak's first trade booked a ~flat TIMEOUT exit as pnl −1.02. Dry-run-only re-pricing
+   at the held side's last mid (crypto) / triggering tick's mid (weather).
+
+**Backtest parity gate (§6.4): PASSED, 18/18 byte-identical**, twice (before and after
+the re-bucketing change) — old binary from pre-change `main` vs new, dates 07-14/15/16 ×
+BTC/SOL/DOGE × {latest config, pinned `strategy_20260713.toml`}, `--format csv` diff.
+
+**Docker soak (§9.4–9.6): PASSED** — ~4h dry-run, dedicated host-network compose
+(host→bridge port publishing turned out broken on this box — docker-proxy accepts TCP
+but forwards nothing; root compose untouched), BTC×{5m,15m,1h-et,4h} + ETH×{5m,15m} +
+weather×{nyc,london,seoul} (33 buckets):
+- 475 resource samples: trader CPU avg 2.15% / max 5.37% (Ryzen core), memory rose
+  12.5→21 MiB then plateaued (allocator working set, not a leak). Zero errors/panics,
+  120 cycles.
+- All four duration families rotated on their own clocks; hourly-ET slugs resolved live
+  four consecutive hours; first 4h cycle opened at 16:00 HKT.
+- Cross-duration leakage: none — same-instant heartbeats showed four different CLOB
+  prices for BTC's four slots (0.4650/0.4750/0.7450/0.7200) with one shared Binance ref.
+- Full dry-run round-trips: BTC-5m, and ETH@15m entry 0.895 → TIMEOUT exit 0.92,
+  pnl +0.0149, logged to `live_trades_eth_reversal_15m.csv`.
+- Mid-cycle container restart: per-slot startup suppression engaged correctly
+  (the 4h slot reported 11002s into its open cycle).
+- Weather: discovery + batched subscription proven; no entries in the window (thin
+  books — expected).
+- Oracle CPU translation (measured, not assumed): Oracle is a 2-core Neoverse-N1;
+  using price_feed (runs on both machines) as the yardstick, ~⅓ Ryzen-core per
+  N1-core ⇒ soak's worst-case config ≈ 5–11% of one Oracle core. Post-deploy measured:
+  ~0–4% with the actual enablement.
+
+**Deploy (2026-07-17 ~20:00 HKT)**: `deploy_trader.sh` (build + config + restart;
+poly-collector untouched). Between plan and deploy, a parallel same-day config update
+(`2ceb4b0`) had already trade-enabled all 6 assets on 5m — so the §10 "one asset × one
+duration" rollout became: keep everything as that update left it, add **ETH = ["5m",
+"15m"]** only, with `"ETH@15m"` keys pinning the soak-validated morning params (the
+plain ETH keys now hold that update's different 5m calibration — the @dur mechanism
+doing exactly the job §4.2 designed it for). Post-deploy verified: exactly one live
+process, 9 slots including `ETH@15m -> strategy=reversal`, per-slot startup
+suppression, 14.6 MiB RSS. That update also recalibrated values three config-pinned
+tests assert — updated same commit (the `fix_config_test_drift_2026-07-15.md` pattern).
+
+Not enabled anywhere: weather (`--weather-config` unset), BTC/SOL/BNB/XRP/DOGE 15m,
+1h-et, 4h.

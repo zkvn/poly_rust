@@ -639,12 +639,19 @@ suite. Plan + cross-check against the older 15m plan:
   boundary (up to 1h/4h away) rather than fabricating an `open_binance` mid-cycle —
   deliberate, same rationale as `trader/doc/fix_live_deploy_2026-07-15.md`.
 
-**Enablement state: `strategy_20260717.toml` has no `[market_durations]` and nothing
-passes `--weather-config` — production trades exactly the 5m markets it did before.**
-Rollout (later, deliberate): deploy binary first (inert), then a new dated config
-enabling one asset × one duration at $1, seeded for 15m from
-`btc_5mins/studies/15_mins/` (high_prob-style conservatism; reversal at 15m was
-"inconclusive" there — see the plan doc §11.2).
+**Enablement state (as of 2026-07-17 evening): ETH additionally trades the 15-minute
+market on Oracle — the only non-5m market enabled.** `strategy_20260717.toml`'s second
+same-day update added `[market_durations] ETH = ["5m", "15m"]` plus `"ETH@15m"` override
+keys pinning the exact parameters the same-day local Docker dry-run soak validated with
+a winning round-trip (reversal 0.60 / low 0.20 / delta 0.0006 / unwind_pnl 0.10 /
+sl_pnl 0.30 / unwind_time 25.0 — deliberately the params that trade actually ran, not
+the plain ETH keys' newer 5m calibration). Deployed via `deploy_trader.sh` the same
+evening (binary + config together; the binary must not lag the config — an old binary
+silently ignores `[market_durations]` and would no-op the enablement). No weather, no
+other 15m assets, no 1h-et, no 4h — each of those stays a deliberate future
+config/flag change. Soak evidence: ~4h Docker dry-run, CPU avg 2.15%/max 5.4% (local
+core), memory plateaued ~20 MiB, 120 cycles across all four duration families, zero
+errors, zero cross-duration tick leakage; full record in the plan doc §12.
 
 ### Oracle box is aarch64 — cross-compile locally
 
