@@ -226,15 +226,15 @@ mod tests {
         assert_eq!(e.asset, "BTC");
         assert_eq!(e.event, "startup");
         assert_eq!(e.strategies, vec!["reversal".to_string()]);
-        // BTC has explicit `reversal`/`delta_pct_rev` overrides in strategy_20260716.toml
-        // (btc_5mins studies/unwind_safely/summary_2026-07-16_low03_high055_halt1_dailywf.md
-        // candidate combo), so both resolve to BTC's own override value here, not "default".
+        // BTC has explicit `reversal`/`delta_pct_rev` overrides in
+        // strategy_20260717.toml (second same-day update — bt1_overnight_vshape
+        // filtered picks), so both resolve to BTC's own override, not "default".
         assert!((e.reversal.get("BTC").unwrap_or(&e.reversal["default"]) - 0.55).abs() < 1e-9);
         assert!(
             (e.delta_pct_rev
                 .get("BTC")
                 .unwrap_or(&e.delta_pct_rev["default"])
-                - 0.0004)
+                - 0.0009)
                 .abs()
                 < 1e-9
         );

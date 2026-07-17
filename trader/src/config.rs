@@ -352,28 +352,25 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // strategy_20260716.toml (btc_5mins studies/unwind_safely/
-        // summary_2026-07-16_low03_high055_halt1_dailywf.md candidate combo).
-        // BTC now has explicit overrides for reversal/delta_pct_rev/
-        // reversal_low_threshold/unwind_pnl_rev; unwind_time_rev's own BTC
-        // override was removed (BTC now shares the 25.0 default with SOL/DOGE).
+        // strategy_20260717.toml, second same-day update (btc_5mins
+        // studies/bt1_overnight_vshape/summary_2026-07-17.md filtered picks —
+        // see that file's meta.source): BTC overrides for reversal/
+        // delta_pct_rev/reversal_low_threshold/unwind_pnl_rev/sl_pnl_rev/
+        // unwind_time_rev.
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
             "BTC reversal = 0.55 (override)"
         );
         assert!((p.reversal_low_threshold - 0.30).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0004).abs() < 1e-9);
+        assert!((p.delta_pct_rev - 0.0009).abs() < 1e-9);
         assert_eq!(p.halt_rev, 1);
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
-        assert!((p.sl_pnl_rev - 0.30).abs() < 1e-9);
-        assert!((p.unwind_pnl_hp - 0.07).abs() < 1e-9);
-        assert!((p.sl_pnl_hp - 0.35).abs() < 1e-9);
-        // unwind_time_rev has one remaining per-asset override (XRP=20.0); BTC
-        // now falls back to the 25.0 default. unwind_time_hp is flat 30.0 for
-        // all assets.
-        assert!((p.unwind_time_rev - 25.0).abs() < 1e-9);
-        assert!((p.unwind_time_hp - 30.0).abs() < 1e-9);
+        assert!((p.sl_pnl_rev - 0.20).abs() < 1e-9);
+        assert!((p.unwind_pnl_hp - 0.15).abs() < 1e-9);
+        assert!((p.sl_pnl_hp - 0.20).abs() < 1e-9);
+        assert!((p.unwind_time_rev - 10.0).abs() < 1e-9);
+        assert!((p.unwind_time_hp - 25.0).abs() < 1e-9);
         // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
         // README's Gamma-halt section) — flat defaults, no per-asset override yet.
         // gamma_poll_deadline_secs added 2026-07-11 (extended window, decoupled
@@ -551,7 +548,11 @@ mod tests {
         let p = toml.resolve_for_duration("BTC", "4h").expect("resolve 4h");
         assert_eq!(p.strategies, vec!["high_prob"]);
         let p = toml.resolve("BTC").expect("resolve 5m");
-        assert_eq!(p.strategies, vec!["reversal"], "5m list unchanged");
+        assert_eq!(
+            p.strategies,
+            vec!["reversal", "high_prob"],
+            "5m list unchanged (strategy_20260717.toml second update: BTC runs both)"
+        );
     }
 
     /// `[v_*]` sections present in the TOML must win over the hardcoded defaults,

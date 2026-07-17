@@ -1,6 +1,6 @@
 # meta
-ts = "2026-07-17T00:00:00+08:00"
-source = "same-day update: reversal/high_prob per-asset combos now from btc_5mins studies/bt1_overnight_vshape/summary_2026-07-17.md (run_20260717_170052), the 'By PnL (filtered)' leaderboards — deliberately the leaderboards' likely-overfit-flagged picks (win_rate > 90% AND ppt > 0.10 within that report's own filter), NOT the plain best-PnL leaderboard, deployed at the user's explicit request after being shown the sample sizes and warned these are surfaced for scrutiny, not as a recommendation. All 6 assets now trade-enabled (previously BTC/SOL/DOGE only, reversal-only); per-asset strategy set follows which of {reversal, high_prob} had a non-'n/a' filtered pick for that asset in the report — BTC and XRP get both strategies, SOL gets high_prob only, ETH/BNB/DOGE get reversal only (mirrors ETH having no high_prob pick, the precedent named when this deploy was requested). Trade-count caveats, carried over honestly, not resolved by this deploy: these are single-window (12h, 2026-07-16 20:00->2026-07-17 08:00 HKT) picks selected specifically for the overfit pattern — reversal BTC=1 trade, BNB=1 trade, ETH=8, XRP=9, DOGE=13 (92.3% win rate); high_prob SOL=3 trades, XRP=5, BTC=6. None of these are validated edges; several are single-digit-trade samples. sl_reversal (0.10) and sl_high_prob (0.49) are unchanged from the prior live config and were NOT part of this study's sweep — run_study.py fixes both to disabled (ABS_SL=0.0) when generating this leaderboard, so live trading will apply an absolute stop-loss floor never exercised by the trades these parameters were picked from."
+ts = "2026-07-17T19:45:00+08:00"
+source = "second same-day update (evening): ETH additionally trades the 15-minute market — [market_durations] ETH = ['5m','15m'], the only non-5m market enabled (no weather, no other 15m assets, no 1h-et, no 4h; see trader/doc/feature_new_markets_2026-07-17.md). Its 'ETH@15m' override keys pin the exact parameters the winning 2026-07-17 local Docker dry-run soak round-trip ran (reversal 0.60 / low 0.20 / delta 0.0006 / unwind_pnl 0.10 / sl_pnl 0.30 / unwind_time 25.0 — the pre-recalibration morning values), independent of the plain ETH keys' 5m calibration below. Everything below this paragraph is the earlier same-day update, unchanged: reversal/high_prob per-asset combos from btc_5mins studies/bt1_overnight_vshape/summary_2026-07-17.md (run_20260717_170052), the 'By PnL (filtered)' leaderboards — deliberately the leaderboards' likely-overfit-flagged picks (win_rate > 90% AND ppt > 0.10 within that report's own filter), NOT the plain best-PnL leaderboard, deployed at the user's explicit request after being shown the sample sizes and warned these are surfaced for scrutiny, not as a recommendation. All 6 assets now trade-enabled (previously BTC/SOL/DOGE only, reversal-only); per-asset strategy set follows which of {reversal, high_prob} had a non-'n/a' filtered pick for that asset in the report — BTC and XRP get both strategies, SOL gets high_prob only, ETH/BNB/DOGE get reversal only (mirrors ETH having no high_prob pick, the precedent named when this deploy was requested). Trade-count caveats, carried over honestly, not resolved by this deploy: these are single-window (12h, 2026-07-16 20:00->2026-07-17 08:00 HKT) picks selected specifically for the overfit pattern — reversal BTC=1 trade, BNB=1 trade, ETH=8, XRP=9, DOGE=13 (92.3% win rate); high_prob SOL=3 trades, XRP=5, BTC=6. None of these are validated edges; several are single-digit-trade samples. sl_reversal (0.10) and sl_high_prob (0.49) are unchanged from the prior live config and were NOT part of this study's sweep — run_study.py fixes both to disabled (ABS_SL=0.0) when generating this leaderboard, so live trading will apply an absolute stop-loss floor never exercised by the trades these parameters were picked from."
 
 # Trade assets: all 6 — see [strategies] for per-asset strategy assignment.
 assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
@@ -39,6 +39,17 @@ record_clob = false
 [trade_size_usdc]
 default = 1.0
 
+# Which market durations each trade asset trades (additive, 2026-07-17 evening —
+# trader/doc/feature_new_markets_2026-07-17.md §4.1). ETH additionally trades the
+# 15-minute market — the ONLY non-5m market enabled (no weather, no other 15m
+# assets, no 1h-et, no 4h). Validated the same day by the local Docker dry-run
+# soak: full ETH-15m round-trip (entry 0.895 -> timeout exit 0.92, +0.0149) on
+# the exact "ETH@15m" params pinned in the reversal tables below; every other
+# asset stays 5m-only.
+[market_durations]
+default = ["5m"]
+ETH = ["5m", "15m"]
+
 # Per-asset strategy assignment — see meta.source for how this was derived.
 [strategies]
 default = ["reversal"]
@@ -66,10 +77,15 @@ default = 8
 # halt_reset_hour_rev, price_high_rev held unchanged (not part of this sweep).
 # SOL not traded on reversal (its filtered pick was "n/a" — no combo hit both
 # thresholds), so no per-asset override needed here.
+# "ETH@15m" keys (2026-07-17 evening): pin ETH's 15-minute market to the exact
+# parameters the winning local dry-run soak trade ran — the pre-recalibration
+# morning values — independent of the plain ETH keys' 5m study calibration.
+# Resolution order: ETH@15m -> default@15m -> ETH -> default (config.rs).
 [delta_pct_rev]
 default = 0.0003
 BTC = 0.0009
 ETH = 0.0006
+"ETH@15m" = 0.0006
 BNB = 0.0009
 DOGE = 0.0000
 
@@ -77,6 +93,7 @@ DOGE = 0.0000
 default = 0.60
 BTC = 0.55
 ETH = 0.55
+"ETH@15m" = 0.60
 BNB = 0.55
 XRP = 0.65
 DOGE = 0.55
@@ -85,6 +102,7 @@ DOGE = 0.55
 default = 0.20
 BTC = 0.30
 ETH = 0.30
+"ETH@15m" = 0.20
 
 [sl_reversal]
 default = 0.10
@@ -92,11 +110,13 @@ default = 0.10
 [unwind_pnl_rev]
 default = 0.10
 BTC = 0.15
+"ETH@15m" = 0.10
 
 [sl_pnl_rev]
 default = 0.30
 BTC = 0.20
 ETH = 0.20
+"ETH@15m" = 0.30
 BNB = 0.20
 
 # Max holding time (seconds) — force-close at market if still open this long
@@ -105,6 +125,7 @@ BNB = 0.20
 default = 25.0
 BTC = 10.0
 ETH = 20.0
+"ETH@15m" = 25.0
 BNB = 10.0
 XRP = 20.0
 DOGE = 20.0
