@@ -217,6 +217,25 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
+  known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
+  files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
+  `"BTC@15m"`-style keys precisely so the 5m recon pipeline is untouched — but that also
+  means nothing recons them yet. Wire them in (using `backtest --duration` +
+  `build_backtest_prices.py --source`) before any non-5m market carries real size.
+- **Hourly-ET markets have no recorded tick history — noted 2026-07-17.** `price_feed`
+  records 5m/15m/4h but not the ET-calendar-hour family, so `1h-et` can't be backtested or
+  BT-reconciled at all. Extending the collector was deliberately out of scope (poly-collector
+  untouched per the no-Oracle-interruption constraint); decide whether to add it before
+  trading `1h-et` with real size.
+- **Weather module has no daily loss halt — deliberate minimal v1, 2026-07-17.** Risk
+  controls are per-bucket trade caps (`max_trades_per_bucket`, default 1) + tiny size +
+  the module being off entirely without `--weather-config`; there's no analogue of the
+  crypto side's consecutive-loss `HaltTracker`. Add one before enabling weather with real
+  money beyond token size.
+- **`api_probe.rs` still hardcodes `"5m"`/`300` — noted 2026-07-08 (old 15m plan §2.1),
+  still true 2026-07-17.** Diagnostic-only binary, not part of the live path; fix
+  opportunistically next time it's touched.
 - **`price_high_rev` gate only checks the pre-retry signal price, not the realized fill —
   found 2026-07-16.** A reversal entry that passes the gate at the signal price can still fill
   well above it if the first FAK attempt hits a thin book and `aggressive_entry_price()` escalates
@@ -573,6 +592,59 @@ gate) — pure CLOB price action, carried over from siglab's standalone engine. 
 lists `v_shape` in `[strategies]` yet, so nothing trades it live — enabling it is a
 deliberate future config change once siglab's per-variant evidence supports one. Plan +
 verification: `trader/doc/plan_v_shape_trader_2026-07-17.md`.
+
+### New market families — 15m / hourly-ET / 4h crypto + weather (supported since 2026-07-17, nothing enabled in production)
+
+The live trader can trade four crypto market families and (separately gated) weather
+temperature buckets. **Purely additive**: a config without the new keys, and an
+invocation without the new flags, behaves byte-for-byte as before — verified by an
+old-binary-vs-new-binary backtest parity gate (18/18 runs identical) and the full test
+suite. Plan + cross-check against the older 15m plan:
+`trader/doc/feature_new_markets_2026-07-17.md`.
+
+- **Crypto durations** (`5m`, `15m`, `1h-et`, `4h`): opt in per asset via a new optional
+  `[market_durations]` table in `strategy_*.toml` (absent ⇒ 5m only, today's behavior).
+  `1h-et` is the real 60-minute family — ET-calendar-hour slugs like
+  `bitcoin-up-or-down-july-17-2026-1am-et`; a slot-based `1h` slug does **not** exist on
+  Polymarket (re-verified live 2026-07-17). Per-duration parameter overrides use
+  `"{ASSET}@{dur}"` / `"default@{dur}"` keys inside the existing per-asset tables
+  (`[strategies]` included); plain keys keep meaning exactly what they meant. Non-5m
+  markets always feed from their own direct CLOB WS subscriptions (one per
+  (asset, duration), shared across strategies) — NATS still carries only the 5m feed,
+  and `price_feed` was not touched. Non-5m slots write duration-tagged files
+  (`live_trades_btc_reversal_15m.csv`); 5m filenames are unchanged. `/status`,
+  control-log entries and Telegram messages label non-5m slots `BTC@15m`-style, and
+  `/halt BTC` covers every duration of BTC (`/halt BTC@15m` scopes to one).
+- **Backtests**: the replay engine derives each cycle's length from the slug's own
+  suffix (5m slugs ⇒ 300s, bit-identical results). `backtest --duration 15m|4h` +
+  `build_backtest_prices.py --source 15m|4h` (reads `raw_15_mins/`/`raw_4hr/`, writes
+  new `{asset}_poly_15m_{date}.parquet`-style names; Binance rows are re-bucketed to the
+  duration's slots since `raw/` tags them with 5m slugs). Hourly-ET and weather have
+  **no recorded ticks and no backtest**.
+- **`live --dry-run`**: paper mode — no credentials, no engine connection, simulated
+  instant fills (`SimExecutionEngine`), `[DRY]`-prefixed Telegram. This is the only
+  sanctioned way to run the live binary locally: the real order path on a local box
+  would double-trade the same wallet as Oracle (the 2026-07-03 incident class), and a
+  local process holding the production Telegram token 409-conflicts Oracle's poller.
+- **Weather** (`trader/src/weather.rs`): per-city daily temperature-bucket events,
+  batched per-event WS subscriptions (the siglab CPU lesson), one price-action
+  reversal engine per bucket (dip below `low` → recover above `high` → enter; SL/TP/
+  timeout exits, never held to station-reading resolution). Enabled **only** by
+  `live --weather-config <path>` (a small standalone TOML — cities + one parameter
+  set); no production invocation passes it. Trades log to `live_trades_weather.csv`.
+  siglab's research found no demonstrated edge for reversal scalping on weather —
+  enable deliberately, tiny size, only with siglab per-variant evidence in hand.
+- **Restart behavior on long durations**: the startup mid-cycle guard applies per
+  slot, so after any restart a `1h-et`/`4h` slot stays idle until its next *clean*
+  boundary (up to 1h/4h away) rather than fabricating an `open_binance` mid-cycle —
+  deliberate, same rationale as `trader/doc/fix_live_deploy_2026-07-15.md`.
+
+**Enablement state: `strategy_20260717.toml` has no `[market_durations]` and nothing
+passes `--weather-config` — production trades exactly the 5m markets it did before.**
+Rollout (later, deliberate): deploy binary first (inert), then a new dated config
+enabling one asset × one duration at $1, seeded for 15m from
+`btc_5mins/studies/15_mins/` (high_prob-style conservatism; reversal at 15m was
+"inconclusive" there — see the plan doc §11.2).
 
 ### Oracle box is aarch64 — cross-compile locally
 
