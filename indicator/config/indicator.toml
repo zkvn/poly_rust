@@ -1,0 +1,44 @@
+# indicator process config — see trader/doc/feature_vol_2026-07-18.md.
+#
+# HAR betas/nu below are the production values from ../btc_5mins
+# config/strategy_20260612.toml, fitted for windows = [1, 5, 12] on 5m cycles
+# via `python -m ml.features.har_beta` (rv_5s estimator). If you change
+# `windows` (e.g. to [1, 3, 6]) you MUST re-fit betas for that window set —
+# the shapes are validated at startup, but stale betas are silently wrong.
+
+nats_url = "nats://localhost:4222"
+assets = ["BTC"]
+market = "5m"            # cycle clock: 5m / 15m / 1h-et / 4h
+emit_interval_ms = 250   # min gap between publishes per asset (0 = every tick)
+
+[har_vol]
+enabled = true
+windows = [1, 5, 12]     # look-back cycles: short / medium / long
+min_ticks = 30           # cycle needs ≥ this many 1-Hz samples for a valid rv
+subsample_secs = 5       # rv_5s estimator step
+
+[har_vol.beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401878, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+[har_vol.nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249
+
+[p_up]
+enabled = true
+mode = "har"             # "har" (Student-t) | "streaming" (Gaussian)
+
+[snr]
+enabled = true
+mode = "har"
