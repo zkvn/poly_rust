@@ -1,0 +1,263 @@
+# ── perf A/B soak only (docker-compose.perf.yml trader-ind) ──────────────
+# Identical to strategy_20260717.toml except these two keys — the A/B's
+# only independent variable. See trader/doc/feature_vol_2026-07-18.md §5.
+indicator_enabled = true
+indicator_max_age_secs = 5.0
+
+# meta
+ts = "2026-07-17T19:45:00+08:00"
+source = "second same-day update (evening): ETH additionally trades the 15-minute market — [market_durations] ETH = ['5m','15m'], the only non-5m market enabled (no weather, no other 15m assets, no 1h-et, no 4h; see trader/doc/feature_new_markets_2026-07-17.md). Its 'ETH@15m' override keys pin the exact parameters the winning 2026-07-17 local Docker dry-run soak round-trip ran (reversal 0.60 / low 0.20 / delta 0.0006 / unwind_pnl 0.10 / sl_pnl 0.30 / unwind_time 25.0 — the pre-recalibration morning values), independent of the plain ETH keys' 5m calibration below. Everything below this paragraph is the earlier same-day update, unchanged: reversal/high_prob per-asset combos from btc_5mins studies/bt1_overnight_vshape/summary_2026-07-17.md (run_20260717_170052), the 'By PnL (filtered)' leaderboards — deliberately the leaderboards' likely-overfit-flagged picks (win_rate > 90% AND ppt > 0.10 within that report's own filter), NOT the plain best-PnL leaderboard, deployed at the user's explicit request after being shown the sample sizes and warned these are surfaced for scrutiny, not as a recommendation. All 6 assets now trade-enabled (previously BTC/SOL/DOGE only, reversal-only); per-asset strategy set follows which of {reversal, high_prob} had a non-'n/a' filtered pick for that asset in the report — BTC and XRP get both strategies, SOL gets high_prob only, ETH/BNB/DOGE get reversal only (mirrors ETH having no high_prob pick, the precedent named when this deploy was requested). Trade-count caveats, carried over honestly, not resolved by this deploy: these are single-window (12h, 2026-07-16 20:00->2026-07-17 08:00 HKT) picks selected specifically for the overfit pattern — reversal BTC=1 trade, BNB=1 trade, ETH=8, XRP=9, DOGE=13 (92.3% win rate); high_prob SOL=3 trades, XRP=5, BTC=6. None of these are validated edges; several are single-digit-trade samples. sl_reversal (0.10) and sl_high_prob (0.49) are unchanged from the prior live config and were NOT part of this study's sweep — run_study.py fixes both to disabled (ABS_SL=0.0) when generating this leaderboard, so live trading will apply an absolute stop-loss floor never exercised by the trades these parameters were picked from."
+
+# Trade assets: all 6 — see [strategies] for per-asset strategy assignment.
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Trade size
+[trade_size_usdc]
+default = 1.0
+
+# Which market durations each trade asset trades (additive, 2026-07-17 evening —
+# trader/doc/feature_new_markets_2026-07-17.md §4.1). ETH additionally trades the
+# 15-minute market — the ONLY non-5m market enabled (no weather, no other 15m
+# assets, no 1h-et, no 4h). Validated the same day by the local Docker dry-run
+# soak: full ETH-15m round-trip (entry 0.895 -> timeout exit 0.92, +0.0149) on
+# the exact "ETH@15m" params pinned in the reversal tables below; every other
+# asset stays 5m-only.
+[market_durations]
+default = ["5m"]
+ETH = ["5m", "15m"]
+
+# Per-asset strategy assignment — see meta.source for how this was derived.
+[strategies]
+default = ["reversal"]
+BTC = ["reversal", "high_prob"]
+XRP = ["reversal", "high_prob"]
+SOL = ["high_prob"]
+
+# --- Halt ---
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — per-asset combos from btc_5mins studies/bt1_overnight_vshape/
+# summary_2026-07-17.md "Best combos — reversal / By PnL (filtered)" (see meta.source
+# for the full rationale + caveats). sl_reversal, reversal_start_time, halt_rev,
+# halt_reset_hour_rev, price_high_rev held unchanged (not part of this sweep).
+# SOL not traded on reversal (its filtered pick was "n/a" — no combo hit both
+# thresholds), so no per-asset override needed here.
+# "ETH@15m" keys (2026-07-17 evening): pin ETH's 15-minute market to the exact
+# parameters the winning local dry-run soak trade ran — the pre-recalibration
+# morning values — independent of the plain ETH keys' 5m study calibration.
+# Resolution order: ETH@15m -> default@15m -> ETH -> default (config.rs).
+[delta_pct_rev]
+default = 0.0003
+BTC = 0.0009
+ETH = 0.0006
+"ETH@15m" = 0.0006
+BNB = 0.0009
+DOGE = 0.0000
+
+[reversal]
+default = 0.60
+BTC = 0.55
+ETH = 0.55
+"ETH@15m" = 0.60
+BNB = 0.55
+XRP = 0.65
+DOGE = 0.55
+
+[reversal_low_threshold]
+default = 0.20
+BTC = 0.30
+ETH = 0.30
+"ETH@15m" = 0.20
+
+[sl_reversal]
+default = 0.10
+
+[unwind_pnl_rev]
+default = 0.10
+BTC = 0.15
+"ETH@15m" = 0.10
+
+[sl_pnl_rev]
+default = 0.30
+BTC = 0.20
+ETH = 0.20
+"ETH@15m" = 0.30
+BNB = 0.20
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. 0 = disabled.
+[unwind_time_rev]
+default = 25.0
+BTC = 10.0
+ETH = 20.0
+"ETH@15m" = 25.0
+BNB = 10.0
+XRP = 20.0
+DOGE = 20.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# Gamma resolution watcher cadence (2026-07-09) — Gamma "usually won't give you
+# anything until 20-60s after cycle end" (see incident_DOGE_wrong_result doc),
+# so don't start polling immediately; wait gamma_poll_delay_secs, then retry
+# every gamma_poll_interval_secs until gamma_poll_deadline_secs gives up.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
+
+# --- V-shape strategy (added 2026-07-17) — configured but not currently traded (see
+# [strategies] above; enabling it means adding "v_shape" to an asset's strategy list).
+# Entry: price reaches >= v_high1, later dips <= v_low, then recovers >= v_high2 — pure
+# CLOB price action, no Binance-direction requirement (delta_pct_v = 0.0 disables the
+# delta gate). Values are the canonical v_0.7_0.3_0.7 triple + mid-grid exits, identical
+# to config.rs::resolve's code defaults; NOT validated as good parameters (see meta.source).
+[v_high1]
+default = 0.70
+
+[v_low]
+default = 0.30
+
+[v_high2]
+default = 0.70
+
+[delta_pct_v]
+default = 0.0
+
+[sl_v_shape]
+default = 0.0
+
+[sl_pnl_v]
+default = 0.30
+
+[unwind_pnl_v]
+default = 0.15
+
+# Max holding time (seconds), v_shape. 0 = disabled.
+[unwind_time_v]
+default = 25.0
+
+[halt_v]
+default = 1
+
+[halt_reset_hour_v]
+default = 2
+
+# --- High-prob strategy — per-asset combos from btc_5mins studies/bt1_overnight_vshape/
+# summary_2026-07-17.md "Best combos — high_prob / By PnL (filtered)" for the assets that
+# trade it (BTC, SOL, XRP — see [strategies]); see meta.source for rationale + caveats.
+# price_low/price_high/sl_high_prob/enter_when_time_left held unchanged (not part of
+# this sweep). ETH/DOGE per-asset overrides below are leftover from the prior config
+# and inert (neither trades high_prob under [strategies] above).
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+BTC = 0.0006
+SOL = 0.0009
+XRP = 0.0006
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+BTC = 0.15
+SOL = 0.15
+XRP = 0.10
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+BTC = 0.20
+SOL = 0.30
+XRP = 0.20
+
+# Max holding time (seconds), high_prob.
+[unwind_time_hp]
+default = 30.0
+BTC = 25.0
+SOL = 25.0
+XRP = 20.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long]
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249
+

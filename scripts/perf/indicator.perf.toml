@@ -1,0 +1,30 @@
+# indicator config for the docker perf A/B soak (docker-compose.perf.yml) —
+# identical to indicator/config/indicator.toml except nats_url points at the
+# compose-network nats service.
+
+nats_url = "nats://nats:4222"
+assets = ["BTC"]
+market = "5m"
+emit_interval_ms = 250
+
+[har_vol]
+enabled = true
+windows = [1, 5, 12]
+min_ticks = 30
+subsample_secs = 5
+
+[har_vol.beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+
+[har_vol.nu]
+default = 4.2469
+BTC  = 4.2469
+
+[p_up]
+enabled = true
+mode = "har"
+
+[snr]
+enabled = true
+mode = "har"

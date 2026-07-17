@@ -1,0 +1,71 @@
+# Perf A/B soak for the indicator module (trader/doc/feature_vol_2026-07-18.md §5).
+# Prod docker-compose.yml untouched; run with an isolated project name:
+#
+#   docker compose -f docker-compose.perf.yml -p indperf up -d --build
+#   bash scripts/perf/sample_docker_stats.sh <out.csv>       # 30s sampler
+#   docker compose -f docker-compose.perf.yml -p indperf down -v
+#
+# trader-base and trader-ind run the SAME binary, SAME strategy params, SAME
+# feed, both --dry-run, concurrently — the only difference is trader-ind's
+# config sets indicator_enabled=true (scripts/perf/config_ind). The CPU/mem
+# delta between them is the pure cost of consuming indicator.<ASSET>; the
+# indicator container's own footprint is read directly.
+
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - "8223:8222"   # monitoring only (varz); no client port exposed to host
+    command: ["-m", "8222"]
+
+  price-feed:
+    build: ./price_feed
+    depends_on:
+      - nats
+    command: ["collect", "--nats-url", "nats://nats:4222", "BTC"]
+    restart: unless-stopped
+
+  indicator:
+    build: ./indicator
+    depends_on:
+      - nats
+      - price-feed
+    volumes:
+      - ./scripts/perf/indicator.perf.toml:/app/config/indicator.toml:ro
+    command: ["--config", "/app/config/indicator.toml", "run"]
+    restart: unless-stopped
+
+  trader-base:
+    build: ./trader
+    depends_on:
+      - nats
+      - price-feed
+    volumes:
+      - ./trader/config:/app/config:ro
+    command: [
+      "--asset", "BTC",
+      "--dry-run",
+      "--nats-url", "nats://nats:4222",
+      "--config-dir", "/app/config",
+      "--env-file", "/app/absent.env",
+      "--log-dir", "/app/live_logs"
+    ]
+    restart: unless-stopped
+
+  trader-ind:
+    build: ./trader
+    depends_on:
+      - nats
+      - price-feed
+      - indicator
+    volumes:
+      - ./scripts/perf/config_ind:/app/config:ro
+    command: [
+      "--asset", "BTC",
+      "--dry-run",
+      "--nats-url", "nats://nats:4222",
+      "--config-dir", "/app/config",
+      "--env-file", "/app/absent.env",
+      "--log-dir", "/app/live_logs"
+    ]
+    restart: unless-stopped
