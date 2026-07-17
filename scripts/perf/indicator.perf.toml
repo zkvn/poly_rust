@@ -2,7 +2,7 @@
 # identical to indicator/config/indicator.toml except nats_url points at the
 # compose-network nats service.
 
-nats_url = "nats://nats:4222"
+nats_url = "nats://localhost:4222"
 assets = ["BTC"]
 market = "5m"
 emit_interval_ms = 250
