@@ -1171,7 +1171,7 @@ impl Driver<'_> {
                 // own tp_price — no separate config, see
                 // trader/doc/incident_sol_unwind_but_loss_2026-07-06.md); a
                 // stop-loss has no floor and must close regardless of price.
-                let result = match limit_price {
+                let mut result = match limit_price {
                     Some(price) => {
                         self.engine
                             .close_position_at_price(token_id, *shares, *price)
@@ -1179,6 +1179,23 @@ impl Driver<'_> {
                     }
                     None => self.engine.close_position(token_id, *shares).await,
                 };
+                // Dry-run fill pricing: `SimExecutionEngine::close_position` has
+                // no market price and returns `filled_usdc: 0.0`, which would
+                // book every simulated stop-loss/timeout exit as a total loss.
+                // Price it at the held side's last mid instead — dry-run only;
+                // a real matched close always carries its own real proceeds.
+                if self.dry_run
+                    && matches!(result.status, SellStatus::Matched)
+                    && result.filled_usdc == 0.0
+                    && result.shares_sold > 0.0
+                {
+                    let side_price = if token_id == slot.up_id {
+                        slot.last_poly_up
+                    } else {
+                        slot.last_poly_dn
+                    };
+                    result.filled_usdc = result.shares_sold * side_price;
+                }
                 let confirmed_ts = now_secs_f64();
                 let signal_latency_ms = latency_ms(*signal_ts, received_ts);
                 let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
@@ -1914,6 +1931,7 @@ async fn main() -> Result<()> {
             engine: exec_engine.clone(),
             http: http.clone(),
             trade_tx: weather_tx.clone(),
+            dry_run: args.dry_run,
         });
         for city in &wcfg.cities {
             tokio::spawn(trader::weather::run_city(

@@ -362,6 +362,11 @@ pub struct WeatherSinks {
     /// Closed trades flow back to the main loop for CSV logging + Telegram —
     /// the weather tasks never write driver-owned files themselves.
     pub trade_tx: mpsc::UnboundedSender<WeatherTrade>,
+    /// Paper mode: `SimExecutionEngine::close_position` carries no market
+    /// price (`filled_usdc: 0.0`), so unfloored (SL/timeout) sim closes are
+    /// re-priced at the triggering tick's own mid — dry-run only, a real
+    /// matched close always carries its real proceeds.
+    pub dry_run: bool,
 }
 
 /// One city's forever-loop: discover today's event, batch-subscribe its
@@ -462,10 +467,18 @@ async fn run_city_feed(
                         let BucketState::Holding { entry_ts, entry_price, shares } = trader.state else {
                             continue;
                         };
-                        let result = match floor {
+                        let mut result = match floor {
                             Some(p) => sinks.engine.close_position_at_price(asset_id, shares, p).await,
                             None => sinks.engine.close_position(asset_id, shares).await,
                         };
+                        // Dry-run fill pricing — see `WeatherSinks::dry_run`.
+                        if sinks.dry_run
+                            && matches!(result.status, SellStatus::Matched)
+                            && result.filled_usdc == 0.0
+                            && result.shares_sold > 0.0
+                        {
+                            result.filled_usdc = result.shares_sold * mid;
+                        }
                         let matched = matches!(result.status, SellStatus::Matched);
                         if !matched {
                             // Take-profit: defer to the next tick (book may refill
