@@ -5,8 +5,13 @@ spot-price data and writes hourly Parquet files.
 
 Sibling crates in this repo: `trader/` (the live trading bot), `siglab/` (standalone
 multi-market signal live-testing harness — paper trades only, crypto + weather markets; see
-`siglab/README.md`), and `gamma_recorder/` (independent Polymarket Gamma-API results
-recorder — see below). None of these read or write another's config/state.
+`siglab/README.md`), `gamma_recorder/` (independent Polymarket Gamma-API results
+recorder — see below), and `indicator/` (standalone signal engine — consumes
+`price.binance.<ASSET>` from NATS, computes the bt4 stack [HAR vol forecast, P(up), SNR]
+with config-adjustable HAR windows, republishes on `indicator.<ASSET>`; plan
+`trader/doc/feature_vol_2026-07-18.md`, perf/parity report
+`indicator/doc/perf_indicator_docker_2026-07-18.md`). None of these read or write
+another's config/state.
 
 <details>
 <summary><strong>Git branch convention</strong></summary>
@@ -217,6 +222,13 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **Indicator phase 2 (gates) not wired — 2026-07-18.** The trader consumes
+  `indicator.<ASSET>` log-only (`indicator_enabled`, off in prod config); no gate reads the
+  snapshot store yet. Wire config-driven gates (pup_gate-study thresholds) before the
+  indicators can affect a trading decision. See `trader/doc/feature_vol_2026-07-18.md` §3.
+- **Indicator not deployed to Oracle — 2026-07-18.** Local docker validation passed
+  (perf + parity report in `indicator/doc/`); aarch64 cross-compile + systemd unit still
+  pending, deliberately deferred until phase 2 gives the trader a reason to read it.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
