@@ -222,6 +222,18 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **Maker-entry quotes rest at the strategy's signal mid-price, not the true best bid —
+  2026-07-19.** `worker.rs`'s maker-entry path (`plan_unwind_5u_maker_2026-07-19.md` §2.2)
+  quotes at `intent.token_price()`, which is `PolyTick.up`/`.dn` — the merged
+  `(bid+ask)/2` `marketdata.rs` already computes, not a separate bid/ask pair. The
+  original MVP plan (`btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md` §3) calls for
+  "rest a GTC buy on S at the current best bid (join the bid)" — quoting at mid instead
+  gives up some of the ~3–5¢/share maker price-improvement edge that doc's economics
+  section assumes (bid < mid always, so a mid-priced buy trades through more easily but
+  captures less spread). Fixing this needs `PolyTick`/the WS merge in `marketdata.rs` to
+  carry bid/ask separately, not just the merged mid — a real plumbing change, not a
+  config tweak. Don't fix mid-run: the paper run's parameters are frozen for the 48h
+  window; revisit before any real-money promotion.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
