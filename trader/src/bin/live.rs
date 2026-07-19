@@ -803,6 +803,41 @@ fn fmt_ago(last_tick_ts: Option<f64>, now_ts: f64) -> String {
     }
 }
 
+/// Compact indicator context for Telegram/`/status` surfaces, so a dead
+/// `poly-indicator.service` is visible at a glance instead of only showing up
+/// as a silent `SKIPPED_NO_DATA` in the console log. Shows `p_up` plus each
+/// side's edge vs the live CLOB price (`p_side - price`) — the exact sign
+/// convention `worker.rs`'s pup gate computes (positive = the model likes
+/// this side more than the market does). `up_price`/`dn_price` are `None`
+/// when there's no active cycle yet (the edge figures would be meaningless
+/// against a stale/zero price).
+fn fmt_indicator(
+    store: &IndicatorStore,
+    asset: &str,
+    now: f64,
+    max_age_secs: f64,
+    prices: Option<(f64, f64)>,
+) -> String {
+    let Some(snap) = store.fresh(asset, now, max_age_secs) else {
+        return "ind: no data".to_string();
+    };
+    let Some(&p_up) = snap.vals.get("p_up") else {
+        return "ind: warming".to_string();
+    };
+    let vol_str = match snap.vals.get("vol_har") {
+        Some(v) => format!(" vol={v:.2e}"),
+        None => String::new(),
+    };
+    match prices {
+        Some((up_price, dn_price)) => format!(
+            "ind: p_up={p_up:.4} (edge UP{:+.4}/DN{:+.4}){vol_str}",
+            p_up - up_price,
+            (1.0 - p_up) - dn_price,
+        ),
+        None => format!("ind: p_up={p_up:.4}{vol_str}"),
+    }
+}
+
 /// Wall-clock duration (ms) between two local-clock timestamps. Used for both
 /// `signal_latency_ms` (`signal_ts` -> `received_ts`, order dispatch started)
 /// and `process_latency_ms` (`signal_ts` -> `confirmed_ts`, order confirmed) —
@@ -994,7 +1029,12 @@ impl Driver<'_> {
         )
     }
 
-    async fn render_status(&self, assets: &[AssetSlot]) -> String {
+    async fn render_status(
+        &self,
+        assets: &[AssetSlot],
+        indicator_store: &IndicatorStore,
+        indicator_max_age_secs: f64,
+    ) -> String {
         let now = hkt_now().format("%H:%M:%S HKT");
         let balance = match self.live_engine {
             Some(engine) => match engine.fetch_balance().await {
@@ -1111,13 +1151,22 @@ impl Driver<'_> {
 
             if seen_markets.insert(name.clone()) {
                 match &slot.current_slug {
-                    Some(_) => mkt_lines.push(format!(
-                        "  {name}  binance=${:.5}  UP={:.4}  DN={:.4}  Δ={:.5}",
-                        slot.last_binance,
-                        slot.last_poly_up,
-                        slot.last_poly_dn,
-                        slot.worker.delta_pct()
-                    )),
+                    Some(_) => {
+                        let ind_str = fmt_indicator(
+                            indicator_store,
+                            &slot.worker.asset,
+                            now_secs_f64(),
+                            indicator_max_age_secs,
+                            Some((slot.last_poly_up, slot.last_poly_dn)),
+                        );
+                        mkt_lines.push(format!(
+                            "  {name}  binance=${:.5}  UP={:.4}  DN={:.4}  Δ={:.5}\n    {ind_str}",
+                            slot.last_binance,
+                            slot.last_poly_up,
+                            slot.last_poly_dn,
+                            slot.worker.delta_pct()
+                        ));
+                    }
                     None => mkt_lines.push(format!("  {name}  no active cycle yet")),
                 }
             }
@@ -1163,7 +1212,14 @@ impl Driver<'_> {
 
     /// Execute one `Action` against the live engine; returns the follow-up
     /// `Event` (if any) to feed back into `worker.step`.
-    async fn execute(&self, slot: &mut AssetSlot, action: &Action, feed: Feed) -> Option<Event> {
+    async fn execute(
+        &self,
+        slot: &mut AssetSlot,
+        action: &Action,
+        feed: Feed,
+        indicator_store: &IndicatorStore,
+        indicator_max_age_secs: f64,
+    ) -> Option<Event> {
         match action {
             Action::PlaceBuy {
                 side,
@@ -1225,9 +1281,16 @@ impl Driver<'_> {
                 let dt = hkt_now().format("%H:%M:%S");
                 let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
                 let delta_pct = slot.worker.delta_pct() * 100.0;
+                let ind_str = fmt_indicator(
+                    indicator_store,
+                    &slot.worker.asset,
+                    now_secs_f64(),
+                    indicator_max_age_secs,
+                    Some((slot.last_poly_up, slot.last_poly_dn)),
+                );
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {ind_str} | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.market_key(), arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
                     Some(Event::OrderFilled {
@@ -1299,8 +1362,15 @@ impl Driver<'_> {
                 if matches!(r.status, SellStatus::Live) {
                     let dt = hkt_now().format("%H:%M:%S");
                     let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                    let ind_str = fmt_indicator(
+                        indicator_store,
+                        &slot.worker.asset,
+                        now_secs_f64(),
+                        indicator_max_age_secs,
+                        Some((slot.last_poly_up, slot.last_poly_dn)),
+                    );
                     self.notify(&format!(
-                        "📝 <b>{}</b> Maker quote resting | {dt} | T-{time_left}s | {} | {}\nBUY {shares:.2}sh @ {price:.4}",
+                        "📝 <b>{}</b> Maker quote resting | {dt} | T-{time_left}s | {} | {}\nBUY {shares:.2}sh @ {price:.4} | {ind_str}",
                         slot.market_key(), arrow_side(*side), slot.worker.strategy_name
                     )).await;
                 }
@@ -1571,6 +1641,8 @@ impl Driver<'_> {
         slot: &'b mut AssetSlot,
         actions: Vec<Action>,
         feed: Feed,
+        indicator_store: &'b IndicatorStore,
+        indicator_max_age_secs: f64,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'b>> {
         Box::pin(async move {
             for action in &actions {
@@ -1618,8 +1690,15 @@ impl Driver<'_> {
                         };
                         let sign = if rec.pnl >= 0.0 { "+" } else { "-" };
                         let delta_pct = slot.worker.delta_pct() * 100.0;
+                        let ind_str = fmt_indicator(
+                            indicator_store,
+                            &slot.worker.asset,
+                            now_secs_f64(),
+                            indicator_max_age_secs,
+                            Some((slot.last_poly_up, slot.last_poly_dn)),
+                        );
                         self.notify(&format!(
-                            "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | cycle: ${:.2}→${:.2} | delta={delta_pct:+.3}% | pnl={sign}${:.4} | {}W/{}L",
+                            "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | cycle: ${:.2}→${:.2} | delta={delta_pct:+.3}% | pnl={sign}${:.4} | {}W/{}L | {ind_str}",
                             slot.market_key(), rec.outcome.as_str(), hkt_now().format("%H:%M:%S"),
                             arrow_side(rec.side), slot.worker.strategy_name,
                             rec.token_price, rec.exit_price,
@@ -1782,9 +1861,19 @@ impl Driver<'_> {
                     // spam for "everything's fine," just a trace in live.log.
                     Action::ApiResultNote(note) => println!("[live] {note}"),
                     _ => {
-                        if let Some(followup) = self.execute(slot, action, feed).await {
+                        if let Some(followup) = self
+                            .execute(slot, action, feed, indicator_store, indicator_max_age_secs)
+                            .await
+                        {
                             let more = slot.worker.step(followup);
-                            self.process_actions(slot, more, feed).await;
+                            self.process_actions(
+                                slot,
+                                more,
+                                feed,
+                                indicator_store,
+                                indicator_max_age_secs,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -2375,7 +2464,7 @@ async fn main() -> Result<()> {
                     // written to close.
                     if slot.current_slug.is_some() && slot.cycle_trades < args.max_trades {
                         let actions = slot.worker.step(Event::BinanceTick(tick));
-                        driver.process_actions(slot, actions, Feed::Binance).await;
+                        driver.process_actions(slot, actions, Feed::Binance, &indicator_store, toml.indicator_max_age_secs).await;
                     }
                 }
             }
@@ -2436,7 +2525,7 @@ async fn main() -> Result<()> {
                                 },
                             };
                             let actions = slot.worker.step(event);
-                            driver.process_actions(slot, actions, Feed::Clob).await;
+                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
                         }
                     }
                 }
@@ -2454,7 +2543,7 @@ async fn main() -> Result<()> {
                     slot.last_poly_ts = Some(tick.ts);
                     if slot.current_slug.is_some() {
                         let actions = slot.worker.step(Event::PolyTick(tick));
-                        driver.process_actions(slot, actions, Feed::Clob).await;
+                        driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
                     }
                 }
             }
@@ -2516,7 +2605,7 @@ async fn main() -> Result<()> {
                         let actions = slot.worker.step(Event::CycleClose);
                         // CycleClose never produces PlaceBuy/ClosePosition, so the
                         // feed tag is unused here — Clob is an arbitrary default.
-                        driver.process_actions(slot, actions, Feed::Clob).await;
+                        driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
                     }
                     if slot.last_binance <= 0.0 {
                         slot.current_slug = None;
@@ -2585,7 +2674,7 @@ async fn main() -> Result<()> {
                             println!("[live] new cycle {} ({}) slug={slug} open_binance={}", slot.market_key(), slot.worker.strategy_name, slot.last_binance);
                             let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone() });
                             // CycleOpen never produces PlaceBuy/ClosePosition either — see note above.
-                            driver.process_actions(slot, actions, Feed::Clob).await;
+                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
                             slot.current_slug = Some(slug);
                         }
                         Err(e) => eprintln!("[live] meta fetch failed for {} {slug}: {e:#}", slot.market_key()),
@@ -2621,7 +2710,7 @@ async fn main() -> Result<()> {
             Some(text) = telegram_rx.recv() => {
                 let Some(cmd) = parse_command(&text) else { continue };
                 let reply = match cmd {
-                    Command::Status => Some(driver.render_status(&assets).await),
+                    Command::Status => Some(driver.render_status(&assets, &indicator_store, toml.indicator_max_age_secs).await),
                     Command::Help => Some(HELP_TEXT.to_string()),
                     Command::Halt { asset, strategy: _ } if asset.is_empty() => {
                         for slot in assets.iter_mut() {
@@ -2757,7 +2846,7 @@ async fn main() -> Result<()> {
                     };
                     let actions = slot.worker.step(event);
                     // ApiResult(Timeout) never produces PlaceBuy/ClosePosition either — see note above.
-                    driver.process_actions(slot, actions, Feed::Clob).await;
+                    driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
                 }
             }
 
@@ -3082,6 +3171,88 @@ mod persisted_slot_tests {
         std::fs::write(&path, "not valid json{{{").unwrap();
         assert!(load_persisted_slot(path.to_str().unwrap()).is_none());
         std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fmt_indicator_tests {
+    use super::*;
+
+    fn snapshot(asset: &str, ts: f64, vals: &[(&str, f64)]) -> IndicatorSnapshot {
+        IndicatorSnapshot {
+            ts,
+            asset: asset.to_string(),
+            market: "5m".to_string(),
+            slot: 0,
+            vals: vals.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        }
+    }
+
+    #[test]
+    fn no_data_when_asset_never_seen() {
+        let store = IndicatorStore::default();
+        assert_eq!(
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4))),
+            "ind: no data"
+        );
+    }
+
+    #[test]
+    fn no_data_when_snapshot_is_stale() {
+        let mut store = IndicatorStore::default();
+        store.update(snapshot("BTC", 50.0, &[("p_up", 0.6)]));
+        // 100 - 50 = 50s old, max_age_secs = 10.0.
+        assert_eq!(
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4))),
+            "ind: no data"
+        );
+    }
+
+    #[test]
+    fn warming_when_snapshot_has_no_p_up_key() {
+        let mut store = IndicatorStore::default();
+        store.update(snapshot("BTC", 99.0, &[]));
+        assert_eq!(
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4))),
+            "ind: warming"
+        );
+    }
+
+    #[test]
+    fn shows_p_up_alone_when_no_active_cycle_prices() {
+        let mut store = IndicatorStore::default();
+        store.update(snapshot("BTC", 99.0, &[("p_up", 0.62)]));
+        assert_eq!(
+            fmt_indicator(&store, "BTC", 100.0, 10.0, None),
+            "ind: p_up=0.6200"
+        );
+    }
+
+    /// The exact sign convention `worker.rs`'s pup gate uses:
+    /// `edge = p_side - price`, positive = the model likes this side more
+    /// than the market does.
+    #[test]
+    fn shows_p_up_edge_and_vol_when_fresh_with_active_cycle_prices() {
+        let mut store = IndicatorStore::default();
+        store.update(snapshot(
+            "BTC",
+            99.0,
+            &[("p_up", 0.62), ("vol_har", 0.00081)],
+        ));
+        assert_eq!(
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.60, 0.40))),
+            "ind: p_up=0.6200 (edge UP+0.0200/DN-0.0200) vol=8.10e-4"
+        );
+    }
+
+    #[test]
+    fn omits_vol_suffix_when_vol_har_key_absent() {
+        let mut store = IndicatorStore::default();
+        store.update(snapshot("BTC", 99.0, &[("p_up", 0.50)]));
+        assert_eq!(
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.50, 0.50))),
+            "ind: p_up=0.5000 (edge UP+0.0000/DN+0.0000)"
+        );
     }
 }
 
