@@ -49,8 +49,8 @@ use trader::telegram::render::HELP_TEXT;
 use trader::telegram::{AuthConfig, TelegramBot};
 use trader::types::{BinanceTick, CycleContext, Outcome, PolyTick, Side, TradeRecord};
 use trader::worker::{
-    Action, BalanceEvent, CancelQuoteReason, CloseReason, ControlEvent, Event, PupGateOutcome,
-    Worker,
+    Action, BalanceEvent, CancelQuoteReason, CloseReason, ControlEvent, Event,
+    PUP_GATE_MAX_AGE_SECS, PupGateOutcome, Worker,
 };
 
 const DEFAULT_FUND_ADDRESS: &str = "0x9FC2A777C26CCA2C218D8E7BBC340D14058CC13A";
@@ -2464,7 +2464,7 @@ async fn main() -> Result<()> {
                     // written to close.
                     if slot.current_slug.is_some() && slot.cycle_trades < args.max_trades {
                         let actions = slot.worker.step(Event::BinanceTick(tick));
-                        driver.process_actions(slot, actions, Feed::Binance, &indicator_store, toml.indicator_max_age_secs).await;
+                        driver.process_actions(slot, actions, Feed::Binance, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
                     }
                 }
             }
@@ -2525,7 +2525,7 @@ async fn main() -> Result<()> {
                                 },
                             };
                             let actions = slot.worker.step(event);
-                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
+                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
                         }
                     }
                 }
@@ -2543,7 +2543,7 @@ async fn main() -> Result<()> {
                     slot.last_poly_ts = Some(tick.ts);
                     if slot.current_slug.is_some() {
                         let actions = slot.worker.step(Event::PolyTick(tick));
-                        driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
+                        driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
                     }
                 }
             }
@@ -2605,7 +2605,7 @@ async fn main() -> Result<()> {
                         let actions = slot.worker.step(Event::CycleClose);
                         // CycleClose never produces PlaceBuy/ClosePosition, so the
                         // feed tag is unused here — Clob is an arbitrary default.
-                        driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
+                        driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
                     }
                     if slot.last_binance <= 0.0 {
                         slot.current_slug = None;
@@ -2674,7 +2674,7 @@ async fn main() -> Result<()> {
                             println!("[live] new cycle {} ({}) slug={slug} open_binance={}", slot.market_key(), slot.worker.strategy_name, slot.last_binance);
                             let actions = slot.worker.step(Event::CycleOpen { ctx, slug: slug.clone() });
                             // CycleOpen never produces PlaceBuy/ClosePosition either — see note above.
-                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
+                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
                             slot.current_slug = Some(slug);
                         }
                         Err(e) => eprintln!("[live] meta fetch failed for {} {slug}: {e:#}", slot.market_key()),
@@ -2710,7 +2710,7 @@ async fn main() -> Result<()> {
             Some(text) = telegram_rx.recv() => {
                 let Some(cmd) = parse_command(&text) else { continue };
                 let reply = match cmd {
-                    Command::Status => Some(driver.render_status(&assets, &indicator_store, toml.indicator_max_age_secs).await),
+                    Command::Status => Some(driver.render_status(&assets, &indicator_store, PUP_GATE_MAX_AGE_SECS).await),
                     Command::Help => Some(HELP_TEXT.to_string()),
                     Command::Halt { asset, strategy: _ } if asset.is_empty() => {
                         for slot in assets.iter_mut() {
@@ -2846,7 +2846,7 @@ async fn main() -> Result<()> {
                     };
                     let actions = slot.worker.step(event);
                     // ApiResult(Timeout) never produces PlaceBuy/ClosePosition either — see note above.
-                    driver.process_actions(slot, actions, Feed::Clob, &indicator_store, toml.indicator_max_age_secs).await;
+                    driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
                 }
             }
 

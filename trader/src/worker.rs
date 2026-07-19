@@ -76,8 +76,14 @@ pub enum CancelQuoteReason {
 /// Snapshots older than this read as absent for the pup gate specifically —
 /// a fixed 10s fail-open window, distinct from `StrategyToml.indicator_max_age_secs`
 /// (default 5.0s, used by the Phase-1 heartbeat display) per the plan's own
-/// wording.
-const PUP_GATE_MAX_AGE_SECS: f64 = 10.0;
+/// wording. `pub` so `bin/live.rs`'s Telegram/`\`/status\`` indicator displays
+/// can use the same window the gate itself decides on — using the tighter
+/// heartbeat default there instead produced a real, confusing contradiction:
+/// a quote whose `[PUP-GATE]` line never fired (meaning the gate found fresh
+/// data and passed cleanly) showing "no data" in the same notification,
+/// because 5.0s had already elapsed by render time but 10.0s hadn't. See
+/// trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md §4.
+pub const PUP_GATE_MAX_AGE_SECS: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PupGateOutcome {

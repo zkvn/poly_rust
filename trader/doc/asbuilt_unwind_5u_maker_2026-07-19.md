@@ -113,12 +113,21 @@ pay more than the model probability."
   `paper_pup_vetoes_{asset}_{strategy}.csv` and console `[PUP-GATE] ... VETO`.
 - **Fail-open** (`SkippedNoData`, does **not** veto): no ready snapshot ever
   received, or the freshest one is older than `PUP_GATE_MAX_AGE_SECS = 10.0`s
-  — deliberately a fixed constant, independent of the config's
-  `indicator_max_age_secs` (5.0s default, used only by the Phase-1 heartbeat
-  display). A dead `poly-indicator.service` must never silently block
-  trading. Logged to console `[PUP-GATE] ... pup_gate=SKIPPED_NO_DATA` only
-  (no CSV row — this is an indicator-uptime signal, not a trade-relevant
-  event).
+  (`pub` in `worker.rs`) — deliberately a fixed constant, independent of the
+  config's `indicator_max_age_secs` (5.0s default, used only by the
+  Phase-1 heartbeat's console `ind[...]` display, `bin/live.rs`'s ticker
+  arm). A dead `poly-indicator.service` must never silently block trading.
+  Logged to console `[PUP-GATE] ... pup_gate=SKIPPED_NO_DATA` only (no CSV
+  row — this is an indicator-uptime signal, not a trade-relevant event).
+  **`/status` and the Telegram order/quote/trade notifications' `fmt_indicator`
+  display (§6) also use `PUP_GATE_MAX_AGE_SECS`, not `indicator_max_age_secs`**
+  — using the tighter heartbeat default there originally produced a real,
+  confusing contradiction: a quote whose `[PUP-GATE]` line never fired
+  (meaning the gate found fresh data and passed cleanly, since only
+  veto/skip are logged) showed "ind: no data" in the very same notification,
+  because 5.0s had already elapsed by render time but 10.0s — the window the
+  gate itself actually used — hadn't. Fixed 2026-07-19, caught by the user
+  reading a real DOGE maker-quote notification.
 - Snapshots arrive via `Event::IndicatorUpdate{p_up, ts}`, sent only when a
   NATS `indicator.<ASSET>` snapshot's `vals` map actually has a ready `p_up`
   key (a warmup snapshot with no `p_up` sends nothing — indistinguishable
