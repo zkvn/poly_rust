@@ -36,8 +36,8 @@ use futures::StreamExt as _;
 use trader::balance::{BalanceGuard, GammaBalanceTracker, seconds_until_next_check};
 use trader::config::AssetParams;
 use trader::execution::{
-    ExecutionEngine, LiveConfig, LiveExecutionEngine, PaperExecutor, PaperOrderSide, SellStatus,
-    SimExecutionEngine, local_signer_from_key, signature_type_from_env,
+    ExecutionEngine, LiveConfig, LiveExecutionEngine, MIN_GTC_SHARES, PaperExecutor,
+    PaperOrderSide, SellStatus, SimExecutionEngine, local_signer_from_key, signature_type_from_env,
 };
 use trader::indicator_store::{IndicatorSnapshot, IndicatorStore};
 use trader::marketdata::{
@@ -1079,9 +1079,20 @@ impl Driver<'_> {
                 Some(s) => format!("  start={s:.0}s"),
                 None => String::new(),
             };
+            // Maker entries (plan_unwind_5u_maker_2026-07-19 §2.2), reversal
+            // only: every entry is a fixed MIN_GTC_SHARES GTC quote —
+            // trade_size_usdc plays no role in sizing it at all (worker.rs's
+            // try_enter never reads it on that path). Showing "size=$X.XX"
+            // here regardless was actively misleading: it displayed a
+            // vestigial config value as if it were the real bet size.
+            let size_str = if slot.params.maker_entry && slot.worker.strategy_name == "reversal" {
+                format!("size={MIN_GTC_SHARES:.2}sh (maker)")
+            } else {
+                format!("size=${:.2}", slot.params.trade_size_usdc)
+            };
             ta_lines.push(format!(
-                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  unwind_time={unwind_time:.1}s{start_str}  size=${:.2}",
-                slot.worker.strategy_name, slot.params.trade_size_usdc
+                "  {light}  {name}  strategy={}\n    sl={sl:.4}  delta_gate={delta_gate:.5}  low={low:.4}  high={high:.4}  halt_after={halt_n}L  unwind_pnl={unwind_pnl:.4}  sl_pnl={sl_pnl:.4}  unwind_time={unwind_time:.1}s{start_str}  {size_str}",
+                slot.worker.strategy_name
             ));
 
             if seen_markets.insert(name.clone()) {
