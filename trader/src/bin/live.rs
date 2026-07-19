@@ -380,13 +380,20 @@ fn csv_sanitize(s: &str) -> String {
     s.replace(',', ";").replace('\n', " ")
 }
 
-const CANCELED_QUOTE_CSV_HEADER: &str = "logged_at,slug,strategy,side,quote_price,reason";
+const CANCELED_QUOTE_CSV_HEADER: &str =
+    "logged_at,slug,strategy,side,quote_price,reason,quoted_at,pull_to_cancel_ms";
 
 /// Every canceled maker-entry quote (plan_unwind_5u_maker_2026-07-19 §2.2):
 /// slug/side/quote price/cancel reason. The 48h evaluation (§2.7) resolves
 /// each row against Gamma to compute the counterfactual outcome — the
 /// filled-vs-canceled adverse-selection comparison the plan calls the single
-/// most important output of the paper run.
+/// most important output of the paper run. `quoted_at`/`pull_to_cancel_ms`
+/// (added 2026-07-19, same day as the rest of this file) close a gap the
+/// original MVP plan flagged and this file's first pass missed: pull-to-
+/// cancel latency, "worth logging from day 1" per
+/// `btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md` §4 — a stale quote
+/// sitting through a price jump is free money for the latency arbs the
+/// taker fee was designed to tax.
 fn append_canceled_quote_header_if_new(path: &str) -> Result<()> {
     use std::io::Write as _;
     if std::path::Path::new(path).exists() {
@@ -406,7 +413,14 @@ fn append_canceled_quote_header_if_new(path: &str) -> Result<()> {
 /// there's no active cycle (`current_slug` empty), which can only happen if
 /// a quote somehow survives past `on_cycle_close`'s reset (it shouldn't:
 /// T-15s cancels it first).
-fn log_canceled_quote(slot: &AssetSlot, side: Side, quote_price: f64, reason: CancelQuoteReason) {
+fn log_canceled_quote(
+    slot: &AssetSlot,
+    side: Side,
+    quote_price: f64,
+    reason: CancelQuoteReason,
+    quoted_at: f64,
+    pull_to_cancel_ms: f64,
+) {
     use std::io::Write as _;
     let Some(slug) = &slot.current_slug else {
         return;
@@ -420,7 +434,7 @@ fn log_canceled_quote(slot: &AssetSlot, side: Side, quote_price: f64, reason: Ca
     };
     let _ = writeln!(
         f,
-        "{},{},{},{},{quote_price:.4},{reason:?}",
+        "{},{},{},{},{quote_price:.4},{reason:?},{quoted_at},{pull_to_cancel_ms:.0}",
         now_secs_f64(),
         slug,
         slot.worker.strategy_name,
@@ -1483,20 +1497,33 @@ impl Driver<'_> {
                 side,
                 quote_price,
                 reason,
+                quoted_at,
             } => {
+                // Pull-to-cancel latency (btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md
+                // §4: "worth logging from day 1" — a stale quote sitting
+                // through a price jump is free money for the latency arbs
+                // the taker fee was designed to tax).
+                let pull_to_cancel_ms = latency_ms(*quoted_at, now_secs_f64());
                 if let Some(id) = order_id {
                     let ok = self.engine.cancel_resting_order(id).await;
                     println!(
-                        "[ORDER] {} CANCEL ENTRY QUOTE {id} side={side:?} quote={quote_price:.4} reason={reason:?} -> {ok}",
+                        "[ORDER] {} CANCEL ENTRY QUOTE {id} side={side:?} quote={quote_price:.4} reason={reason:?} pull_to_cancel_ms={pull_to_cancel_ms:.0} -> {ok}",
                         slot.market_key()
                     );
                 } else {
                     println!(
-                        "[ORDER] {} CANCEL ENTRY QUOTE (order not yet acked) side={side:?} quote={quote_price:.4} reason={reason:?}",
+                        "[ORDER] {} CANCEL ENTRY QUOTE (order not yet acked) side={side:?} quote={quote_price:.4} reason={reason:?} pull_to_cancel_ms={pull_to_cancel_ms:.0}",
                         slot.market_key()
                     );
                 }
-                log_canceled_quote(slot, *side, *quote_price, *reason);
+                log_canceled_quote(
+                    slot,
+                    *side,
+                    *quote_price,
+                    *reason,
+                    *quoted_at,
+                    pull_to_cancel_ms,
+                );
                 None
             }
             Action::PupGateNote {

@@ -49,6 +49,13 @@ pub struct MakerQuote {
     /// assigned id — see `execute()`'s handling of `Action::PlaceLimitBuy`
     /// for why a cancel racing that response can never actually occur.
     pub order_id: Option<String>,
+    /// The tick timestamp (same clock as `Action::PlaceBuy`'s `signal_ts`)
+    /// the quote was placed at — carried onto `Action::CancelEntryQuote` so
+    /// the driver can log pull-to-cancel latency, the metric
+    /// `btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md` §4 calls out as
+    /// "worth logging from day 1" (a stale quote sitting through a price jump
+    /// is free money for the latency arbs the taker fee was designed to tax).
+    pub quoted_at: f64,
 }
 
 /// Why a resting entry quote was cancelled — carried onto `Action::CancelEntryQuote`
@@ -339,6 +346,9 @@ pub enum Action {
         side: Side,
         quote_price: f64,
         reason: CancelQuoteReason,
+        /// When the quote was originally placed — the driver logs
+        /// `now - quoted_at` as pull-to-cancel latency.
+        quoted_at: f64,
     },
     /// p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3):
     /// diagnostic-only, logged by the driver (`Veto` needs a CSV row so the
@@ -1209,6 +1219,7 @@ impl Worker {
                 entry_type: intent.entry_type,
                 quote_price: intent.token_price(),
                 order_id: None,
+                quoted_at: now,
             });
             let mut actions = vec![
                 Action::PlaceLimitBuy {
@@ -1298,6 +1309,7 @@ impl Worker {
                 side: q.side,
                 quote_price: q.quote_price,
                 reason,
+                quoted_at: q.quoted_at,
             },
             Action::Persist,
         ]
@@ -4128,6 +4140,10 @@ mod tests {
         assert_eq!(q.side, Side::Down);
         assert!((q.quote_price - 0.70).abs() < 1e-9);
         assert!(q.order_id.is_none(), "no id until LimitBuyPlaced(Live)");
+        assert!(
+            (q.quoted_at - 1250.0).abs() < 1e-9,
+            "quoted_at must be the entry-fire tick, for pull-to-cancel latency"
+        );
     }
 
     /// QUOTED -> the CLOB acked it as resting: order_id lands on the quote,
@@ -4249,12 +4265,13 @@ mod tests {
                         order_id: Some(id),
                         side: Side::Down,
                         reason: CancelQuoteReason::CycleEndApproaching,
+                        quoted_at,
                         ..
                     },
                     Action::Persist
-                ] if id == "paper-1"
+                ] if id == "paper-1" && (*quoted_at - 1250.0).abs() < 1e-9
             ),
-            "{actions:?}"
+            "quoted_at must be the entry-fire tick (1250.0), for pull-to-cancel latency: {actions:?}"
         );
         assert!(matches!(w.state, WorkerState::Watching));
     }
@@ -4285,10 +4302,11 @@ mod tests {
                     Action::CancelEntryQuote {
                         order_id: Some(id),
                         reason: CancelQuoteReason::SignalInvalidated,
+                        quoted_at,
                         ..
                     },
                     Action::Persist
-                ] if id == "paper-1"
+                ] if id == "paper-1" && (*quoted_at - 1250.0).abs() < 1e-9
             ),
             "{actions:?}"
         );
