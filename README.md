@@ -13,6 +13,12 @@ with config-adjustable HAR windows, republishes on `indicator.<ASSET>`; plan
 `indicator/doc/perf_indicator_docker_2026-07-18.md`). None of these read or write
 another's config/state.
 
+Currently paper-trading on Oracle (48h window, real-money trading paused): a 5-share
+maker-entry reversal strategy with a p(up) negative-edge veto. Design intent:
+`trader/doc/plan_unwind_5u_maker_2026-07-19.md`. What the running code actually does —
+entry/exit rules, the maker-quote lifecycle, fill simulation, CSV/console log reference:
+`trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md`.
+
 <details>
 <summary><strong>Git branch convention</strong></summary>
 
@@ -233,7 +239,8 @@ on the remote before the nightly sync runs.
   captures less spread). Fixing this needs `PolyTick`/the WS merge in `marketdata.rs` to
   carry bid/ask separately, not just the merged mid — a real plumbing change, not a
   config tweak. Don't fix mid-run: the paper run's parameters are frozen for the 48h
-  window; revisit before any real-money promotion.
+  window; revisit before any real-money promotion. Full entry-rule reference:
+  `trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md` §1.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
@@ -1098,7 +1105,8 @@ for aarch64 and deployed as `poly-indicator.service` (new systemd unit, `scripts
 --indicator-only`), widened from BTC-only to all 6 trade assets. One real bug caught on first
 deploy: `--config` is indicator's global clap arg and must precede the `run` subcommand, not
 follow it — the wrong order crash-looped the service until fixed. Both live on Oracle since
-2026-07-19, `indicator_enabled = true` in `strategy_20260719.toml`.
+2026-07-19, `indicator_enabled = true` in `strategy_20260719.toml`. Gate mechanics + fail-open
+rules: `trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md` §4.
 
 ### Telegram `/status` showed `trade_size_usdc` ($1.00) as the bet size for maker-entry reversal slots, which was actively wrong (2026-07-19, fixed)
 
