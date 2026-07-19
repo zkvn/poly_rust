@@ -1,0 +1,257 @@
+# meta
+ts = "2026-07-19T20:15:00+08:00"
+source = "paper-trade test per trader/doc/plan_unwind_5u_maker_2026-07-19.md — unwind-tuned 5-share maker-entry reversal paper trade on Oracle, this file (strategy_20260719.toml). Parameters frozen for the full 48h paper window per the plan's execution discipline: no recalibration mid-run; if something looks broken, fix bugs, never thresholds. high_prob REMOVED — every asset trades reversal only ([strategies] default = [\"reversal\"]). Per-asset reversal entry/exit values are table 1.1 verbatim (unwind_safely's best-by-win_rate selection, final calibration window 2026-05-26->07-09): delta_pct_rev/reversal/reversal_low_threshold/unwind_pnl_rev/unwind_time_rev per asset; SOL and BNB's unwind_pnl_rev table value was 0.17, clamped to 0.15 per the user's stated 0.05-0.15 range (footnote 1). Stop-loss policy per plan 1.2 (Scenario A, the 07-19 stop_loss_filter study on real live trades): sl_pnl_rev = sl_reversal = 0.0 for every asset — unwind_time_rev IS the stop. Hard condition carried over from that doc: if unwind_time_rev is ever disabled/raised, sl_pnl_rev must move to 0.80 (Scenario B) the same day. maker_entry = true and pup_edge_min_rev = 0.0 (plan 2.2/2.3) — 5-share (MIN_GTC_SHARES) resting GTC entry quotes, cancelled on signal invalidation or T-15s before cycle end; p(up) parameter-free X=0 veto (never pay more than the model probability), failing open (does not veto) on a missing/stale/warmup indicator snapshot. indicator_enabled = true: the standalone indicator daemon (poly-indicator.service) was deployed to Oracle the same day specifically so this gate has live data to consult, covering all 6 trade_assets (see indicator/config/indicator.toml). paper_trade = true: real-money trading is paused for this run (the same trader-live.service runs in paper mode) — the live book being net negative made this an acceptable tradeoff by design of the plan. market_durations: 5m only for every asset (the prior config's ETH 15m market is not part of this test, deliberately narrowed to exactly the table 1.1 scope). trade_size_usdc is inert for reversal under maker_entry (the GTC quote size is always MIN_GTC_SHARES, not USDC-denominated) — left at its prior value only because AssetParams still requires it. high_prob's own per-asset fields (price_low/price_high/sl_high_prob/unwind_pnl_hp/sl_pnl_hp/unwind_time_hp/delta_pct_hp) are carried over unchanged from strategy_20260717.toml as inert leftovers — AssetParams resolves them regardless of which strategies are active, but [strategies] never selects high_prob in this config, so none of them affect this run."
+
+# Trade assets: all 6 — reversal only, see [strategies].
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Indicator module (trader/doc/feature_vol_2026-07-18.md) — on for this run:
+# poly-indicator.service was deployed to Oracle 2026-07-19 specifically so
+# pup_edge_min_rev below has live snapshots to gate on.
+indicator_enabled = true
+
+# Paper-trade mode (plan_unwind_5u_maker_2026-07-19 §2.1) — real-money trading
+# paused for the 48h window; the deployed trader-live.service runs in paper
+# mode via this flag alone (no --paper CLI flag needed on the systemd unit).
+paper_trade = true
+
+# Maker entries (plan_unwind_5u_maker_2026-07-19 §2.2), reversal only: rest a
+# GTC BUY at the signal price for MIN_GTC_SHARES (5 shares) instead of a
+# marketable FAK buy.
+maker_entry = true
+
+# Trade size
+[trade_size_usdc]
+default = 1.0
+
+# Every asset is 5m only for this run (no 15m/1h-et/4h markets) — deliberately
+# narrowed to exactly table 1.1's scope.
+[market_durations]
+default = ["5m"]
+
+# Reversal only — high_prob removed for this run.
+[strategies]
+default = ["reversal"]
+
+# --- Halt --- (unchanged from prior config, not part of this test)
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — table 1.1 of plan_unwind_5u_maker_2026-07-19.md, verbatim
+# (unwind_safely's best-by-win_rate selection). sl_reversal/sl_pnl_rev are 0.0 for
+# every asset per plan 1.2 (Scenario A — unwind_time_rev IS the stop). reversal_start_time,
+# halt_rev, halt_reset_hour_rev, price_high_rev held unchanged (not part of this table).
+[delta_pct_rev]
+default = 0.0010
+BTC  = 0.0010
+ETH  = 0.0008
+SOL  = 0.0010
+BNB  = 0.0010
+XRP  = 0.0010
+DOGE = 0.0008
+
+[reversal]
+default = 0.55
+BTC  = 0.55
+ETH  = 0.55
+SOL  = 0.55
+BNB  = 0.70
+XRP  = 0.80
+DOGE = 0.60
+
+[reversal_low_threshold]
+default = 0.20
+BTC  = 0.20
+ETH  = 0.20
+SOL  = 0.20
+BNB  = 0.20
+XRP  = 0.20
+DOGE = 0.30
+
+# sl_reversal = 0.0 for every asset (plan 1.2, Scenario A).
+[sl_reversal]
+default = 0.0
+
+[unwind_pnl_rev]
+default = 0.15
+BTC  = 0.15
+ETH  = 0.15
+SOL  = 0.15
+BNB  = 0.15
+XRP  = 0.15
+DOGE = 0.15
+
+# sl_pnl_rev = 0.0 for every asset (plan 1.2, Scenario A) — hard condition: if
+# unwind_time_rev is ever disabled/raised, this must move to 0.80 the same day.
+[sl_pnl_rev]
+default = 0.0
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. This IS the stop (plan 1.2).
+[unwind_time_rev]
+default = 26.0
+BTC  = 26.0
+ETH  = 28.0
+SOL  = 30.0
+BNB  = 12.0
+XRP  = 28.0
+DOGE = 30.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3) — 0.0 = the
+# parameter-free X=0 veto: never pay more than the model probability.
+[pup_edge_min_rev]
+default = 0.0
+
+# Gamma resolution watcher cadence (2026-07-09) — unchanged.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
+
+# --- V-shape strategy — configured but not traded (not in [strategies]).
+# Canonical defaults, unchanged from prior config.
+[v_high1]
+default = 0.70
+
+[v_low]
+default = 0.30
+
+[v_high2]
+default = 0.70
+
+[delta_pct_v]
+default = 0.0
+
+[sl_v_shape]
+default = 0.0
+
+[sl_pnl_v]
+default = 0.30
+
+[unwind_pnl_v]
+default = 0.15
+
+[unwind_time_v]
+default = 25.0
+
+[halt_v]
+default = 1
+
+[halt_reset_hour_v]
+default = 2
+
+# --- High-prob strategy — NOT in [strategies] for this run (reversal only);
+# every field below is inert, carried over unchanged from strategy_20260717.toml
+# only because AssetParams.resolve() still requires a value for every asset.
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+BTC = 0.0006
+SOL = 0.0009
+XRP = 0.0006
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+BTC = 0.15
+SOL = 0.15
+XRP = 0.10
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+BTC = 0.20
+SOL = 0.30
+XRP = 0.20
+
+# Max holding time (seconds), high_prob. Inert (not in [strategies]).
+[unwind_time_hp]
+default = 30.0
+BTC = 25.0
+SOL = 25.0
+XRP = 20.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long] — unchanged.
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof — unchanged.
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249

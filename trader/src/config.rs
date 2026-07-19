@@ -404,25 +404,29 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // strategy_20260717.toml, second same-day update (btc_5mins
-        // studies/bt1_overnight_vshape/summary_2026-07-17.md filtered picks —
-        // see that file's meta.source): BTC overrides for reversal/
-        // delta_pct_rev/reversal_low_threshold/unwind_pnl_rev/sl_pnl_rev/
-        // unwind_time_rev.
+        // strategy_20260719.toml (plan_unwind_5u_maker_2026-07-19.md's 5-share
+        // maker-entry paper-trade config): table 1.1 values verbatim for every
+        // reversal-scoped field; sl_reversal/sl_pnl_rev = 0.0 for every asset
+        // (plan 1.2, Scenario A — unwind_time_rev IS the stop).
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
-            "BTC reversal = 0.55 (override)"
+            "BTC reversal = 0.55 (table 1.1)"
         );
-        assert!((p.reversal_low_threshold - 0.30).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0009).abs() < 1e-9);
+        assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
+        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
         assert_eq!(p.halt_rev, 1);
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
-        assert!((p.sl_pnl_rev - 0.20).abs() < 1e-9);
+        assert!((p.sl_pnl_rev - 0.0).abs() < 1e-9);
+        assert!((p.sl_reversal - 0.0).abs() < 1e-9);
+        // high_prob is inert in this config (not in [strategies]) — its
+        // per-asset fields are carried over unchanged from strategy_20260717.toml.
         assert!((p.unwind_pnl_hp - 0.15).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.20).abs() < 1e-9);
-        assert!((p.unwind_time_rev - 10.0).abs() < 1e-9);
+        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
         assert!((p.unwind_time_hp - 25.0).abs() < 1e-9);
+        assert!(p.maker_entry, "maker_entry = true for this run");
+        assert_eq!(p.pup_edge_min_rev, Some(0.0));
         // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
         // README's Gamma-halt section) — flat defaults, no per-asset override yet.
         // gamma_poll_deadline_secs added 2026-07-11 (extended window, decoupled
@@ -436,12 +440,12 @@ mod tests {
     fn unwind_time_falls_back_to_default_and_resolves_asset_override() {
         let mut toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // Default fallback (no SOL-specific entry in the real config — updated
-        // 2026-07-15, strategy_20260715.toml's same-day update gave BTC/XRP their
-        // own unwind_time_rev overrides, so SOL is now the asset that falls back
-        // to the 25.0 default).
-        let p = toml.resolve("SOL").expect("resolve SOL");
-        assert!((p.unwind_time_rev - 25.0).abs() < 1e-9);
+        // strategy_20260719.toml gives every real trade asset its own
+        // unwind_time_rev (table 1.1), so none of them exercise the
+        // default-fallback path — use a fictitious asset key instead to
+        // demonstrate the fallback chain directly.
+        let p = toml.resolve("NOTREAL").expect("resolve NOTREAL");
+        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
         // Asset-specific override takes priority over default when present.
         toml.unwind_time_rev.insert("ETH".to_string(), 12.0);
         let p = toml.resolve("ETH").expect("resolve ETH");
@@ -456,11 +460,11 @@ mod tests {
     fn default_fallback() {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // XRP uses default delta_pct_rev (updated 2026-07-16: SOL gained its own
-        // override, 0.0004, in strategy_20260716.toml, so it no longer falls
-        // back — XRP is now the asset that demonstrates the fallback path).
-        let p = toml.resolve("XRP").expect("resolve XRP");
-        assert!((p.delta_pct_rev - 0.0003).abs() < 1e-9);
+        // strategy_20260719.toml gives every real trade asset its own
+        // delta_pct_rev (table 1.1) too — same fictitious-key approach as
+        // unwind_time_falls_back_to_default_and_resolves_asset_override.
+        let p = toml.resolve("NOTREAL").expect("resolve NOTREAL");
+        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
     }
 
     #[test]
@@ -602,8 +606,8 @@ mod tests {
         let p = toml.resolve("BTC").expect("resolve 5m");
         assert_eq!(
             p.strategies,
-            vec!["reversal", "high_prob"],
-            "5m list unchanged (strategy_20260717.toml second update: BTC runs both)"
+            vec!["reversal"],
+            "5m list unchanged (strategy_20260719.toml: reversal only, high_prob removed)"
         );
     }
 
@@ -663,9 +667,12 @@ mod tests {
     /// `default`) resolves to `None` (disabled) — not `Some(0.0)`.
     #[test]
     fn pup_edge_min_rev_absent_resolves_to_none() {
-        let toml =
-            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        assert!(toml.pup_edge_min_rev.is_empty(), "no config sets this yet");
+        // strategy_20260719.toml (latest) enables this gate — load an older
+        // pinned file that predates it, matching
+        // load_file_reads_the_exact_file_given_not_the_latest's pattern.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/config");
+        let toml = load_file(&format!("{dir}/strategy_20260717.toml")).expect("load config");
+        assert!(toml.pup_edge_min_rev.is_empty(), "predates this key");
         let p = toml.resolve("BTC").expect("resolve BTC");
         assert_eq!(p.pup_edge_min_rev, None);
     }

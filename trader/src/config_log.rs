@@ -226,25 +226,24 @@ mod tests {
         assert_eq!(e.asset, "BTC");
         assert_eq!(e.event, "startup");
         assert_eq!(e.strategies, vec!["reversal".to_string()]);
-        // BTC has explicit `reversal`/`delta_pct_rev` overrides in
-        // strategy_20260717.toml (second same-day update — bt1_overnight_vshape
-        // filtered picks), so both resolve to BTC's own override, not "default".
+        // strategy_20260719.toml (plan_unwind_5u_maker_2026-07-19.md's paper-
+        // trade config): every real trade asset has explicit table-1.1
+        // `reversal`/`delta_pct_rev` overrides, so both resolve to BTC's own
+        // override, not "default".
         assert!((e.reversal.get("BTC").unwrap_or(&e.reversal["default"]) - 0.55).abs() < 1e-9);
         assert!(
             (e.delta_pct_rev
                 .get("BTC")
                 .unwrap_or(&e.delta_pct_rev["default"])
-                - 0.0009)
+                - 0.0010)
                 .abs()
                 < 1e-9
         );
         assert_eq!(*e.halt_rev.get("BTC").unwrap_or(&e.halt_rev["default"]), 1);
         assert!(e.hkt.ends_with(" HKT"));
         assert!(e.assets.contains("BTC"));
-        // trade_assets scoped to BTC/SOL/DOGE (2026-07-16 update, dropped BNB in
-        // favor of DOGE) — see strategy_20260716.toml's meta comment. `assets`
-        // (monitored/configured) still covers all 6, `trade_assets` (actually
-        // traded) is the narrower set.
+        // trade_assets covers all 6 in this config (table 1.1 spans BTC/ETH/
+        // SOL/BNB/XRP/DOGE).
         assert!(e.trade_assets.contains("DOGE"));
         assert!(e.trade_assets.contains("BTC"));
 
