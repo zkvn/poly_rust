@@ -222,13 +222,6 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **Indicator phase 2 (gates) not wired — 2026-07-18.** The trader consumes
-  `indicator.<ASSET>` log-only (`indicator_enabled`, off in prod config); no gate reads the
-  snapshot store yet. Wire config-driven gates (pup_gate-study thresholds) before the
-  indicators can affect a trading decision. See `trader/doc/feature_vol_2026-07-18.md` §3.
-- **Indicator not deployed to Oracle — 2026-07-18.** Local docker validation passed
-  (perf + parity report in `indicator/doc/`); aarch64 cross-compile + systemd unit still
-  pending, deliberately deferred until phase 2 gives the trader a reason to read it.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
@@ -1082,6 +1075,34 @@ market resolutions and seeding/recording them into the local SQLite db
 until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
+
+### Indicator phase 2 (p(up) gate) wired + indicator daemon deployed to Oracle (2026-07-19, added)
+
+Both prior TODO items closed together as part of plan_unwind_5u_maker_2026-07-19.md: `worker.rs`
+gained a p(up) negative-edge veto (`pup_edge_min_rev`, reversal only — vetoes an entry when
+`p_side < entry_price + pup_edge_min_rev`, failing open on a missing/stale/warmup snapshot so a
+dead indicator daemon can't silently block trading), and the `indicator` crate was cross-compiled
+for aarch64 and deployed as `poly-indicator.service` (new systemd unit, `scripts/deploy_oracle.py
+--indicator-only`), widened from BTC-only to all 6 trade assets. One real bug caught on first
+deploy: `--config` is indicator's global clap arg and must precede the `run` subcommand, not
+follow it — the wrong order crash-looped the service until fixed. Both live on Oracle since
+2026-07-19, `indicator_enabled = true` in `strategy_20260719.toml`.
+
+### Telegram `/status` showed `trade_size_usdc` ($1.00) as the bet size for maker-entry reversal slots, which was actively wrong (2026-07-19, fixed)
+
+Under `maker_entry = true` (plan_unwind_5u_maker_2026-07-19.md §2.2), every reversal entry is a
+fixed `MIN_GTC_SHARES` (5-share) GTC quote — `worker.rs`'s `try_enter` never reads
+`trade_size_usdc` on that path at all. `/status` printed `size=$X.XX` from `trade_size_usdc`
+unconditionally regardless of strategy/mode, so on the deployed `strategy_20260719.toml`
+(`trade_size_usdc` left at its old $1.00 default, genuinely inert for this run) it displayed a
+vestigial config value as if it were the real committed size. Caught by the user reading the live
+paper run's `/status` output on Telegram and asking why it still said $1 when the minimum maker
+order is 5 shares. Fixed in `Driver::render_status`: reversal slots with `maker_entry` on now show
+`size=5.00sh (maker)`; every other slot (FAK entries, high_prob, v_shape) is unaffected. Rebuilt
+and redeployed to Oracle same-day (`trader-live.service` restarted cleanly, no in-flight trades
+lost). The one-time "driver started" boot banner has the same cosmetic issue (reads the CLI
+`--size-usdc` flag) but wasn't fixed — narrower blast radius (one line at boot, not a repeatedly-
+checked status readout) and left for a future pass.
 
 ### `siglab-report-push.timer`'s unscoped `git commit` swept up an agent's staged, unrelated changes into an hourly report commit (2026-07-19, fixed)
 
