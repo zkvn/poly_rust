@@ -15,7 +15,11 @@ this for "what does the running system actually do," the plan doc for "why."
 
 Currently live on Oracle: `strategy_20260719.toml`, all 6 assets
 (BTC/ETH/SOL/BNB/XRP/DOGE), reversal only, `paper_trade = true` (real-money
-trading paused for the 48h window).
+trading paused for the 48h window). **The 48h window was restarted 2026-07-19
+~21:58 HKT** when the mid-vs-bid quoting fix (§1, §7) deployed — it changes the
+maker-entry mechanism's actual pricing, not just logging, so the prior ~5.5h of
+mid-priced data isn't representative of what's running now (archived, not
+deleted, to `live_logs/archive_paper_run_20260719_mid_pricing/` on Oracle).
 
 ## 1. Entry — decision order
 
@@ -35,25 +39,45 @@ Runs on every `BinanceTick` and `PolyTick`, from `Worker::try_enter`
    3. `|delta_pct| < delta_pct_rev` (minimum directional move)
    4. `token_price > max_buy_price`
    5. `token_price > price_high_rev` (reversal only)
-3. **p(up) negative-edge gate** (§4 below) — reversal only, checked before
-   `mark_fired()` so a veto doesn't lock the strategy out for the rest of the
-   cycle. Blocks (returns only `Action::PupGateNote{Veto}`) or passes through
-   (falls through, possibly appending `Action::PupGateNote{SkippedNoData}`
-   after the entry actions below).
-4. `mark_fired()` — strategy can't re-fire this cycle from here on regardless
+3. **Entry price** (`entry_price`), computed once, up front, before the pup
+   gate below reads it: for a maker-entry reversal
+   (`maker_entry = true && Reversal`), the real observed best bid —
+   `LatestPolySignal::best_bid(side)` — UP reads its own bid directly, DOWN
+   derives `1 - up_ask` via the unified mint/merge book's complementary-token
+   identity (`btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md` §1: "Selling
+   DOWN at X ≡ resting a maker BUY of UP at 1−X"). Falls back to
+   `intent.token_price()` (the mid) when no real bid/ask has been observed
+   yet this run (fresh `LatestPolySignal`, an old `price_feed` predating this
+   field, or backtest replay) — `0.0` is the "not observed" sentinel on
+   `PolyTick.up_bid`/`.up_ask`. Every other path (FAK entries, non-reversal
+   strategies) uses the mid, unchanged.
+4. **p(up) negative-edge gate** (§4 below) — reversal only, evaluated against
+   `entry_price` from step 3 (the real price that will actually be paid, not
+   mid — using mid here would make the veto needlessly strict whenever the
+   real bid undercuts it), checked before `mark_fired()` so a veto doesn't
+   lock the strategy out for the rest of the cycle. Blocks (returns only
+   `Action::PupGateNote{Veto}`) or passes through (falls through, possibly
+   appending `Action::PupGateNote{SkippedNoData}` after the entry actions
+   below).
+5. `mark_fired()` — strategy can't re-fire this cycle from here on regardless
    of what happens next.
-5. **Order placement**, branching on `maker_entry` (reversal only):
+6. **Order placement**, branching on `maker_entry` (reversal only):
    - **Maker** (`maker_entry = true`): `Action::PlaceLimitBuy{side, price:
-     intent.token_price(), shares: MIN_GTC_SHARES (5.0), signal_ts}`. State →
-     `WorkerState::EnteringMaker(MakerQuote{..})`.
+     entry_price, shares: MIN_GTC_SHARES (5.0), signal_ts}` — rests at the
+     real best bid from step 3. State → `WorkerState::EnteringMaker(MakerQuote{..})`.
    - **FAK** (`maker_entry = false`, or non-reversal strategy):
-     `Action::PlaceBuy{side, price: intent.token_price(), size_usdc:
+     `Action::PlaceBuy{side, price: entry_price (== mid here), size_usdc:
      trade_size_usdc, signal_ts}`. State → `WorkerState::Entering`.
 
-**Known deviation from the source plan:** the maker quote's price is the
-signal's own mid (`intent.token_price()` = `PolyTick.up`/`.dn`, the merged
-`(bid+ask)/2`), not the literal current best bid the MVP plan calls for
-(`PolyTick` doesn't carry bid/ask separately). See README `## TODO`.
+**Fixed 2026-07-19** (was previously the mid-vs-bid gap this doc's earlier
+revision flagged as a known deviation, README `## TODO`): the maker quote
+used to price at the signal's own mid, not the true best bid the source MVP
+plan calls for ("join the bid"), because `PolyTick` only carried the merged
+`(bid+ask)/2`. `price_feed` now publishes real `up_bid`/`up_ask` over NATS
+(additive JSON fields, not persisted to the `poly` parquet schema); `PolyTick`
+carries them with a `0.0`-means-unobserved convention. See README's matching
+incident entry for the fix's full scope (12 files, both crates, 10 new tests,
+a live raw-feed verification).
 
 ## 2. Maker quote lifecycle (`WorkerState::EnteringMaker`)
 
@@ -223,3 +247,7 @@ prefixed.
 | Config schema (`maker_entry`, `pup_edge_min_rev`, `paper_trade`) | `trader/src/config.rs` |
 | This run's actual parameters | `trader/config/strategy_20260719.toml` |
 | Indicator daemon (p_up/vol_har/snr source) | `indicator/` crate, `poly-indicator.service` on Oracle |
+| `PolyTick` (`up`/`dn`/`up_bid`/`up_ask`), the shared tick type | `trader/src/types.rs` |
+| Real bid/ask caching + DOWN-side derivation (`best_bid()`) | `trader/src/signal/latest_poly.rs` |
+| Direct-WS bid/ask population (local/dev only) | `trader/src/marketdata.rs` |
+| NATS bid/ask publish — the production data source | `price_feed/src/collect.rs` (`poly_nats_payload`), `poly-collector.service` on Oracle |

@@ -228,19 +228,6 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **Maker-entry quotes rest at the strategy's signal mid-price, not the true best bid —
-  2026-07-19.** `worker.rs`'s maker-entry path (`plan_unwind_5u_maker_2026-07-19.md` §2.2)
-  quotes at `intent.token_price()`, which is `PolyTick.up`/`.dn` — the merged
-  `(bid+ask)/2` `marketdata.rs` already computes, not a separate bid/ask pair. The
-  original MVP plan (`btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md` §3) calls for
-  "rest a GTC buy on S at the current best bid (join the bid)" — quoting at mid instead
-  gives up some of the ~3–5¢/share maker price-improvement edge that doc's economics
-  section assumes (bid < mid always, so a mid-priced buy trades through more easily but
-  captures less spread). Fixing this needs `PolyTick`/the WS merge in `marketdata.rs` to
-  carry bid/ask separately, not just the merged mid — a real plumbing change, not a
-  config tweak. Don't fix mid-run: the paper run's parameters are frozen for the 48h
-  window; revisit before any real-money promotion. Full entry-rule reference:
-  `trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md` §1.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
@@ -1094,6 +1081,30 @@ market resolutions and seeding/recording them into the local SQLite db
 until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
+
+### Maker-entry quotes rested at the signal mid-price instead of the true best bid — fixed, 48h paper window restarted (2026-07-19, fixed)
+
+Closed the TODO flagged the same day: `worker.rs`'s maker-entry path quoted at
+`intent.token_price()` (the merged `(bid+ask)/2` `PolyTick` carried), not the real best bid the
+source MVP plan (`btc_5mins/doc/plan_market_maker_mvp_2026-07-19.md` §3, "join the bid") calls
+for — giving up part of the ~3–5¢/share maker price-improvement edge. Fix spans both crates:
+`price_feed` now publishes real `up_bid`/`up_ask` as additive NATS JSON fields (not persisted to
+the `poly` parquet schema); `PolyTick` carries them (`#[serde(default)]`, `0.0` = not observed,
+falls back to mid); `worker.rs` quotes at the true best bid (UP reads its own bid directly, DOWN
+derives `1 - up_ask` via the unified mint/merge book's complementary-token identity) and the
+p(up) gate now evaluates against that same real price, not mid. Verified via 10 new unit tests
+plus a live raw-feed check (temporary debug print, removed before commit) showing 72 real,
+correctly-varying bid/ask readings over 130s of live BTC data. Mechanical fan-out to ~117
+existing `PolyTick` test-literal call sites (all default to the `0.0`/"not observed" sentinel,
+preserving every existing test's mid-based behavior with zero assertion changes needed).
+
+Deployed to Oracle 2026-07-19 ~21:58 HKT (`price_feed` + `trader` together, all three services —
+`poly-collector`, `poly-indicator`, `trader-live` — restarted cleanly, 0 restarts each). Because
+this changes the maker-entry mechanism's actual pricing (not just logging/display, unlike the two
+entries below), **the 48h paper-trade observation window was restarted from this deploy, not the
+original 16:33 HKT one** — the prior ~5.5h of mid-priced data was archived (not deleted) to
+`trader/live_logs/archive_paper_run_20260719_mid_pricing/` on Oracle. Full mechanism reference:
+`trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md` §1/§7.
 
 ### delta_pct_rev loosened for SOL/DOGE mid-run, an explicit exception to the paper run's "frozen 48h" rule (2026-07-19, added)
 
