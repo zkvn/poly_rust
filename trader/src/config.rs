@@ -37,6 +37,23 @@ pub struct StrategyToml {
     /// `LiveConfig::default()`'s hardcoded 2, silently diverging from whatever
     /// this file actually specified.
     pub order_max_retries: u32,
+    /// Paper-trade mode (plan_unwind_5u_maker_2026-07-19 §2.1): the live
+    /// binary runs its full lifecycle against `PaperExecutor` (simulated
+    /// fills from observed CLOB prices, no CLOB client at all) instead of
+    /// real orders. The `--paper` CLI flag also enables it (flag wins — i.e.
+    /// either source turns it on). Lives in the strategy TOML so a paper run
+    /// can be deployed to Oracle by config sync alone, without editing the
+    /// systemd unit's ExecStart.
+    #[serde(default)]
+    pub paper_trade: bool,
+    /// Maker-entry mode (plan_unwind_5u_maker_2026-07-19 §2.2), reversal only:
+    /// on a reversal entry signal, rest a GTC limit BUY at the signal price
+    /// for `execution::MIN_GTC_SHARES` shares instead of a marketable FAK
+    /// buy. `#[serde(default)]` (= false) so every pre-existing
+    /// strategy_*.toml keeps its FAK-entry behavior unchanged. high_prob/
+    /// v_shape workers never consult this flag regardless of its value.
+    #[serde(default)]
+    pub maker_entry: bool,
 
     pub strategies: HashMap<String, Vec<String>>,
     pub halt_rev: HashMap<String, i64>,
@@ -69,6 +86,16 @@ pub struct StrategyToml {
     /// force-closed at market, regardless of price — `0.0` disables it. See
     /// `trader/doc/plan_unwind_time_2026-07-08.md`.
     pub unwind_time_rev: HashMap<String, f64>,
+    /// p(up) negative-edge veto (plan_unwind_5u_maker_2026-07-19 §2.3),
+    /// reversal only: veto an entry when `p_side < entry_price + this` —
+    /// "never pay more than the model probability" at `0.0`, the
+    /// parameter-free X=0 veto. Absent (no key for this asset/default) means
+    /// disabled — same convention as btc_5mins `BacktestParams`, where the
+    /// value's mere *presence* (not a separate bool) toggles the gate.
+    /// `#[serde(default)]` so every pre-existing strategy_*.toml (predating
+    /// this key) parses unaffected.
+    #[serde(default)]
+    pub pup_edge_min_rev: HashMap<String, f64>,
 
     pub enter_when_time_left: HashMap<String, i64>,
     pub price_low: HashMap<String, f64>,
@@ -152,6 +179,9 @@ pub struct AssetParams {
     pub unwind_pnl_rev: f64,
     pub sl_pnl_rev: f64,
     pub unwind_time_rev: f64,
+    /// `None` = gate disabled (no key for this asset/default, or an explicit
+    /// NaN); `Some(x)` = veto reversal entries where `p_side < entry_price + x`.
+    pub pup_edge_min_rev: Option<f64>,
 
     // High-prob
     pub price_low: f64,
@@ -188,6 +218,11 @@ pub struct AssetParams {
 
     // Sizing
     pub trade_size_usdc: f64,
+
+    // Maker entries (plan_unwind_5u_maker_2026-07-19 §2.2) — process-wide
+    // flag copied onto every resolved AssetParams, same posture as
+    // max_buy_price/spread_*; only ever consulted by a reversal worker.
+    pub maker_entry: bool,
 }
 
 pub fn get_asset<T: Copy>(map: &HashMap<String, T>, asset: &str) -> Option<T> {
@@ -290,6 +325,7 @@ impl StrategyToml {
             unwind_pnl_rev: req_chain(&self.unwind_pnl_rev, keys, "unwind_pnl_rev")?,
             sl_pnl_rev: req_chain(&self.sl_pnl_rev, keys, "sl_pnl_rev")?,
             unwind_time_rev: req_chain(&self.unwind_time_rev, keys, "unwind_time_rev")?,
+            pup_edge_min_rev: get_chain(&self.pup_edge_min_rev, keys).filter(|v| !v.is_nan()),
             price_low: req_chain(&self.price_low, keys, "price_low")?,
             price_high: req_chain(&self.price_high, keys, "price_high")?,
             delta_pct_hp: req_chain(&self.delta_pct_hp, keys, "delta_pct_hp")?,
@@ -320,6 +356,7 @@ impl StrategyToml {
             spread_discount_limit: self.spread_discount_limit,
             max_price_age_secs: self.max_price_age_secs,
             trade_size_usdc: req_chain(&self.trade_size_usdc, keys, "trade_size_usdc")?,
+            maker_entry: self.maker_entry,
         })
     }
 }
@@ -592,5 +629,84 @@ mod tests {
             (p.v_high2 - 0.55).abs() < 1e-9,
             "BTC falls back to default key"
         );
+    }
+
+    // ── plan_unwind_5u_maker_2026-07-19 §2.4: config-parsing tests ───────────
+
+    /// `paper_trade`/`maker_entry` are both `#[serde(default)]` (= false) —
+    /// every pre-existing strategy_*.toml (predating both keys) must still
+    /// parse and resolve with them off.
+    #[test]
+    fn paper_trade_and_maker_entry_default_false_on_old_configs() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/config");
+        let toml = load_file(&format!("{dir}/strategy_20260713.toml")).expect("load old config");
+        assert!(!toml.paper_trade);
+        assert!(!toml.maker_entry);
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!(!p.maker_entry);
+    }
+
+    /// Both keys parse correctly when present and set true.
+    #[test]
+    fn paper_trade_and_maker_entry_parse_when_present() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.paper_trade = true;
+        toml.maker_entry = true;
+        assert!(toml.paper_trade);
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert!(p.maker_entry);
+    }
+
+    /// The exact "absent vs 0.0" distinction the plan calls out:
+    /// `pup_edge_min_rev` absent for an asset (no key at all, not even
+    /// `default`) resolves to `None` (disabled) — not `Some(0.0)`.
+    #[test]
+    fn pup_edge_min_rev_absent_resolves_to_none() {
+        let toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        assert!(toml.pup_edge_min_rev.is_empty(), "no config sets this yet");
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert_eq!(p.pup_edge_min_rev, None);
+    }
+
+    /// An explicit `0.0` is a real, present value (the veto's own X=0 case) —
+    /// distinct from absent, and must resolve to `Some(0.0)`, not `None`.
+    #[test]
+    fn pup_edge_min_rev_present_at_zero_resolves_to_some_zero() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.pup_edge_min_rev.insert("default".to_string(), 0.0);
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert_eq!(p.pup_edge_min_rev, Some(0.0));
+    }
+
+    /// A per-asset override takes priority over `default`, same fallback
+    /// chain every other per-asset map uses.
+    #[test]
+    fn pup_edge_min_rev_resolves_asset_override_over_default() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.pup_edge_min_rev.insert("default".to_string(), 0.0);
+        toml.pup_edge_min_rev.insert("BTC".to_string(), 0.02);
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert_eq!(p.pup_edge_min_rev, Some(0.02));
+        let p = toml.resolve("ETH").expect("resolve ETH");
+        assert_eq!(p.pup_edge_min_rev, Some(0.0));
+    }
+
+    /// An explicit NaN (same convention as btc_5mins `BacktestParams`) is
+    /// filtered to `None` (disabled) even though the key is technically
+    /// present — a NaN comparison (`p_side < entry_price + NaN`) would
+    /// otherwise always be false, silently disabling the veto without
+    /// reading as "disabled" in config inspection.
+    #[test]
+    fn pup_edge_min_rev_nan_is_treated_as_disabled() {
+        let mut toml =
+            load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
+        toml.pup_edge_min_rev
+            .insert("default".to_string(), f64::NAN);
+        let p = toml.resolve("BTC").expect("resolve BTC");
+        assert_eq!(p.pup_edge_min_rev, None);
     }
 }

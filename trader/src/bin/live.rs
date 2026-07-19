@@ -36,8 +36,8 @@ use futures::StreamExt as _;
 use trader::balance::{BalanceGuard, GammaBalanceTracker, seconds_until_next_check};
 use trader::config::AssetParams;
 use trader::execution::{
-    ExecutionEngine, LiveConfig, LiveExecutionEngine, SellStatus, SimExecutionEngine,
-    local_signer_from_key, signature_type_from_env,
+    ExecutionEngine, LiveConfig, LiveExecutionEngine, PaperExecutor, PaperOrderSide, SellStatus,
+    SimExecutionEngine, local_signer_from_key, signature_type_from_env,
 };
 use trader::indicator_store::{IndicatorSnapshot, IndicatorStore};
 use trader::marketdata::{
@@ -48,7 +48,10 @@ use trader::telegram::commands::{Command, parse_command};
 use trader::telegram::render::HELP_TEXT;
 use trader::telegram::{AuthConfig, TelegramBot};
 use trader::types::{BinanceTick, CycleContext, Outcome, PolyTick, Side, TradeRecord};
-use trader::worker::{Action, BalanceEvent, CloseReason, ControlEvent, Event, Worker};
+use trader::worker::{
+    Action, BalanceEvent, CancelQuoteReason, CloseReason, ControlEvent, Event, PupGateOutcome,
+    Worker,
+};
 
 const DEFAULT_FUND_ADDRESS: &str = "0x9FC2A777C26CCA2C218D8E7BBC340D14058CC13A";
 // NOTE: clob-v2.polymarket.com 301-redirects POST /order to clob.polymarket.com,
@@ -132,7 +135,7 @@ struct Args {
     #[arg(long)]
     nats_url: Option<String>,
 
-    /// Paper mode: no engine connection, no credentials needed, every
+    /// Dry-run mode: no engine connection, no credentials needed, every
     /// PlaceBuy/ClosePosition is simulated as an instant full fill at the
     /// signal price (`SimExecutionEngine`), Telegram messages are prefixed
     /// [DRY]. For local/Docker validation — running the real order path
@@ -141,12 +144,63 @@ struct Args {
     #[arg(long, default_value_t = false)]
     dry_run: bool,
 
+    /// Paper-trade mode (plan_unwind_5u_maker_2026-07-19 §2.1): full live
+    /// lifecycle (telegram, halt, gamma watcher, config log) against
+    /// `PaperExecutor` — fills simulated from *observed* CLOB prices (resting
+    /// quotes only fill on a trade-through), no CLOB client at all, no
+    /// credentials needed. Telegram messages are prefixed [PAPER]; trades go
+    /// to paper_trades_*.csv, never live_trades_*.csv. Also enabled by
+    /// `paper_trade = true` in the strategy TOML (either source turns it on);
+    /// takes precedence over --dry-run.
+    #[arg(long, default_value_t = false)]
+    paper: bool,
+
     /// Path to a weather_*.toml (cities + one reversal parameter set — see
     /// trader::weather). Absent (the default, and the default in every
     /// production invocation) ⇒ the weather module never runs at all.
     /// trader/doc/feature_new_markets_2026-07-17.md §7.
     #[arg(long)]
     weather_config: Option<String>,
+}
+
+/// Which execution backend this process runs against. Exactly one of these is
+/// picked at startup by `resolve_run_mode` and never changes mid-run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    /// Real CLOB orders on the production account.
+    Real,
+    /// `SimExecutionEngine` — instant fills at the signal price.
+    DryRun,
+    /// `PaperExecutor` — fills simulated from observed CLOB prices
+    /// (plan_unwind_5u_maker_2026-07-19 §2.1).
+    Paper,
+}
+
+impl RunMode {
+    /// Telegram prefix so a non-real run can never be misread as production
+    /// output.
+    fn prefix(self) -> &'static str {
+        match self {
+            RunMode::Real => "",
+            RunMode::DryRun => "[DRY] ",
+            RunMode::Paper => "[PAPER] ",
+        }
+    }
+}
+
+/// `--paper` / `[toml] paper_trade` / `--dry-run` precedence, pure for unit
+/// testing (plan §2.4): paper from either source beats dry-run — a config
+/// that says paper_trade must never silently run the instant-fill sim
+/// instead, and vice versa a `--paper` invocation against an older config is
+/// still paper.
+fn resolve_run_mode(paper_flag: bool, toml_paper_trade: bool, dry_run_flag: bool) -> RunMode {
+    if paper_flag || toml_paper_trade {
+        RunMode::Paper
+    } else if dry_run_flag {
+        RunMode::DryRun
+    } else {
+        RunMode::Real
+    }
 }
 
 /// Current time in Hong Kong (UTC+8), matching the Python bot's `_HKT` convention.
@@ -324,6 +378,97 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
 /// break the naive comma-split so a raw SDK error message can't corrupt the row.
 fn csv_sanitize(s: &str) -> String {
     s.replace(',', ";").replace('\n', " ")
+}
+
+const CANCELED_QUOTE_CSV_HEADER: &str = "logged_at,slug,strategy,side,quote_price,reason";
+
+/// Every canceled maker-entry quote (plan_unwind_5u_maker_2026-07-19 §2.2):
+/// slug/side/quote price/cancel reason. The 48h evaluation (§2.7) resolves
+/// each row against Gamma to compute the counterfactual outcome — the
+/// filled-vs-canceled adverse-selection comparison the plan calls the single
+/// most important output of the paper run.
+fn append_canceled_quote_header_if_new(path: &str) -> Result<()> {
+    use std::io::Write as _;
+    if std::path::Path::new(path).exists() {
+        return Ok(());
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    writeln!(f, "{CANCELED_QUOTE_CSV_HEADER}")?;
+    Ok(())
+}
+
+/// Best-effort — a write failure here must never interrupt live trading
+/// (same fail-open posture as `log_control_event`). Silently a no-op when
+/// there's no active cycle (`current_slug` empty), which can only happen if
+/// a quote somehow survives past `on_cycle_close`'s reset (it shouldn't:
+/// T-15s cancels it first).
+fn log_canceled_quote(slot: &AssetSlot, side: Side, quote_price: f64, reason: CancelQuoteReason) {
+    use std::io::Write as _;
+    let Some(slug) = &slot.current_slug else {
+        return;
+    };
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&slot.canceled_quote_log_path)
+    else {
+        return;
+    };
+    let _ = writeln!(
+        f,
+        "{},{},{},{},{quote_price:.4},{reason:?}",
+        now_secs_f64(),
+        slug,
+        slot.worker.strategy_name,
+        side.as_str()
+    );
+}
+
+const PUP_VETO_CSV_HEADER: &str = "logged_at,slug,strategy,side,p_side,price";
+
+/// Every reversal entry the p(up) negative-edge gate blocked
+/// (plan_unwind_5u_maker_2026-07-19 §2.3) — the 48h evaluation gamma-resolves
+/// each row to check whether the veto actually saved money.
+fn append_pup_veto_header_if_new(path: &str) -> Result<()> {
+    use std::io::Write as _;
+    if std::path::Path::new(path).exists() {
+        return Ok(());
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    writeln!(f, "{PUP_VETO_CSV_HEADER}")?;
+    Ok(())
+}
+
+/// Same fail-open posture as `log_canceled_quote` — a write failure here must
+/// never interrupt live trading.
+fn log_pup_veto(slot: &AssetSlot, side: Side, p_side: f64, price: f64) {
+    use std::io::Write as _;
+    let Some(slug) = &slot.current_slug else {
+        return;
+    };
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&slot.pup_veto_log_path)
+    else {
+        return;
+    };
+    let _ = writeln!(
+        f,
+        "{},{},{},{},{p_side:.4},{price:.4}",
+        now_secs_f64(),
+        slug,
+        slot.worker.strategy_name,
+        side.as_str()
+    );
 }
 
 const WEATHER_CSV_HEADER: &str =
@@ -680,6 +825,17 @@ struct AssetSlot {
     max_buy_price: f64,
     log_path: String,
     state_file: String,
+    /// Canceled maker-entry quotes (plan_unwind_5u_maker_2026-07-19 §2.2):
+    /// slug/side/quote price/cancel reason for every quote that never got a
+    /// fill — the filled-vs-canceled comparison this study exists to measure.
+    /// Empty/unused for non-maker-entry workers.
+    canceled_quote_log_path: String,
+    /// Vetoed entries (plan_unwind_5u_maker_2026-07-19 §2.3): slug/side/
+    /// p_side/price for every reversal entry the p(up) negative-edge gate
+    /// blocked — the 48h evaluation gamma-resolves each row to check whether
+    /// the veto actually saved money. Empty/unused when `pup_edge_min_rev`
+    /// is disabled.
+    pup_veto_log_path: String,
     /// Shared across every slot (one file, `control_log.jsonl` in `log_dir` —
     /// see `log_control_event`).
     control_log_path: String,
@@ -759,16 +915,16 @@ impl AssetSlot {
 /// `Driver` without fighting over a mutable borrow.
 struct Driver<'a> {
     /// The order-execution boundary — the real `LiveExecutionEngine` in
-    /// production, `SimExecutionEngine` under `--dry-run` (instant simulated
-    /// fills, no network, no credentials).
+    /// production, `SimExecutionEngine` under `--dry-run`, `PaperExecutor`
+    /// under `--paper`/`paper_trade = true`.
     engine: &'a dyn ExecutionEngine,
-    /// The concrete live engine when one exists (`None` under `--dry-run`) —
+    /// The concrete live engine when one exists (`None` under dry-run/paper) —
     /// only for the non-trait extras: `fetch_balance` in `/status` and the
     /// periodic balance-guard sampling.
     live_engine: Option<&'a LiveExecutionEngine<Signer>>,
-    /// Prefixes every Telegram message with `[DRY]` so a paper run can never
-    /// be misread as production output.
-    dry_run: bool,
+    /// Prefixes every Telegram message with `[DRY]`/`[PAPER]` so a simulated
+    /// run can never be misread as production output.
+    mode: RunMode,
     telegram: Option<Arc<TelegramBot>>,
     http: reqwest::Client,
     api_result_tx: mpsc::UnboundedSender<(String, &'static str, Option<bool>)>,
@@ -777,11 +933,7 @@ struct Driver<'a> {
 impl Driver<'_> {
     async fn notify(&self, text: &str) {
         if let Some(bot) = &self.telegram {
-            let text = if self.dry_run {
-                format!("[DRY] {text}")
-            } else {
-                text.to_string()
-            };
+            let text = format!("{}{text}", self.mode.prefix());
             match bot.send(&text).await {
                 Ok(_) => println!("[telegram] sent: {}", text.lines().next().unwrap_or("")),
                 Err(e) => eprintln!("[telegram] send error: {e:#}"),
@@ -1095,6 +1247,46 @@ impl Driver<'_> {
                     process_latency_ms: latency_ms(received_ts, confirmed_ts),
                 })
             }
+            Action::PlaceLimitBuy {
+                side,
+                price,
+                shares,
+                signal_ts,
+            } => {
+                let token_id = if *side == Side::Up {
+                    slot.up_id
+                } else {
+                    slot.dn_id
+                };
+                slot.current_token_id = Some(token_id);
+                let received_ts = now_secs_f64();
+                let r = self.engine.place_limit_buy(token_id, *shares, *price).await;
+                let confirmed_ts = now_secs_f64();
+                let signal_latency_ms = latency_ms(*signal_ts, received_ts);
+                let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
+                println!(
+                    "[ORDER] {} MAKER ENTRY BUY {shares:.2} @ {price:.4} ({side:?}) -> status={:?} order_id={:?} err={:?}",
+                    slot.market_key(),
+                    r.status,
+                    r.order_id,
+                    r.error
+                );
+                if matches!(r.status, SellStatus::Live) {
+                    let dt = hkt_now().format("%H:%M:%S");
+                    let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                    self.notify(&format!(
+                        "📝 <b>{}</b> Maker quote resting | {dt} | T-{time_left}s | {} | {}\nBUY {shares:.2}sh @ {price:.4}",
+                        slot.market_key(), arrow_side(*side), slot.worker.strategy_name
+                    )).await;
+                }
+                Some(Event::LimitBuyPlaced {
+                    order_id: r.order_id,
+                    status: r.status,
+                    error: r.error,
+                    signal_latency_ms,
+                    process_latency_ms,
+                })
+            }
             Action::ClosePosition {
                 shares,
                 reason,
@@ -1183,9 +1375,10 @@ impl Driver<'_> {
                 // Dry-run fill pricing: `SimExecutionEngine::close_position` has
                 // no market price and returns `filled_usdc: 0.0`, which would
                 // book every simulated stop-loss/timeout exit as a total loss.
-                // Price it at the held side's last mid instead — dry-run only;
+                // Price it at the held side's last mid instead — dry-run only
+                // (`PaperExecutor` prices its own fills from observed ticks);
                 // a real matched close always carries its own real proceeds.
-                if self.dry_run
+                if self.mode == RunMode::DryRun
                     && matches!(result.status, SellStatus::Matched)
                     && result.filled_usdc == 0.0
                     && result.shares_sold > 0.0
@@ -1270,8 +1463,53 @@ impl Driver<'_> {
                 Some(event)
             }
             Action::CancelLimitSell { order_id } => {
-                let ok = self.engine.cancel_limit_sell(order_id).await;
+                let ok = self.engine.cancel_resting_order(order_id).await;
                 println!("[ORDER] {} CANCEL {order_id} -> {ok}", slot.market_key());
+                None
+            }
+            Action::CancelEntryQuote {
+                order_id,
+                side,
+                quote_price,
+                reason,
+            } => {
+                if let Some(id) = order_id {
+                    let ok = self.engine.cancel_resting_order(id).await;
+                    println!(
+                        "[ORDER] {} CANCEL ENTRY QUOTE {id} side={side:?} quote={quote_price:.4} reason={reason:?} -> {ok}",
+                        slot.market_key()
+                    );
+                } else {
+                    println!(
+                        "[ORDER] {} CANCEL ENTRY QUOTE (order not yet acked) side={side:?} quote={quote_price:.4} reason={reason:?}",
+                        slot.market_key()
+                    );
+                }
+                log_canceled_quote(slot, *side, *quote_price, *reason);
+                None
+            }
+            Action::PupGateNote {
+                side,
+                p_side,
+                price,
+                outcome,
+            } => {
+                match outcome {
+                    PupGateOutcome::Veto => {
+                        let p_side = p_side.unwrap_or(f64::NAN);
+                        println!(
+                            "[PUP-GATE] {} VETO side={side:?} p_side={p_side:.4} price={price:.4}",
+                            slot.market_key()
+                        );
+                        log_pup_veto(slot, *side, p_side, *price);
+                    }
+                    PupGateOutcome::SkippedNoData => {
+                        println!(
+                            "[PUP-GATE] {} pup_gate=SKIPPED_NO_DATA side={side:?} price={price:.4}",
+                            slot.market_key()
+                        );
+                    }
+                }
                 None
             }
             Action::Persist
@@ -1524,25 +1762,27 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // Config first: the run mode depends on the TOML's `paper_trade` key as
+    // well as the CLI flags (loading it needs no credentials).
+    let toml = trader::config::load_latest(&args.config_dir)?;
+    let mode = resolve_run_mode(args.paper, toml.paper_trade, args.dry_run);
+
     // Credentials (and the env file itself) are only *required* for real
-    // trading — `--dry-run` must be runnable with no wallet material at all
-    // (its whole point is local/Docker validation without touching the
-    // production account). Signer/funder are read later, inside the
+    // trading — dry-run/paper must be runnable with no wallet material at all
+    // (their whole point is validation without touching the production
+    // account; paper still *wants* the env for the Telegram token, so it's
+    // loaded when present). Signer/funder are read later, inside the
     // engine-connect branch that actually needs them.
-    if args.dry_run {
-        if let Err(e) = dotenvy::from_path(&args.env_file) {
-            println!(
-                "[live] dry-run: env file {} not loaded ({e}) — continuing without credentials.",
-                args.env_file
-            );
-        }
-    } else {
+    if mode == RunMode::Real {
         dotenvy::from_path(&args.env_file).with_context(|| format!("load {}", args.env_file))?;
+    } else if let Err(e) = dotenvy::from_path(&args.env_file) {
+        println!(
+            "[live] {mode:?}: env file {} not loaded ({e}) — continuing without credentials.",
+            args.env_file
+        );
     }
 
     std::fs::create_dir_all(&args.log_dir).with_context(|| format!("create {}", args.log_dir))?;
-
-    let toml = trader::config::load_latest(&args.config_dir)?;
 
     println!(
         "[live] assets={} size_usdc=${:.2} max_trades={} log_dir={}",
@@ -1551,12 +1791,18 @@ async fn main() -> Result<()> {
         args.max_trades,
         args.log_dir
     );
-    if args.dry_run {
-        println!(
+    match mode {
+        RunMode::DryRun => println!(
             "[live] DRY RUN — no orders will be placed; every fill below is simulated (SimExecutionEngine)."
-        );
-    } else {
-        println!("[live] REAL MONEY — this will place live orders on production Polymarket.");
+        ),
+        RunMode::Paper => println!(
+            "[live] PAPER MODE — no real orders; fills simulated from observed CLOB prices \
+             (PaperExecutor). Trades → paper_trades_*.csv, real-money trading is paused for \
+             this run (plan_unwind_5u_maker_2026-07-19)."
+        ),
+        RunMode::Real => {
+            println!("[live] REAL MONEY — this will place live orders on production Polymarket.")
+        }
     }
 
     // Route CLOB writes through the EC2 HTTP proxy when running from a geo-restricted
@@ -1713,15 +1959,34 @@ async fn main() -> Result<()> {
                 } else {
                     format!("_{}", duration.suffix())
                 };
+                // Paper runs get fully separate files: analytics depend on
+                // live_trades_*.csv meaning real money, and a paper run must
+                // neither read nor pollute the real run's halt/stats state
+                // (plan_unwind_5u_maker_2026-07-19 §2.1).
+                let file_prefix = if mode == RunMode::Paper {
+                    "paper"
+                } else {
+                    "live"
+                };
                 let log_path = format!(
-                    "{}/live_trades_{lower}_{strategy}{file_tag}.csv",
+                    "{}/{file_prefix}_trades_{lower}_{strategy}{file_tag}.csv",
                     args.log_dir
                 );
                 let state_file = format!(
-                    "{}/live_state_{lower}_{strategy}{file_tag}.json",
+                    "{}/{file_prefix}_state_{lower}_{strategy}{file_tag}.json",
+                    args.log_dir
+                );
+                let canceled_quote_log_path = format!(
+                    "{}/{file_prefix}_quotes_{lower}_{strategy}{file_tag}.csv",
+                    args.log_dir
+                );
+                let pup_veto_log_path = format!(
+                    "{}/{file_prefix}_pup_vetoes_{lower}_{strategy}{file_tag}.csv",
                     args.log_dir
                 );
                 append_csv_header_if_new(&log_path)?;
+                append_canceled_quote_header_if_new(&canceled_quote_log_path)?;
+                append_pup_veto_header_if_new(&pup_veto_log_path)?;
 
                 // Restore halt state + /status counters from before the last
                 // restart (position/cycle state is deliberately NOT restored here
@@ -1765,7 +2030,16 @@ async fn main() -> Result<()> {
                     max_buy_price,
                     log_path,
                     state_file,
-                    control_log_path: format!("{}/control_log.jsonl", args.log_dir),
+                    canceled_quote_log_path,
+                    pup_veto_log_path,
+                    control_log_path: format!(
+                        "{}/{}control_log.jsonl",
+                        args.log_dir,
+                        // Separate file so trade_reconcile.py's halt-timeline
+                        // reconstruction never mixes paper events into the
+                        // real-money timeline.
+                        if mode == RunMode::Paper { "paper_" } else { "" }
+                    ),
                     cycle_trades: 0,
                     sl_notified: false,
                     timeout_notified: false,
@@ -1897,7 +2171,7 @@ async fn main() -> Result<()> {
         order_max_retries: toml.order_max_retries,
         ..LiveConfig::default()
     };
-    let live_engine: Option<Arc<LiveExecutionEngine<Signer>>> = if args.dry_run {
+    let live_engine: Option<Arc<LiveExecutionEngine<Signer>>> = if mode != RunMode::Real {
         None
     } else {
         let key = std::env::var("POLY_PRIVATE_KEY").context("POLY_PRIVATE_KEY not set")?;
@@ -1928,18 +2202,28 @@ async fn main() -> Result<()> {
         }
         Some(Arc::new(engine))
     };
+    // Paper engine kept as a concrete handle too (like `live_engine`): the
+    // driver's poly-tick arm feeds it observed prices and drains resting-order
+    // fills — trait objects can't expose that.
+    let paper_engine: Option<Arc<PaperExecutor>> = if mode == RunMode::Paper {
+        Some(Arc::new(PaperExecutor::new()))
+    } else {
+        None
+    };
     // The trait-object handle order execution goes through everywhere — the
-    // live engine or the dry-run sim. `Arc` because the weather tasks (if
-    // enabled) need a 'static clone; the Driver just borrows it.
-    let exec_engine: Arc<dyn ExecutionEngine> = match &live_engine {
-        Some(e) => e.clone(),
-        None => Arc::new(SimExecutionEngine::new()),
+    // live engine, the paper engine, or the dry-run sim. `Arc` because the
+    // weather tasks (if enabled) need a 'static clone; the Driver just
+    // borrows it.
+    let exec_engine: Arc<dyn ExecutionEngine> = match (&live_engine, &paper_engine) {
+        (Some(e), _) => e.clone(),
+        (None, Some(p)) => p.clone(),
+        (None, None) => Arc::new(SimExecutionEngine::new()),
     };
 
     let driver = Driver {
         engine: exec_engine.as_ref(),
         live_engine: live_engine.as_deref(),
-        dry_run: args.dry_run,
+        mode,
         telegram: telegram_send.clone(),
         http: http.clone(),
         api_result_tx: api_result_tx.clone(),
@@ -1959,13 +2243,13 @@ async fn main() -> Result<()> {
             wcfg.low,
             wcfg.high,
             wcfg.trade_size_usdc,
-            if args.dry_run { " [DRY]" } else { "" }
+            if mode == RunMode::Real { "" } else { " [SIM]" }
         );
         let sinks = Arc::new(trader::weather::WeatherSinks {
             engine: exec_engine.clone(),
             http: http.clone(),
             trade_tx: weather_tx.clone(),
-            dry_run: args.dry_run,
+            dry_run: mode != RunMode::Real,
         });
         for city in &wcfg.cities {
             tokio::spawn(trader::weather::run_city(
@@ -2025,6 +2309,17 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             Some(snap) = indicator_rx.recv() => {
+                // p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19
+                // §2.3): only a *ready* p_up reading reaches the worker — a
+                // warmup snapshot with no p_up key sends nothing, which is
+                // indistinguishable from "no snapshot" for the gate's
+                // fail-open check (Worker::try_enter). Extract before the
+                // store consumes `snap` by value.
+                if let Some(&p_up) = snap.vals.get("p_up") {
+                    for slot in assets.iter_mut().filter(|s| s.worker.asset == snap.asset) {
+                        let _ = slot.worker.step(Event::IndicatorUpdate { p_up, ts: snap.ts });
+                    }
+                }
                 indicator_store.update(snap);
             }
 
@@ -2048,6 +2343,65 @@ async fn main() -> Result<()> {
             }
 
             Some((market, tick, server_ts)) = poly_rx.recv() => {
+                // Paper mode: record the newly observed prices and deliver any
+                // resting-order fills *before* the tick itself steps the
+                // workers, so a fill and the tick that caused it arrive in a
+                // deterministic order (fill first — a quote the price traded
+                // through cannot also be cancelled by the same tick).
+                if let Some(paper) = &paper_engine {
+                    let tokens = assets
+                        .iter()
+                        .find(|s| s.market_key() == market && s.current_slug.is_some())
+                        .map(|s| (s.up_id, s.dn_id));
+                    if let Some((up_id, dn_id)) = tokens {
+                        let mut fills = paper.on_price(up_id, tick.up);
+                        fills.extend(paper.on_price(dn_id, tick.dn));
+                        for fill in fills {
+                            // Route by order id: several slots can share the same
+                            // market/tokens (multi-strategy assets), but each
+                            // order id has exactly one owner. Which accessor to
+                            // check depends on the fill's side — an exit SELL
+                            // owner is `Holding{GtcResting}`, an entry BUY
+                            // owner is `EnteringMaker` (§2.2).
+                            let owner_idx = assets.iter().position(|s| match fill.side {
+                                PaperOrderSide::Sell => {
+                                    s.worker.exit_resting_order_id() == Some(fill.order_id.as_str())
+                                }
+                                PaperOrderSide::Buy => {
+                                    s.worker.entry_resting_order_id()
+                                        == Some(fill.order_id.as_str())
+                                }
+                            });
+                            let Some(idx) = owner_idx else {
+                                println!("[PAPER-FILL] {market} {} filled but no owning slot (already cancelled?) — dropped", fill.order_id);
+                                continue;
+                            };
+                            let slot = &mut assets[idx];
+                            println!(
+                                "[PAPER-FILL] {market} resting {:?} {} filled {:.2} @ {:.4}",
+                                fill.side, fill.order_id, fill.shares, fill.price
+                            );
+                            let event = match fill.side {
+                                PaperOrderSide::Sell => Event::UnwindFilled {
+                                    sold_shares: fill.shares,
+                                    exit_price: fill.price,
+                                    // Tick-driven maker fill — no order round
+                                    // trip to measure.
+                                    signal_latency_ms: 0.0,
+                                    process_latency_ms: 0.0,
+                                },
+                                PaperOrderSide::Buy => Event::EntryQuoteFilled {
+                                    filled_shares: fill.shares,
+                                    cost: fill.price,
+                                    signal_latency_ms: 0.0,
+                                    process_latency_ms: 0.0,
+                                },
+                            };
+                            let actions = slot.worker.step(event);
+                            driver.process_actions(slot, actions, Feed::Clob).await;
+                        }
+                    }
+                }
                 // Poly ticks are market-scoped, not asset-scoped: a BTC-5m and a
                 // BTC-15m market have different CLOB tokens, so their prices must
                 // never cross-feed. The routing key is `market_key()` — the bare
@@ -2429,6 +2783,44 @@ async fn main() -> Result<()> {
 }
 
 #[cfg(test)]
+mod run_mode_tests {
+    use super::*;
+
+    /// Plan §2.4 config-parsing case: `--paper` flag precedence. Paper from
+    /// either source (flag or TOML) always wins, including over `--dry-run` —
+    /// a paper-configured run must never silently degrade to the instant-fill
+    /// sim.
+    #[test]
+    fn paper_from_either_source_beats_everything() {
+        assert_eq!(resolve_run_mode(true, false, false), RunMode::Paper);
+        assert_eq!(resolve_run_mode(false, true, false), RunMode::Paper);
+        assert_eq!(resolve_run_mode(true, true, false), RunMode::Paper);
+        assert_eq!(resolve_run_mode(true, false, true), RunMode::Paper);
+        assert_eq!(resolve_run_mode(false, true, true), RunMode::Paper);
+    }
+
+    #[test]
+    fn dry_run_without_paper_is_dry_run() {
+        assert_eq!(resolve_run_mode(false, false, true), RunMode::DryRun);
+    }
+
+    #[test]
+    fn default_is_real_money() {
+        assert_eq!(resolve_run_mode(false, false, false), RunMode::Real);
+    }
+
+    /// Every non-real mode gets a distinct, non-empty prefix so a simulated
+    /// run's Telegram messages can never be misread as production output —
+    /// real money gets none at all.
+    #[test]
+    fn prefixes_distinguish_every_run_mode() {
+        assert_eq!(RunMode::Real.prefix(), "");
+        assert_eq!(RunMode::DryRun.prefix(), "[DRY] ");
+        assert_eq!(RunMode::Paper.prefix(), "[PAPER] ");
+    }
+}
+
+#[cfg(test)]
 mod restart_guard_tests {
     use super::*;
 
@@ -2788,6 +3180,8 @@ mod balance_halt_scope_tests {
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0,
             trade_size_usdc: 1.0,
+            maker_entry: false,
+            pup_edge_min_rev: None,
         }
     }
 
@@ -2926,6 +3320,8 @@ mod halt_persist_tests {
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0,
             trade_size_usdc: 1.0,
+            maker_entry: false,
+            pup_edge_min_rev: None,
         }
     }
 
@@ -2955,6 +3351,8 @@ mod halt_persist_tests {
             current_token_id: None,
             max_buy_price: 0.95,
             log_path: String::new(),
+            canceled_quote_log_path: String::new(),
+            pup_veto_log_path: String::new(),
             control_log_path: format!("{state_file}.control.jsonl"),
             state_file,
             cycle_trades: 0,

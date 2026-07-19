@@ -566,6 +566,8 @@ mod tests {
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0, // large for unit tests; real value is 2.0
             trade_size_usdc: 1.0,
+            maker_entry: false,
+            pup_edge_min_rev: None,
         }
     }
 

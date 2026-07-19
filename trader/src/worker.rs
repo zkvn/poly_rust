@@ -14,14 +14,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::backtest::{HaltCorrection, HaltTracker};
 use crate::config::AssetParams;
-use crate::execution::{OrderKind, SellStatus, choose_exit_order_kind};
+use crate::execution::{MIN_GTC_SHARES, OrderKind, SellStatus, choose_exit_order_kind};
 use crate::gates::{GateParams, check_gates};
 use crate::signal::{
     DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
     VShapeSignal,
 };
 use crate::strategies::{HighProbStrategy, ReversalStrategy, VShapeStrategy};
-use crate::types::{BinanceTick, CycleContext, EntryType, Outcome, PolyTick, Side, TradeRecord};
+use crate::types::{
+    BinanceTick, CycleContext, EntryType, Outcome, PolyTick, Side, TradeIntent, TradeRecord,
+};
 
 // ── Exit arm (how a Holding position's take-profit is worked) ────────────────
 
@@ -31,6 +33,54 @@ pub enum ExitArm {
     GtcResting { order_id: String },
     /// shares < 5: no GTC support at that size; watch PolyTick and FAK-sell on TP cross.
     PriceMonitor { tp_price: f64 },
+}
+
+// ── Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2) ────────────────────────
+
+/// A resting GTC entry BUY quote, tracked while `WorkerState::EnteringMaker`.
+#[derive(Debug, Clone)]
+pub struct MakerQuote {
+    pub side: Side,
+    pub entry_type: EntryType,
+    /// The signal price this quote was rested at — both the quote's own
+    /// limit price and, on a fill, the position's cost basis.
+    pub quote_price: f64,
+    /// `None` until `LimitBuyPlaced{status: Live}` reports back the CLOB's
+    /// assigned id — see `execute()`'s handling of `Action::PlaceLimitBuy`
+    /// for why a cancel racing that response can never actually occur.
+    pub order_id: Option<String>,
+}
+
+/// Why a resting entry quote was cancelled — carried onto `Action::CancelEntryQuote`
+/// so the driver can log the "would-have-been outcome" fields the plan calls the
+/// single most important output of the paper run (the filled-vs-canceled
+/// adverse-selection comparison).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelQuoteReason {
+    /// The reversal condition or a re-checked gate that justified this quote
+    /// no longer holds.
+    SignalInvalidated,
+    /// `T - 15s` before cycle end reached with no fill yet.
+    CycleEndApproaching,
+}
+
+// ── p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3) ──────────
+
+/// Snapshots older than this read as absent for the pup gate specifically —
+/// a fixed 10s fail-open window, distinct from `StrategyToml.indicator_max_age_secs`
+/// (default 5.0s, used by the Phase-1 heartbeat display) per the plan's own
+/// wording.
+const PUP_GATE_MAX_AGE_SECS: f64 = 10.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PupGateOutcome {
+    /// `p_side < entry_price + pup_edge_min_rev` — the entry was blocked.
+    Veto,
+    /// No fresh `p_up` reading (never received, or older than
+    /// `PUP_GATE_MAX_AGE_SECS`) — fails open (does NOT veto) so a dead
+    /// indicator daemon can't silently halt all trading, but is still logged
+    /// so indicator uptime is measurable from the 48h evaluation.
+    SkippedNoData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +145,11 @@ pub enum WorkerState {
     Watching,
     /// FAK BUY submitted, awaiting `OrderFilled`/`OrderRejected`.
     Entering,
+    /// Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2, reversal only):
+    /// GTC limit BUY resting on the book at the signal price, awaiting
+    /// `LimitBuyPlaced`/`EntryQuoteFilled`, or cancellation on signal
+    /// invalidation / T-15s before cycle end (`check_maker_quote_cancel`).
+    EnteringMaker(MakerQuote),
     Holding(HoldingData),
     /// Take-profit crossed or GTC fill notified; SELL in flight.
     Unwinding(HoldingData),
@@ -137,6 +192,36 @@ pub enum Event {
         error: Option<String>,
         signal_latency_ms: f64,
         process_latency_ms: f64,
+    },
+    /// Response to the `Action::PlaceLimitBuy` issued for a maker entry
+    /// (plan_unwind_5u_maker_2026-07-19 §2.2).
+    LimitBuyPlaced {
+        order_id: Option<String>,
+        status: SellStatus,
+        error: Option<String>,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
+    /// A resting maker-entry GTC BUY quote filled — delivered by the paper
+    /// driver's observed-price fill routing (`PaperExecutor::on_price`); the
+    /// live path doesn't produce this yet (no USER-channel fill wiring for
+    /// entries — see README `## TODO`).
+    EntryQuoteFilled {
+        filled_shares: f64,
+        cost: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    },
+    /// A fresh `p_up` reading for this worker's asset (plan_unwind_5u_maker_2026-07-19
+    /// §2.3) — only sent when the indicator snapshot actually has a ready
+    /// `p_up` value (a warmup snapshot with no `p_up` key produces no event
+    /// at all, which is indistinguishable from "no snapshot" for the gate's
+    /// fail-open purposes). `ts` is the snapshot's own timestamp, checked
+    /// against `now` at gate-evaluation time — not against arrival time —
+    /// same pattern as `LatestPolySignal::age`.
+    IndicatorUpdate {
+        p_up: f64,
+        ts: f64,
     },
     UnwindFilled {
         sold_shares: f64,
@@ -233,6 +318,42 @@ pub enum Action {
     PlaceLimitSell {
         shares: f64,
         price: f64,
+    },
+    /// Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2): rest a GTC BUY at
+    /// `price` for `shares` (`execution::MIN_GTC_SHARES`) instead of a
+    /// marketable FAK buy. `signal_ts` is the triggering tick's own timestamp.
+    PlaceLimitBuy {
+        side: Side,
+        price: f64,
+        shares: f64,
+        signal_ts: f64,
+    },
+    /// Cancel a resting maker-entry quote — signal invalidation or T-15s
+    /// (`CancelQuoteReason`). `order_id: None` only if `LimitBuyPlaced` hasn't
+    /// come back yet; structurally this can't race the placement itself (the
+    /// driver's single-threaded action loop always resolves
+    /// `PlaceLimitBuy` -> `LimitBuyPlaced` before any other tick can be
+    /// processed), so `None` here always means the CLOB call itself failed.
+    CancelEntryQuote {
+        order_id: Option<String>,
+        side: Side,
+        quote_price: f64,
+        reason: CancelQuoteReason,
+    },
+    /// p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3):
+    /// diagnostic-only, logged by the driver (`Veto` needs a CSV row so the
+    /// 48h evaluation can gamma-resolve the counterfactual; `SkippedNoData`
+    /// just needs a console line for indicator-uptime counting). Emitted
+    /// alongside — never instead of — whatever `try_enter` otherwise
+    /// returns: a `Veto` replaces the entry actions entirely (the entry
+    /// never fires), a `SkippedNoData` is appended after them (the entry
+    /// still fires).
+    PupGateNote {
+        side: Side,
+        /// `None` for `SkippedNoData` (no reading to report).
+        p_side: Option<f64>,
+        price: f64,
+        outcome: PupGateOutcome,
     },
     /// `limit_price`: `Some(tp_price)` for a take-profit close (bounded — see
     /// `execution::close_position_at_price`), `None` for a stop-loss close
@@ -440,6 +561,22 @@ pub struct Worker {
     gate_params: GateParams,
     /// Set when entering `Entering`, consumed when the fill/reject event lands.
     pending_entry: Option<(Side, EntryType, f64)>,
+    /// Maker-entry mode (plan_unwind_5u_maker_2026-07-19 §2.2) — only ever
+    /// consulted when `kind` is `StrategyKind::Reversal`.
+    maker_entry: bool,
+    /// The reversal strategy's own entry threshold, duplicated from
+    /// `AssetParams.reversal` (which `StrategyKind::Reversal` already holds
+    /// privately) so `check_maker_quote_cancel` can re-check "is the
+    /// condition that justified this quote still true" without needing an
+    /// accessor into `ReversalStrategy`. Unused outside the reversal path.
+    reversal_threshold: f64,
+    /// `None` = gate disabled. See `AssetParams.pup_edge_min_rev`.
+    pup_edge_min_rev: Option<f64>,
+    /// Latest ready `p_up` reading and its own snapshot timestamp, updated by
+    /// `Event::IndicatorUpdate`. `None` until the first ready snapshot for
+    /// this asset arrives; staleness (`PUP_GATE_MAX_AGE_SECS`) is checked
+    /// against `now` at gate-evaluation time, not at update time.
+    pup_snapshot: Option<(f64, f64)>,
 }
 
 impl Worker {
@@ -504,6 +641,10 @@ impl Worker {
                 max_buy_price: p.max_buy_price,
                 price_high_rev: p.price_high_rev,
             },
+            maker_entry: p.maker_entry,
+            reversal_threshold: p.reversal,
+            pup_edge_min_rev: p.pup_edge_min_rev,
+            pup_snapshot: None,
         }
     }
 
@@ -594,11 +735,22 @@ impl Worker {
         matches!(
             self.state,
             WorkerState::Entering
+                | WorkerState::EnteringMaker(_)
                 | WorkerState::Holding(_)
                 | WorkerState::Unwinding(_)
                 | WorkerState::StopExiting(_)
                 | WorkerState::TimingOut(_)
         )
+    }
+
+    /// Order id of an in-flight maker-entry GTC BUY quote, if one is
+    /// resting — the paper driver routes a simulated resting-order fill back
+    /// to the owning worker via this (`Event::EntryQuoteFilled`).
+    pub fn entry_resting_order_id(&self) -> Option<&str> {
+        match &self.state {
+            WorkerState::EnteringMaker(q) => q.order_id.as_deref(),
+            _ => None,
+        }
     }
 
     /// True while a closed trade's WIN/LOSS is still provisional, awaiting Gamma
@@ -625,12 +777,31 @@ impl Worker {
         self.cycle_open_binance
     }
 
+    /// Order id of the held position's resting GTC take-profit SELL, if its
+    /// exit arm is `GtcResting` — the paper driver routes a simulated
+    /// resting-order fill back to the owning worker via this
+    /// (`Event::UnwindFilled`). `Holding` only: once a stop-loss/timeout is
+    /// in flight the resting order has already been cancelled.
+    pub fn exit_resting_order_id(&self) -> Option<&str> {
+        match &self.state {
+            WorkerState::Holding(h) => match &h.exit_arm {
+                ExitArm::GtcResting { order_id } => Some(order_id),
+                ExitArm::PriceMonitor { .. } => None,
+            },
+            _ => None,
+        }
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     pub fn to_persisted(&self) -> PersistedState {
         let state = match &self.state {
             WorkerState::Watching => PersistedWorkerState::Watching,
-            WorkerState::Entering => PersistedWorkerState::Entering,
+            // A resting maker-entry quote isn't a filled position — a crash
+            // here has nothing to resume either way, same as Entering; the
+            // quote itself is lost (matching Entering's existing posture on
+            // an in-flight FAK).
+            WorkerState::Entering | WorkerState::EnteringMaker(_) => PersistedWorkerState::Entering,
             WorkerState::Holding(h) => PersistedWorkerState::Holding(h.clone()),
             WorkerState::Unwinding(h) => PersistedWorkerState::Unwinding(h.clone()),
             WorkerState::StopExiting(h) => PersistedWorkerState::StopExiting(h.clone()),
@@ -725,6 +896,10 @@ impl Worker {
             Event::CycleClose => self.on_cycle_close(),
             Event::BinanceTick(t) => self.on_binance(t),
             Event::PolyTick(t) => self.on_poly(t),
+            Event::IndicatorUpdate { p_up, ts } => {
+                self.pup_snapshot = Some((p_up, ts));
+                vec![]
+            }
             Event::OrderFilled {
                 filled_shares,
                 cost,
@@ -742,6 +917,30 @@ impl Worker {
                 order_id,
                 status,
                 error,
+                signal_latency_ms,
+                process_latency_ms,
+            ),
+            Event::LimitBuyPlaced {
+                order_id,
+                status,
+                error,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_limit_buy_placed(
+                order_id,
+                status,
+                error,
+                signal_latency_ms,
+                process_latency_ms,
+            ),
+            Event::EntryQuoteFilled {
+                filled_shares,
+                cost,
+                signal_latency_ms,
+                process_latency_ms,
+            } => self.on_entry_quote_filled(
+                filled_shares,
+                cost,
                 signal_latency_ms,
                 process_latency_ms,
             ),
@@ -959,20 +1158,146 @@ impl Worker {
             return vec![];
         }
 
+        // p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3),
+        // reversal only, checked before `mark_fired()` so a veto (like any
+        // other gate block) doesn't lock the strategy out for the rest of
+        // the cycle — a later tick with a more favorable p_up can still fire.
+        let mut pup_note: Option<Action> = None;
+        if matches!(self.kind, StrategyKind::Reversal(_))
+            && let Some(min_edge) = self.pup_edge_min_rev
+        {
+            let fresh_p_up = self.pup_snapshot.and_then(|(p_up, snap_ts)| {
+                (now - snap_ts <= PUP_GATE_MAX_AGE_SECS).then_some(p_up)
+            });
+            match fresh_p_up {
+                None => {
+                    pup_note = Some(Action::PupGateNote {
+                        side: intent.side,
+                        p_side: None,
+                        price: intent.token_price(),
+                        outcome: PupGateOutcome::SkippedNoData,
+                    });
+                }
+                Some(p_up) => {
+                    let p_side = match intent.side {
+                        Side::Up => p_up,
+                        Side::Down => 1.0 - p_up,
+                    };
+                    if p_side < intent.token_price() + min_edge {
+                        return vec![Action::PupGateNote {
+                            side: intent.side,
+                            p_side: Some(p_side),
+                            price: intent.token_price(),
+                            outcome: PupGateOutcome::Veto,
+                        }];
+                    }
+                }
+            }
+        }
+
         match &mut self.kind {
             StrategyKind::Reversal(r) => r.mark_fired(),
             StrategyKind::HighProb(hp) => hp.mark_fired(),
             StrategyKind::VShape(v) => v.mark_fired(),
         }
+
+        // Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2), reversal only:
+        // rest a GTC BUY at the signal price instead of a marketable FAK buy.
+        if self.maker_entry && matches!(self.kind, StrategyKind::Reversal(_)) {
+            self.state = WorkerState::EnteringMaker(MakerQuote {
+                side: intent.side,
+                entry_type: intent.entry_type,
+                quote_price: intent.token_price(),
+                order_id: None,
+            });
+            let mut actions = vec![
+                Action::PlaceLimitBuy {
+                    side: intent.side,
+                    price: intent.token_price(),
+                    shares: MIN_GTC_SHARES,
+                    signal_ts: now,
+                },
+                Action::Persist,
+            ];
+            if let Some(note) = pup_note {
+                actions.push(note);
+            }
+            return actions;
+        }
+
         self.state = WorkerState::Entering;
         // Stash the intent's side/entry_type/token_price for when the fill lands.
         self.pending_entry = Some((intent.side, intent.entry_type, intent.token_price()));
-        vec![
+        let mut actions = vec![
             Action::PlaceBuy {
                 side: intent.side,
                 price: intent.token_price(),
                 size_usdc: self.trade_size,
                 signal_ts: now,
+            },
+            Action::Persist,
+        ];
+        if let Some(note) = pup_note {
+            actions.push(note);
+        }
+        actions
+    }
+
+    /// Whether a resting maker-entry quote should be cancelled now: T-15s
+    /// before cycle end takes priority (time-based, always fires regardless
+    /// of price), otherwise signal invalidation — the reversal condition
+    /// that justified the quote (price still above the reversal threshold)
+    /// no longer holds, or a re-checked gate (spread/staleness/delta/price
+    /// ceiling) now blocks. `strategy.fired` stays latched so `evaluate()`
+    /// itself won't refire — these checks are independent of that latch and
+    /// safe to re-run every tick.
+    fn check_maker_quote_cancel(&mut self, q: MakerQuote, now: f64) -> Vec<Action> {
+        const CANCEL_BEFORE_CYCLE_END_SECS: f64 = 15.0;
+        if self.cycle_end_ts - now <= CANCEL_BEFORE_CYCLE_END_SECS {
+            return self.cancel_maker_quote(q, CancelQuoteReason::CycleEndApproaching);
+        }
+
+        let up = self.latest_poly.up();
+        let dn = self.latest_poly.dn();
+        if up <= 0.0 || dn <= 0.0 {
+            return vec![];
+        }
+        let side_price = match q.side {
+            Side::Up => up,
+            Side::Down => dn,
+        };
+        let reversal_still_holds = side_price > self.reversal_threshold;
+        let intent = TradeIntent {
+            side: q.side,
+            entry_type: q.entry_type,
+            up,
+            dn,
+            binance_price: self.latest_binance.value(),
+        };
+        let gates_still_pass = check_gates(
+            &intent,
+            &self.spread,
+            &self.latest_poly,
+            &self.delta_pct,
+            &self.gate_params,
+            now,
+        )
+        .is_none();
+
+        if !reversal_still_holds || !gates_still_pass {
+            return self.cancel_maker_quote(q, CancelQuoteReason::SignalInvalidated);
+        }
+        vec![]
+    }
+
+    fn cancel_maker_quote(&mut self, q: MakerQuote, reason: CancelQuoteReason) -> Vec<Action> {
+        self.state = WorkerState::Watching;
+        vec![
+            Action::CancelEntryQuote {
+                order_id: q.order_id,
+                side: q.side,
+                quote_price: q.quote_price,
+                reason,
             },
             Action::Persist,
         ]
@@ -985,6 +1310,11 @@ impl Worker {
         self.saw_low_dn.on_poly(tick);
         self.v_up.on_poly(tick);
         self.v_dn.on_poly(tick);
+
+        if let WorkerState::EnteringMaker(q) = &self.state {
+            let q = q.clone();
+            return self.check_maker_quote_cancel(q, tick.ts);
+        }
 
         let WorkerState::Holding(h) = &self.state else {
             return self.try_enter(tick.ts);
@@ -1081,6 +1411,29 @@ impl Worker {
         let Some((side, entry_type, _intent_price)) = self.pending_entry.take() else {
             return vec![];
         };
+        self.finalize_entry_fill(
+            side,
+            entry_type,
+            filled_shares,
+            cost,
+            entry_signal_latency_ms,
+            entry_process_latency_ms,
+        )
+    }
+
+    /// Shared tail of `on_order_filled` (FAK entry) and `on_entry_quote_filled`/
+    /// `on_limit_buy_placed`'s `Matched` branch (maker entry): build the
+    /// resulting `Holding` — position lifecycle from here on is identical
+    /// regardless of how the entry itself was filled.
+    fn finalize_entry_fill(
+        &mut self,
+        side: Side,
+        entry_type: EntryType,
+        filled_shares: f64,
+        cost: f64,
+        entry_signal_latency_ms: f64,
+        entry_process_latency_ms: f64,
+    ) -> Vec<Action> {
         if filled_shares <= 0.0 {
             self.state = WorkerState::Watching;
             return vec![Action::Persist];
@@ -1132,6 +1485,68 @@ impl Worker {
             self.state = WorkerState::Watching;
         }
         vec![Action::Persist]
+    }
+
+    /// Response to `Action::PlaceLimitBuy` (maker entry).
+    fn on_limit_buy_placed(
+        &mut self,
+        order_id: Option<String>,
+        status: SellStatus,
+        _error: Option<String>,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    ) -> Vec<Action> {
+        let WorkerState::EnteringMaker(q) = &mut self.state else {
+            return vec![];
+        };
+        match status {
+            SellStatus::Live => {
+                q.order_id = order_id;
+                vec![Action::Persist]
+            }
+            SellStatus::Matched => {
+                // Crossed the book immediately (marketable limit, not a
+                // resting quote) — finalize as a normal entry fill.
+                let q = q.clone();
+                self.finalize_entry_fill(
+                    q.side,
+                    q.entry_type,
+                    MIN_GTC_SHARES,
+                    q.quote_price,
+                    signal_latency_ms,
+                    process_latency_ms,
+                )
+            }
+            SellStatus::Failed | SellStatus::DryRun => {
+                // Couldn't rest the quote at all — give up this cycle,
+                // mirroring on_order_rejected's FAK-entry posture.
+                self.state = WorkerState::Watching;
+                vec![Action::Persist]
+            }
+        }
+    }
+
+    /// A resting maker-entry GTC BUY quote filled (paper driver's observed-
+    /// price fill routing).
+    fn on_entry_quote_filled(
+        &mut self,
+        filled_shares: f64,
+        cost: f64,
+        signal_latency_ms: f64,
+        process_latency_ms: f64,
+    ) -> Vec<Action> {
+        let WorkerState::EnteringMaker(q) = &self.state else {
+            return vec![];
+        };
+        let q = q.clone();
+        self.finalize_entry_fill(
+            q.side,
+            q.entry_type,
+            filled_shares,
+            cost,
+            signal_latency_ms,
+            process_latency_ms,
+        )
     }
 
     fn on_limit_sell_placed(
@@ -1198,10 +1613,18 @@ impl Worker {
         signal_latency_ms: f64,
         process_latency_ms: f64,
     ) -> Vec<Action> {
-        let WorkerState::Unwinding(h) = &self.state else {
-            return vec![];
+        // `Unwinding`: the PriceMonitor arm's bounded FAK close just filled.
+        // `Holding` with a `GtcResting` arm: the resting GTC take-profit
+        // itself filled (delivered by the paper driver's fill routing — the
+        // live path never produces this today, resting exits being
+        // defensive/unexercised at sub-5-share sizes; see the file header).
+        let h = match &self.state {
+            WorkerState::Unwinding(h) => h.clone(),
+            WorkerState::Holding(h) if matches!(h.exit_arm, ExitArm::GtcResting { .. }) => {
+                h.clone()
+            }
+            _ => return vec![],
         };
-        let h = h.clone();
         self.finalize_or_hold_residual(
             h,
             sold_shares,
@@ -1571,6 +1994,8 @@ mod tests {
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0, // large for unit tests; real config: 2.0
             trade_size_usdc: 1.0,
+            maker_entry: false,
+            pup_edge_min_rev: None,
         }
     }
 
@@ -3640,5 +4065,541 @@ mod tests {
 
         w.step(Event::OrderRejected);
         assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    // ── Maker entries (plan_unwind_5u_maker_2026-07-19 §2.2) ─────────────────
+
+    fn maker_params() -> AssetParams {
+        AssetParams {
+            maker_entry: true,
+            ..btc_params()
+        }
+    }
+
+    /// Drives a worker through the same DOWN reversal signal `enter_down_position`
+    /// uses, but with `maker_entry = true` — asserts the entry fires as a
+    /// `PlaceLimitBuy` (not `PlaceBuy`) and lands in `EnteringMaker`, then
+    /// returns the worker positioned there. `dn` settles at 0.70 (> reversal
+    /// 0.60), cycle_end_ts = 1300.0.
+    fn quote_down_position(w: &mut Worker) {
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        })); // dip latches saw_low_dn
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        })); // recovery > reversal 0.60; delta_pct not yet known, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        })); // dp < 0 -> fires entry
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [
+                    Action::PlaceLimitBuy {
+                        side: Side::Down,
+                        shares,
+                        ..
+                    },
+                    Action::Persist
+                ] if (*shares - MIN_GTC_SHARES).abs() < 1e-9
+            ),
+            "expected a maker-entry quote to fire: {actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::EnteringMaker(_)));
+    }
+
+    #[test]
+    fn maker_entry_rests_gtc_buy_instead_of_fak() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        let WorkerState::EnteringMaker(q) = &w.state else {
+            panic!("expected EnteringMaker, got {:?}", w.state);
+        };
+        assert_eq!(q.side, Side::Down);
+        assert!((q.quote_price - 0.70).abs() < 1e-9);
+        assert!(q.order_id.is_none(), "no id until LimitBuyPlaced(Live)");
+    }
+
+    /// QUOTED -> the CLOB acked it as resting: order_id lands on the quote,
+    /// worker stays in EnteringMaker.
+    #[test]
+    fn maker_entry_live_ack_records_order_id_and_keeps_quoting() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        let actions = w.step(Event::LimitBuyPlaced {
+            order_id: Some("paper-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 5.0,
+            process_latency_ms: 10.0,
+        });
+        assert_eq!(actions, vec![Action::Persist]);
+        let WorkerState::EnteringMaker(q) = &w.state else {
+            panic!("expected still EnteringMaker, got {:?}", w.state);
+        };
+        assert_eq!(q.order_id.as_deref(), Some("paper-1"));
+        assert_eq!(w.entry_resting_order_id(), Some("paper-1"));
+    }
+
+    /// QUOTED -> FILLED via the resting quote actually trading through
+    /// (`Event::EntryQuoteFilled`, the paper driver's fill-routing path).
+    #[test]
+    fn maker_entry_quote_fill_transitions_to_holding() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        w.step(Event::LimitBuyPlaced {
+            order_id: Some("paper-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let actions = w.step(Event::EntryQuoteFilled {
+            filled_shares: MIN_GTC_SHARES,
+            cost: 0.70,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Persist)),
+            "{actions:?}"
+        );
+        let WorkerState::Holding(h) = &w.state else {
+            panic!("expected Holding, got {:?}", w.state);
+        };
+        assert_eq!(h.side, Side::Down);
+        assert!((h.token_price - 0.70).abs() < 1e-9);
+        assert!((h.shares - MIN_GTC_SHARES).abs() < 1e-9);
+        // Fresh position: no in-flight exit attempts yet.
+        assert_eq!(h.exit_attempts, 0);
+    }
+
+    /// A marketable maker order (crossed the book immediately) finalizes the
+    /// same way a quote fill does, via `LimitBuyPlaced{status: Matched}`.
+    #[test]
+    fn maker_entry_matched_on_placement_finalizes_as_holding() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        w.step(Event::LimitBuyPlaced {
+            order_id: None,
+            status: SellStatus::Matched,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        assert!(matches!(w.state, WorkerState::Holding(_)));
+    }
+
+    /// The CLOB rejected the resting order outright (e.g. below the GTC
+    /// minimum) — give up this cycle, same posture as a rejected FAK entry.
+    #[test]
+    fn maker_entry_placement_failure_returns_to_watching() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        let actions = w.step(Event::LimitBuyPlaced {
+            order_id: None,
+            status: SellStatus::Failed,
+            error: Some("INVALID_ORDER_MIN_SIZE".to_string()),
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        assert_eq!(actions, vec![Action::Persist]);
+        assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    /// QUOTED -> CANCELLED at T-15s: cycle_end_ts = 1300.0, so a tick at
+    /// ts=1290 (10s left) must cancel regardless of price still holding above
+    /// the reversal threshold.
+    #[test]
+    fn maker_entry_cancels_at_t_minus_15s_before_cycle_end() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        w.step(Event::LimitBuyPlaced {
+            order_id: Some("paper-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1290.0, // cycle_end_ts(1300) - 1290 = 10s <= 15s
+            up: 0.30,
+            dn: 0.70, // still above reversal 0.60 — time, not price, must fire this
+        }));
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [
+                    Action::CancelEntryQuote {
+                        order_id: Some(id),
+                        side: Side::Down,
+                        reason: CancelQuoteReason::CycleEndApproaching,
+                        ..
+                    },
+                    Action::Persist
+                ] if id == "paper-1"
+            ),
+            "{actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    /// QUOTED -> CANCELLED on signal invalidation: price falls back to/below
+    /// the reversal threshold before T-15s, well before cycle end.
+    #[test]
+    fn maker_entry_cancels_on_signal_invalidation() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        w.step(Event::LimitBuyPlaced {
+            order_id: Some("paper-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0, // well before T-15s (1285)
+            up: 0.45,
+            dn: 0.55, // dropped back to/below reversal 0.60
+        }));
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [
+                    Action::CancelEntryQuote {
+                        order_id: Some(id),
+                        reason: CancelQuoteReason::SignalInvalidated,
+                        ..
+                    },
+                    Action::Persist
+                ] if id == "paper-1"
+            ),
+            "{actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Watching));
+    }
+
+    /// A quote still holding above the reversal threshold, with time left,
+    /// produces no cancel action.
+    #[test]
+    fn maker_entry_quote_survives_a_tick_that_changes_nothing_material() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        w.step(Event::LimitBuyPlaced {
+            order_id: Some("paper-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1245.0,
+            up: 0.31,
+            dn: 0.69, // still > reversal 0.60, plenty of time left
+        }));
+        assert!(actions.is_empty(), "{actions:?}");
+        assert!(matches!(w.state, WorkerState::EnteringMaker(_)));
+    }
+
+    /// Partial-cycle restart: a crash mid-quote loses the resting order on
+    /// restore, same posture as a plain FAK `Entering` — `to_persisted`
+    /// degrades `EnteringMaker` to `PersistedWorkerState::Entering`, which
+    /// `reconcile` already resumes as `Watching` (no fill to reconstruct a
+    /// position from).
+    #[test]
+    fn maker_entry_partial_cycle_restart_resumes_as_watching() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w);
+        let persisted = w.to_persisted();
+        assert!(matches!(persisted.state, PersistedWorkerState::Entering));
+        let resumed = Worker::reconcile(&persisted.state, &[], 0.0);
+        assert!(matches!(resumed, WorkerState::Watching));
+    }
+
+    /// high_prob/v_shape never consult `maker_entry`, even when the flag is
+    /// on — the plan scopes this to reversal only.
+    #[test]
+    fn maker_entry_flag_is_ignored_by_high_prob() {
+        let p = maker_params();
+        let mut w = Worker::new_high_prob("BTC", &p);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1010.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1015.0,
+            price: 60_100.0,
+        }));
+        // Whatever fires (or doesn't) here, it must never be a maker quote —
+        // high_prob always uses the FAK PlaceBuy path regardless of the flag.
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::PlaceLimitBuy { .. })),
+            "{actions:?}"
+        );
+        assert!(!matches!(w.state, WorkerState::EnteringMaker(_)));
+    }
+
+    // ── p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3) ──────
+
+    fn pup_gate_params(min_edge: f64) -> AssetParams {
+        AssetParams {
+            pup_edge_min_rev: Some(min_edge),
+            ..btc_params()
+        }
+    }
+
+    /// Drives the same DOWN reversal signal `quote_down_position` uses (dn
+    /// settles at 0.70 > reversal 0.60, cycle_end_ts = 1300.0) up to and
+    /// including the triggering tick, returning its actions unasserted — the
+    /// pup gate can turn a would-be entry into a veto, so callers check the
+    /// shape themselves.
+    fn fire_down_reversal(w: &mut Worker) -> Vec<Action> {
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }))
+    }
+
+    #[test]
+    fn pup_gate_disabled_by_default_fires_plain_fak_entry() {
+        let p = btc_params(); // pup_edge_min_rev: None
+        let mut w = Worker::new_reversal("BTC", &p);
+        let actions = fire_down_reversal(&mut w);
+        assert_eq!(
+            actions,
+            vec![
+                Action::PlaceBuy {
+                    side: Side::Down,
+                    price: 0.70,
+                    size_usdc: p.trade_size_usdc,
+                    signal_ts: 1250.0,
+                },
+                Action::Persist,
+            ]
+        );
+    }
+
+    #[test]
+    fn pup_gate_vetoes_when_p_side_below_entry_price() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        // DOWN entry at price 0.70; p_up=0.35 -> p_side=1-0.35=0.65 < 0.70.
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.35,
+            ts: 1245.0,
+        });
+        let actions = fire_down_reversal(&mut w);
+        assert_eq!(
+            actions,
+            vec![Action::PupGateNote {
+                side: Side::Down,
+                p_side: Some(0.65),
+                price: 0.70,
+                outcome: PupGateOutcome::Veto,
+            }]
+        );
+        assert!(
+            matches!(w.state, WorkerState::Watching),
+            "a veto must not lock the strategy out — no mark_fired()"
+        );
+    }
+
+    #[test]
+    fn pup_gate_passes_when_p_side_at_or_above_entry_price() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        // p_up=0.20 -> p_side=0.80 >= 0.70.
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.20,
+            ts: 1245.0,
+        });
+        let actions = fire_down_reversal(&mut w);
+        assert_eq!(
+            actions,
+            vec![
+                Action::PlaceBuy {
+                    side: Side::Down,
+                    price: 0.70,
+                    size_usdc: p.trade_size_usdc,
+                    signal_ts: 1250.0,
+                },
+                Action::Persist,
+            ],
+            "no PupGateNote on a pass — only veto/skip are logged"
+        );
+    }
+
+    /// Exactly `p_side == price + min_edge` is a pass, not a veto (`<`, not `<=`).
+    #[test]
+    fn pup_gate_exact_equality_is_not_a_veto() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        // p_up=0.30 -> p_side=0.70 == price 0.70 exactly.
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.30,
+            ts: 1245.0,
+        });
+        let actions = fire_down_reversal(&mut w);
+        assert!(matches!(actions.first(), Some(Action::PlaceBuy { .. })));
+    }
+
+    #[test]
+    fn pup_gate_fails_open_when_no_snapshot_ever_arrived() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        let actions = fire_down_reversal(&mut w);
+        assert_eq!(
+            actions,
+            vec![
+                Action::PlaceBuy {
+                    side: Side::Down,
+                    price: 0.70,
+                    size_usdc: p.trade_size_usdc,
+                    signal_ts: 1250.0,
+                },
+                Action::Persist,
+                Action::PupGateNote {
+                    side: Side::Down,
+                    p_side: None,
+                    price: 0.70,
+                    outcome: PupGateOutcome::SkippedNoData,
+                },
+            ],
+            "a dead indicator daemon must not silently halt the entry"
+        );
+    }
+
+    #[test]
+    fn pup_gate_fails_open_on_a_stale_snapshot() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        // A snapshot that WOULD veto (p_side 0.65 < 0.70) but is stale by the
+        // time the entry fires (ts 1250 - snapshot ts 1230 = 20s > 10s).
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.35,
+            ts: 1230.0,
+        });
+        let actions = fire_down_reversal(&mut w);
+        assert!(
+            matches!(actions.first(), Some(Action::PlaceBuy { .. })),
+            "stale snapshot must fail open (fire), not veto: {actions:?}"
+        );
+        assert!(matches!(
+            actions.last(),
+            Some(Action::PupGateNote {
+                outcome: PupGateOutcome::SkippedNoData,
+                ..
+            })
+        ));
+    }
+
+    /// A vetoed entry can still fire on a later tick once p_up improves —
+    /// the veto doesn't call `mark_fired()`, so the strategy stays armed.
+    #[test]
+    fn pup_gate_veto_does_not_permanently_block_the_cycle() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.35, // p_side 0.65 < 0.70 -> veto
+            ts: 1245.0,
+        });
+        let actions = fire_down_reversal(&mut w);
+        assert!(matches!(
+            actions.first(),
+            Some(Action::PupGateNote {
+                outcome: PupGateOutcome::Veto,
+                ..
+            })
+        ));
+        assert!(matches!(w.state, WorkerState::Watching));
+
+        // p_up improves; conditions (dn=0.70, dp sign) are otherwise
+        // unchanged since the cached binance/poly signals didn't move.
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.20, // p_side 0.80 >= 0.70 -> pass
+            ts: 1251.0,
+        });
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1252.0,
+            price: 59_900.0,
+        }));
+        assert!(
+            matches!(actions.first(), Some(Action::PlaceBuy { .. })),
+            "{actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Entering));
+    }
+
+    /// high_prob never consults the pup gate, even when enabled — reversal only.
+    #[test]
+    fn pup_gate_is_ignored_by_high_prob() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_high_prob("BTC", &p);
+        // No IndicatorUpdate at all — if high_prob consulted the gate it
+        // would still fail open (fire), so this alone doesn't prove
+        // exemption; the real proof is that no PupGateNote ever appears
+        // regardless of a would-be-vetoing snapshot below.
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.01, // would veto almost anything if consulted
+            ts: 1010.0,
+        });
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1010.0,
+            up: 0.85,
+            dn: 0.15,
+        }));
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1015.0,
+            price: 60_100.0,
+        }));
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::PupGateNote { .. })),
+            "{actions:?}"
+        );
     }
 }

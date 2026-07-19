@@ -52,9 +52,10 @@ pub struct CloseResult {
     pub attempts: u32,
 }
 
-/// Result of attempting a resting GTC limit sell (unwind take-profit).
+/// Result of attempting a resting GTC limit order (unwind take-profit SELL,
+/// or — since the 2026-07-19 maker-entry work — a maker entry BUY).
 #[derive(Debug, Clone)]
-pub struct LimitSellResult {
+pub struct LimitOrderResult {
     pub order_id: Option<String>,
     pub status: SellStatus,
     /// Last retry's error message when `status == Failed`; `None` on success.
@@ -132,7 +133,13 @@ pub trait ExecutionEngine: Send + Sync {
     ) -> TradeResult;
 
     /// Resting GTC limit SELL (unwind take-profit).
-    async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitSellResult;
+    async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitOrderResult;
+
+    /// Resting GTC limit BUY (maker entry — rest at the bid instead of
+    /// crossing the spread with a FAK; see
+    /// trader/doc/plan_unwind_5u_maker_2026-07-19.md §2.2). Same
+    /// `MIN_GTC_SHARES` floor as any resting order.
+    async fn place_limit_buy(&self, token_id: U256, shares: f64, price: f64) -> LimitOrderResult;
 
     /// Market SELL (FAK) to close a position at stop-loss / cycle end. No price
     /// floor — a stop-loss must close regardless of how far the book has moved.
@@ -159,8 +166,9 @@ pub trait ExecutionEngine: Send + Sync {
         min_price: f64,
     ) -> CloseResult;
 
-    /// Cancel a resting GTC limit sell. Returns true on success or if already gone.
-    async fn cancel_limit_sell(&self, order_id: &str) -> bool;
+    /// Cancel a resting GTC limit order (sell or buy — the CLOB cancel endpoint
+    /// is side-agnostic). Returns true on success or if already gone.
+    async fn cancel_resting_order(&self, order_id: &str) -> bool;
 
     /// Cancel all resting orders (safety net).
     async fn cancel_all(&self) -> bool;
@@ -338,16 +346,31 @@ impl ExecutionEngine for SimExecutionEngine {
         }
     }
 
-    async fn place_limit_sell(&self, _token_id: U256, shares: f64, price: f64) -> LimitSellResult {
+    async fn place_limit_sell(&self, _token_id: U256, shares: f64, price: f64) -> LimitOrderResult {
         if shares <= 0.0 || price <= 0.0 {
-            return LimitSellResult {
+            return LimitOrderResult {
                 order_id: None,
                 status: SellStatus::Failed,
                 error: Some("invalid shares/price".to_string()),
             };
         }
-        LimitSellResult {
+        LimitOrderResult {
             order_id: Some(format!("sim-{shares}-{price}")),
+            status: SellStatus::Live,
+            error: None,
+        }
+    }
+
+    async fn place_limit_buy(&self, _token_id: U256, shares: f64, price: f64) -> LimitOrderResult {
+        if shares <= 0.0 || price <= 0.0 {
+            return LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("invalid shares/price".to_string()),
+            };
+        }
+        LimitOrderResult {
+            order_id: Some(format!("sim-buy-{shares}-{price}")),
             status: SellStatus::Live,
             error: None,
         }
@@ -407,11 +430,324 @@ impl ExecutionEngine for SimExecutionEngine {
         }
     }
 
-    async fn cancel_limit_sell(&self, _order_id: &str) -> bool {
+    async fn cancel_resting_order(&self, _order_id: &str) -> bool {
         true
     }
 
     async fn cancel_all(&self) -> bool {
+        true
+    }
+}
+
+// ── Paper implementation (plan_unwind_5u_maker_2026-07-19 §2.1) ──────────────
+//
+// Simulated fills driven by *observed* CLOB prices, not instant fills at the
+// signal price like `SimExecutionEngine` — the whole point of the paper run is
+// measuring whether resting maker quotes actually get filled. Holds **no CLOB
+// client at all**, so a real order is a compile-time impossibility, not a
+// runtime `if`.
+//
+// Fill rules (conservative, from btc_5mins studies/split_and_sell/PLAN.md):
+//   - marketable FAK buy/sell fills immediately, all-or-nothing, at the latest
+//     observed price for that token (falling back to the caller's own price if
+//     no tick has been observed yet this run);
+//   - a resting GTC limit BUY at B fills only when an observed price trades
+//     *through* it: price <= B − 0.01 (touch is not enough); a resting SELL at
+//     A fills when price >= A + 0.01. The fill price is the order's own quoted
+//     price (a maker fill happens at the maker's quote).
+//   - partial fills are not simulated;
+//   - cancel always succeeds if the order hasn't filled yet (and reports
+//     success if it's already gone, matching the live impl's semantics).
+
+/// One-cent tick: a resting order only fills when price trades through the
+/// quote by at least this much (trade-through, not touch).
+pub const PAPER_TRADE_THROUGH: f64 = 0.01;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaperOrderSide {
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Clone)]
+struct PaperRestingOrder {
+    order_id: String,
+    token_id: U256,
+    side: PaperOrderSide,
+    shares: f64,
+    price: f64,
+}
+
+/// A resting paper order that just filled — returned by `on_price` so the
+/// driver can route it back into the owning worker as the appropriate event.
+#[derive(Debug, Clone)]
+pub struct PaperFill {
+    pub order_id: String,
+    pub side: PaperOrderSide,
+    pub shares: f64,
+    /// The resting order's own quoted price (maker fills fill at the quote).
+    pub price: f64,
+}
+
+#[derive(Debug, Default)]
+struct PaperBook {
+    /// token_id -> latest observed CLOB price (the tick stream's mid).
+    prices: std::collections::HashMap<U256, f64>,
+    resting: Vec<PaperRestingOrder>,
+}
+
+/// Paper trading engine — see the section comment above. Interior mutability
+/// (std Mutex, never held across an await) because the `ExecutionEngine` trait
+/// takes `&self` and the driver shares one instance across all asset slots.
+#[derive(Debug, Default)]
+pub struct PaperExecutor {
+    book: std::sync::Mutex<PaperBook>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl PaperExecutor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn next_order_id(&self) -> String {
+        let n = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("paper-{n}")
+    }
+
+    /// Record a newly observed price for `token_id` and return every resting
+    /// order that price trades through. The driver calls this on each poly
+    /// tick (up and dn tokens separately) *before* stepping the worker, so a
+    /// fill and the tick that caused it arrive in a deterministic order.
+    pub fn on_price(&self, token_id: U256, price: f64) -> Vec<PaperFill> {
+        if price <= 0.0 {
+            return vec![];
+        }
+        let mut book = self.book.lock().expect("paper book lock");
+        book.prices.insert(token_id, price);
+        let eps = 1e-9;
+        let mut fills = Vec::new();
+        book.resting.retain(|o| {
+            let filled = o.token_id == token_id
+                && match o.side {
+                    PaperOrderSide::Buy => price <= o.price - PAPER_TRADE_THROUGH + eps,
+                    PaperOrderSide::Sell => price >= o.price + PAPER_TRADE_THROUGH - eps,
+                };
+            if filled {
+                fills.push(PaperFill {
+                    order_id: o.order_id.clone(),
+                    side: o.side,
+                    shares: o.shares,
+                    price: o.price,
+                });
+            }
+            !filled
+        });
+        fills
+    }
+
+    /// Latest observed price for a token, if any tick has been seen this run.
+    pub fn observed_price(&self, token_id: U256) -> Option<f64> {
+        self.book
+            .lock()
+            .expect("paper book lock")
+            .prices
+            .get(&token_id)
+            .copied()
+    }
+
+    fn rest_order(
+        &self,
+        token_id: U256,
+        side: PaperOrderSide,
+        shares: f64,
+        price: f64,
+    ) -> LimitOrderResult {
+        if shares <= 0.0 || price <= 0.0 {
+            return LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("invalid shares/price".to_string()),
+            };
+        }
+        // Mimic the exchange's resting-order share floor so a paper run can
+        // never "succeed" with an order size the real CLOB would reject.
+        if shares < MIN_GTC_SHARES {
+            return LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some(format!(
+                    "paper: GTC below exchange minimum of {MIN_GTC_SHARES} shares (INVALID_ORDER_MIN_SIZE)"
+                )),
+            };
+        }
+        let order_id = self.next_order_id();
+        self.book
+            .lock()
+            .expect("paper book lock")
+            .resting
+            .push(PaperRestingOrder {
+                order_id: order_id.clone(),
+                token_id,
+                side,
+                shares: floor2(shares),
+                price,
+            });
+        LimitOrderResult {
+            order_id: Some(order_id),
+            status: SellStatus::Live,
+            error: None,
+        }
+    }
+}
+
+#[async_trait]
+impl ExecutionEngine for PaperExecutor {
+    async fn place(
+        &self,
+        token_id: U256,
+        price: f64,
+        size_usdc: f64,
+        max_buy_price: f64,
+    ) -> TradeResult {
+        if price <= 0.0 {
+            return TradeResult {
+                placed: false,
+                filled_shares: 0.0,
+                cost: 0.0,
+                error: Some("invalid price".to_string()),
+                attempts: 1,
+            };
+        }
+        // Marketable FAK: fills at the latest observed CLOB price, capped at
+        // max_buy_price the way the live order's limit would cap it.
+        let fill_price = self
+            .observed_price(token_id)
+            .unwrap_or(price)
+            .min(max_buy_price);
+        let shares = round2(size_usdc / fill_price);
+        if shares <= 0.0 {
+            return TradeResult {
+                placed: false,
+                filled_shares: 0.0,
+                cost: 0.0,
+                error: Some("ORDER_FAILED".to_string()),
+                attempts: 1,
+            };
+        }
+        TradeResult {
+            placed: true,
+            filled_shares: shares,
+            cost: fill_price,
+            error: None,
+            attempts: 1,
+        }
+    }
+
+    async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitOrderResult {
+        self.rest_order(token_id, PaperOrderSide::Sell, shares, price)
+    }
+
+    async fn place_limit_buy(&self, token_id: U256, shares: f64, price: f64) -> LimitOrderResult {
+        self.rest_order(token_id, PaperOrderSide::Buy, shares, price)
+    }
+
+    async fn close_position(&self, token_id: U256, shares: f64) -> CloseResult {
+        if shares <= 0.0 {
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("invalid shares".to_string()),
+                attempts: 1,
+            };
+        }
+        let Some(price) = self.observed_price(token_id) else {
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("paper: no observed price for token yet".to_string()),
+                attempts: 1,
+            };
+        };
+        let sold = floor2(shares);
+        CloseResult {
+            filled_usdc: sold * price,
+            status: SellStatus::Matched,
+            shares_sold: sold,
+            error: None,
+            attempts: 1,
+        }
+    }
+
+    async fn close_position_at_price(
+        &self,
+        token_id: U256,
+        shares: f64,
+        min_price: f64,
+    ) -> CloseResult {
+        if shares <= 0.0 || min_price <= 0.0 {
+            return CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("invalid shares/price".to_string()),
+                attempts: 1,
+            };
+        }
+        // Bounded take-profit close: only fills if the observed market is at
+        // or above the floor — matching the live FAK's "no orders found to
+        // match" behavior when it isn't (single attempt, caller retries on
+        // the next real tick).
+        match self.observed_price(token_id) {
+            Some(price) if price >= min_price => {
+                let sold = floor2(shares);
+                CloseResult {
+                    filled_usdc: sold * price,
+                    status: SellStatus::Matched,
+                    shares_sold: sold,
+                    error: None,
+                    attempts: 1,
+                }
+            }
+            Some(price) => CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some(format!(
+                    "paper: observed {price:.4} below min_price {min_price:.4} (no match)"
+                )),
+                attempts: 1,
+            },
+            None => CloseResult {
+                filled_usdc: 0.0,
+                status: SellStatus::Failed,
+                shares_sold: 0.0,
+                error: Some("paper: no observed price for token yet".to_string()),
+                attempts: 1,
+            },
+        }
+    }
+
+    async fn cancel_resting_order(&self, order_id: &str) -> bool {
+        // Removes the order if it's still resting; an order that already
+        // filled (or never existed) reports success too, matching the live
+        // impl's "not found/filled ⇒ treated as gone" semantics — the worker's
+        // state machine, not this return value, is what handles the
+        // cancel-after-fill race.
+        self.book
+            .lock()
+            .expect("paper book lock")
+            .resting
+            .retain(|o| o.order_id != order_id);
+        true
+    }
+
+    async fn cancel_all(&self) -> bool {
+        self.book.lock().expect("paper book lock").resting.clear();
         true
     }
 }
@@ -710,9 +1046,9 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         }
     }
 
-    async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitSellResult {
+    async fn place_limit_sell(&self, token_id: U256, shares: f64, price: f64) -> LimitOrderResult {
         if shares <= 0.0 || price <= 0.0 {
-            return LimitSellResult {
+            return LimitOrderResult {
                 order_id: None,
                 status: SellStatus::Failed,
                 error: Some("invalid shares/price".to_string()),
@@ -724,14 +1060,14 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         let shares = floor2(shares);
 
         let Ok(price_dec) = Decimal::from_str(&format!("{snapped:.2}")) else {
-            return LimitSellResult {
+            return LimitOrderResult {
                 order_id: None,
                 status: SellStatus::Failed,
                 error: Some("bad price".to_string()),
             };
         };
         let Ok(size_dec) = Decimal::from_str(&format!("{shares:.2}")) else {
-            return LimitSellResult {
+            return LimitOrderResult {
                 order_id: None,
                 status: SellStatus::Failed,
                 error: Some("bad size".to_string()),
@@ -755,20 +1091,20 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 Ok(resp) => {
                     let taking: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
                     if taking > 0.0 {
-                        return LimitSellResult {
+                        return LimitOrderResult {
                             order_id: None,
                             status: SellStatus::Matched,
                             error: None,
                         };
                     }
                     if !resp.order_id.is_empty() {
-                        return LimitSellResult {
+                        return LimitOrderResult {
                             order_id: Some(resp.order_id),
                             status: SellStatus::Live,
                             error: None,
                         };
                     }
-                    return LimitSellResult {
+                    return LimitOrderResult {
                         order_id: None,
                         status: SellStatus::Failed,
                         error: Some("empty order_id, no fill".to_string()),
@@ -787,7 +1123,7 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                         tokio::time::sleep(self.cfg.settle_sleep).await;
                         continue;
                     }
-                    return LimitSellResult {
+                    return LimitOrderResult {
                         order_id: None,
                         status: SellStatus::Failed,
                         error: Some(msg),
@@ -795,10 +1131,85 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
                 }
             }
         }
-        LimitSellResult {
+        LimitOrderResult {
             order_id: None,
             status: SellStatus::Failed,
             error: last_err.or(Some("SETTLE_RETRIES_EXHAUSTED".to_string())),
+        }
+    }
+
+    async fn place_limit_buy(&self, token_id: U256, shares: f64, price: f64) -> LimitOrderResult {
+        if shares <= 0.0 || price <= 0.0 {
+            return LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("invalid shares/price".to_string()),
+            };
+        }
+        // Same tick-snap/clamp as place_limit_sell. No settle-retry loop: a BUY
+        // spends already-funded USDC, so the "balance: 0" on-chain settlement
+        // race the sell side retries against cannot occur here (confirmed
+        // against production logs — see `EntryFailure`'s doc comment).
+        let tick = 0.01;
+        let snapped = ((price / tick).round() * tick).clamp(tick, 1.0 - tick);
+        let shares = floor2(shares);
+
+        let Ok(price_dec) = Decimal::from_str(&format!("{snapped:.2}")) else {
+            return LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("bad price".to_string()),
+            };
+        };
+        let Ok(size_dec) = Decimal::from_str(&format!("{shares:.2}")) else {
+            return LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some("bad size".to_string()),
+            };
+        };
+
+        let result = self
+            .client
+            .limit_order()
+            .token_id(token_id)
+            .side(SdkSide::Buy)
+            .price(price_dec)
+            .size(size_dec)
+            .order_type(OrderType::GTC)
+            .build_sign_and_post(&self.signer)
+            .await;
+
+        match result {
+            Ok(resp) => {
+                let taking: f64 = resp.taking_amount.to_string().parse().unwrap_or(0.0);
+                if taking > 0.0 {
+                    // Crossed the book and matched immediately — a marketable
+                    // limit, not a resting quote.
+                    return LimitOrderResult {
+                        order_id: None,
+                        status: SellStatus::Matched,
+                        error: None,
+                    };
+                }
+                if !resp.order_id.is_empty() {
+                    return LimitOrderResult {
+                        order_id: Some(resp.order_id),
+                        status: SellStatus::Live,
+                        error: None,
+                    };
+                }
+                LimitOrderResult {
+                    order_id: None,
+                    status: SellStatus::Failed,
+                    error: Some("empty order_id, no fill".to_string()),
+                }
+            }
+            Err(e) => LimitOrderResult {
+                order_id: None,
+                status: SellStatus::Failed,
+                error: Some(e.to_string()),
+            },
         }
     }
 
@@ -1019,7 +1430,7 @@ impl<S: Signer + Clone + Send + Sync + 'static> ExecutionEngine for LiveExecutio
         }
     }
 
-    async fn cancel_limit_sell(&self, order_id: &str) -> bool {
+    async fn cancel_resting_order(&self, order_id: &str) -> bool {
         if order_id.is_empty() {
             return true;
         }
@@ -1209,7 +1620,7 @@ mod tests {
         let r = engine.place_limit_sell(dummy_token(), 1.25, 0.83).await;
         assert_eq!(r.status, SellStatus::Live);
         assert!(r.order_id.is_some());
-        assert!(engine.cancel_limit_sell(&r.order_id.unwrap()).await);
+        assert!(engine.cancel_resting_order(&r.order_id.unwrap()).await);
     }
 
     #[tokio::test]
@@ -1218,6 +1629,141 @@ mod tests {
         let r = engine.place_limit_sell(dummy_token(), 0.0, 0.83).await;
         assert_eq!(r.status, SellStatus::Failed);
         assert!(r.order_id.is_none());
+    }
+
+    // ── PaperExecutor (plan_unwind_5u_maker_2026-07-19 §2.1/§2.4) ────────────
+
+    #[tokio::test]
+    async fn paper_marketable_buy_fills_at_latest_observed_price() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        assert!(paper.on_price(token, 0.62).is_empty());
+        // Signal price says 0.60 but the latest observation is 0.62 — the
+        // paper fill must use the observed price, logged as the fill price.
+        let r = paper.place(token, 0.60, 3.10, 0.95).await;
+        assert!(r.placed);
+        assert!((r.cost - 0.62).abs() < 1e-9);
+        assert!((r.filled_shares - 5.0).abs() < 1e-9); // round2(3.10/0.62)
+    }
+
+    #[tokio::test]
+    async fn paper_marketable_buy_caps_at_max_buy_price_and_falls_back_to_signal() {
+        let paper = PaperExecutor::new();
+        // No observation yet -> falls back to the caller's own price.
+        let r = paper.place(dummy_token(), 0.70, 1.0, 0.95).await;
+        assert!(r.placed);
+        assert!((r.cost - 0.70).abs() < 1e-9);
+        // Observed above the cap -> capped, like the live order's limit.
+        paper.on_price(dummy_token(), 0.99);
+        let r = paper.place(dummy_token(), 0.70, 1.0, 0.95).await;
+        assert!((r.cost - 0.95).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn paper_resting_buy_fills_on_trade_through_not_touch() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        let r = paper.place_limit_buy(token, 5.0, 0.55).await;
+        assert_eq!(r.status, SellStatus::Live);
+        let id = r.order_id.expect("resting id");
+        // Touch (price == B) is not a fill; neither is any price above B−0.01.
+        assert!(paper.on_price(token, 0.55).is_empty());
+        assert!(paper.on_price(token, 0.545).is_empty());
+        // Exactly B − 0.01 IS a fill (rule: fills when price <= B − 0.01).
+        let fills = paper.on_price(token, 0.54);
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].order_id, id);
+        assert_eq!(fills[0].side, PaperOrderSide::Buy);
+        assert!((fills[0].price - 0.55).abs() < 1e-9, "fills at the quote");
+        assert!((fills[0].shares - 5.0).abs() < 1e-9);
+        // The order is gone once filled — the same price can't fill it twice.
+        assert!(paper.on_price(token, 0.54).is_empty());
+    }
+
+    #[tokio::test]
+    async fn paper_resting_sell_fills_on_trade_through_not_touch() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        let r = paper.place_limit_sell(token, 5.0, 0.70).await;
+        assert_eq!(r.status, SellStatus::Live);
+        assert!(
+            paper.on_price(token, 0.70).is_empty(),
+            "touch is not a fill"
+        );
+        assert!(paper.on_price(token, 0.705).is_empty());
+        let fills = paper.on_price(token, 0.71); // exactly A + 0.01
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].side, PaperOrderSide::Sell);
+        assert!((fills[0].price - 0.70).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn paper_cancel_after_fill_race_cannot_double_process() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        let id = paper
+            .place_limit_buy(token, 5.0, 0.55)
+            .await
+            .order_id
+            .expect("id");
+        let fills = paper.on_price(token, 0.54);
+        assert_eq!(fills.len(), 1);
+        // Cancel arriving after the fill: reports success ("already gone",
+        // matching live semantics) and the book stays empty — no double fill.
+        assert!(paper.cancel_resting_order(&id).await);
+        assert!(paper.on_price(token, 0.50).is_empty());
+    }
+
+    #[tokio::test]
+    async fn paper_cancel_before_fill_removes_the_order() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        let id = paper
+            .place_limit_buy(token, 5.0, 0.55)
+            .await
+            .order_id
+            .expect("id");
+        assert!(paper.cancel_resting_order(&id).await);
+        assert!(
+            paper.on_price(token, 0.40).is_empty(),
+            "canceled order must never fill"
+        );
+    }
+
+    #[tokio::test]
+    async fn paper_gtc_below_exchange_minimum_is_rejected() {
+        let paper = PaperExecutor::new();
+        let r = paper.place_limit_buy(dummy_token(), 4.99, 0.55).await;
+        assert_eq!(r.status, SellStatus::Failed);
+        assert!(r.error.unwrap().contains("INVALID_ORDER_MIN_SIZE"));
+        let r = paper.place_limit_sell(dummy_token(), 1.11, 0.83).await;
+        assert_eq!(r.status, SellStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn paper_close_position_fills_at_observed_price() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        // No observation yet -> Failed, never a phantom $0 fill.
+        let r = paper.close_position(token, 5.0).await;
+        assert_eq!(r.status, SellStatus::Failed);
+        paper.on_price(token, 0.48);
+        let r = paper.close_position(token, 5.0).await;
+        assert_eq!(r.status, SellStatus::Matched);
+        assert!((r.filled_usdc - 5.0 * 0.48).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn paper_close_at_price_respects_the_floor() {
+        let paper = PaperExecutor::new();
+        let token = dummy_token();
+        paper.on_price(token, 0.80);
+        let r = paper.close_position_at_price(token, 5.0, 0.85).await;
+        assert_eq!(r.status, SellStatus::Failed, "below floor -> no match");
+        paper.on_price(token, 0.86);
+        let r = paper.close_position_at_price(token, 5.0, 0.85).await;
+        assert_eq!(r.status, SellStatus::Matched);
+        assert!((r.filled_usdc - 5.0 * 0.86).abs() < 1e-9);
     }
 
     #[test]

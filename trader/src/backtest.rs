@@ -798,6 +798,8 @@ mod tests {
             spread_discount_limit: 0.95,
             max_price_age_secs: 2.0,
             trade_size_usdc: 1.0,
+            maker_entry: false,
+            pup_edge_min_rev: None,
         };
         // Match Python --no-halt
         params.halt_rev = 0;
