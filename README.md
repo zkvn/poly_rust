@@ -1095,6 +1095,20 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### delta_pct_rev loosened for SOL/DOGE mid-run, an explicit exception to the paper run's "frozen 48h" rule (2026-07-19, added)
+
+Zero trades had fired on any of the 6 assets ~4h into the 48h `plan_unwind_5u_maker_2026-07-19.md`
+paper window. By explicit user instruction — a deliberate, disclosed test, not a silent
+recalibration — `strategy_20260719.toml`'s `delta_pct_rev` (the minimum Binance-move gate) was
+loosened for SOL (0.0010 → 0.0004) and DOGE (0.0008 → 0.0003) only, to check whether that gate was
+the binding constraint keeping reversal from ever firing. Every other asset and every other
+parameter (reversal thresholds, unwind_pnl/time, stop policy, `maker_entry`, `pup_edge_min_rev`)
+is untouched. Redeployed via `scripts/deploy_oracle.py --trader-only --skip-build` (config-only
+change, no binary rebuild needed). If SOL/DOGE start firing noticeably more than BTC/ETH/BNB/XRP
+as a result, that's the signal working as intended — treat their results as a separate,
+looser-gate cohort when reading the eventual §2.7 evaluation, not as directly comparable to the
+other four assets' table-1.1 values.
+
 ### Indicator phase 2 (p(up) gate) wired + indicator daemon deployed to Oracle (2026-07-19, added)
 
 Both prior TODO items closed together as part of plan_unwind_5u_maker_2026-07-19.md: `worker.rs`
