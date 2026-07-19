@@ -1083,6 +1083,19 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### `siglab-report-push.timer`'s unscoped `git commit` swept up an agent's staged, unrelated changes into an hourly report commit (2026-07-19, fixed)
+
+`push_report.sh` scopes `git add` to `siglab/doc/report/*/*.md` but the following `git commit -m
+"..."` had no pathspec, so it committed the *entire index* — same bug class already fixed in
+`trade_reconcile.py`'s `git_commit_push` (see "Recon auto-commit swept up unrelated staged
+changes" precedent), just never ported to this script. Concretely bit an agent session: `git add
+trader/src/{execution,worker,config,...}.rs` staged 6 files for a real commit, the timer fired
+before that commit ran, and all 6 files landed inside `2f4f6b5 siglab: hourly signal report update
+(2026-07-19T07:00Z)` instead — already pushed by the time it was noticed, so the message was left
+as-is rather than rewriting pushed history. Fix: `git commit ... -- "${report_files[@]}"`. Any
+future host process with an unscoped `git commit -m` on this repo carries the same risk regardless
+of what it's committing.
+
 ### `/status`'s per-asset PNL line omitted the timeout count, making totals with TIMEOUT trades look unexplained (2026-07-16, fixed)
 
 BNB showed `0W/0L/1SL/0UW  $-1.1579` — the visible single STOPLOSS trade was only `-0.7366`, no

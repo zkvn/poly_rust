@@ -37,7 +37,7 @@ git commit -m "siglab: hourly signal report update ($(date -u +%Y-%m-%dT%H:%MZ))
 
 Auto-committed by siglab/scripts/push_report.sh via siglab-report-push.timer — not a
 Claude/manual commit. See siglab/doc/report/ for the report(s) and
-siglab/scripts/install_timer.sh for how this is scheduled."
+siglab/scripts/install_timer.sh for how this is scheduled." -- "${report_files[@]}"
 
 git push
 echo "[push_report] pushed at $(date -u +%Y-%m-%dT%H:%MZ)"
