@@ -76,6 +76,7 @@ REPO_ROOT         = Path(__file__).resolve().parent.parent
 TARGET            = "aarch64-unknown-linux-gnu"
 PRICE_FEED_BIN    = REPO_ROOT / "price_feed" / "target" / TARGET / "release" / "price_feed"
 TRADER_BIN        = REPO_ROOT / "trader"     / "target" / TARGET / "release" / "live"
+INDICATOR_BIN     = REPO_ROOT / "indicator"  / "target" / TARGET / "release" / "indicator"
 
 # ── Oracle connection ──────────────────────────────────────────────────────────
 ORACLE_HOST = "10.8.0.1"
@@ -157,6 +158,59 @@ WantedBy=multi-user.target
 """
 
 
+# ── Oracle indicator daemon (plan_unwind_5u_maker_2026-07-19 §2.3/§8) ─────────
+# Standalone `indicator` crate (trader/doc/feature_vol_2026-07-18.md) — HAR
+# vol/P(up)/SNR, subscribes price.binance.<ASSET>, publishes indicator.<ASSET>.
+# Local docker validation passed 2026-07-18 (indicator/doc/perf_indicator_docker_2026-07-18.md,
+# "Go for Oracle deploy") but was deliberately deferred until a trader-side
+# gate actually consumed it (README TODO "Indicator not deployed to Oracle").
+# The p(up) negative-edge gate (trader/src/worker.rs's pup_edge_min_rev) is
+# that gate — without this daemon running, `indicator_enabled = true` in the
+# strategy config just means the gate fails open (SKIPPED_NO_DATA) forever,
+# never genuinely vetoing anything.
+INDICATOR_BASE      = f"{ORACLE_BASE}/indicator"
+LOCAL_INDICATOR_CFG = REPO_ROOT / "indicator" / "config" / "indicator.toml"
+INDICATOR_CFG_REMOTE = f"{INDICATOR_BASE}/config/indicator.toml"
+INDICATOR_LOG_DIR   = INDICATOR_BASE
+INDICATOR_SERVICE   = "poly-indicator.service"
+INDICATOR_UNIT_PATH = "/etc/systemd/system/poly-indicator.service"
+
+
+def _indicator_unit_file() -> str:
+    """Renders poly-indicator.service — same shape as trader-live.service
+    (systemd Restart=always, network-online + nats-server ordering), so it's
+    supervised identically and the 2026-07-03 double-process class of
+    incident (never kill/tmux directly, always go through systemctl) applies
+    here too."""
+    # `--config` is a global clap arg on the `Cli` struct, not a subcommand
+    # flag — it must precede `run`, not follow it (indicator/src/main.rs).
+    exec_start = (
+        f"{INDICATOR_BASE}/target/release/indicator \\\n"
+        f"  --config {INDICATOR_CFG_REMOTE} \\\n"
+        f"  run"
+    )
+    return f"""[Unit]
+Description=poly_rust indicator engine (HAR vol / P(up) / SNR)
+After=network-online.target nats-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={ORACLE_USER}
+WorkingDirectory={INDICATOR_BASE}
+ExecStart={exec_start}
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=append:{INDICATOR_LOG_DIR}/indicator.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def run_local(cmd: list[str], cwd: Path | None = None, timeout: int = 600) -> bool:
@@ -190,10 +244,22 @@ def rsync(local: Path, remote_path: str, dry_run: bool) -> bool:
 
 # ── steps ─────────────────────────────────────────────────────────────────────
 
+_BIN_CRATE_DIR = {
+    "price_feed": "price_feed",
+    "live": "trader",
+    "indicator": "indicator",
+}
+_BIN_OUTPUT_PATH = {
+    "price_feed": PRICE_FEED_BIN,
+    "live": TRADER_BIN,
+    "indicator": INDICATOR_BIN,
+}
+
+
 def build(bins: list[str], dry_run: bool) -> bool:
     """Cross-compile aarch64 binaries via `cross` (Docker-based toolchain)."""
     for b in bins:
-        crate_dir = REPO_ROOT / ("price_feed" if b == "price_feed" else "trader")
+        crate_dir = REPO_ROOT / _BIN_CRATE_DIR[b]
         print(f"\n  cross build --release --bin {b} --target {TARGET}")
         if dry_run:
             continue
@@ -203,7 +269,7 @@ def build(bins: list[str], dry_run: bool) -> bool:
             timeout=900,
         ):
             return False
-        bin_path = PRICE_FEED_BIN if b == "price_feed" else TRADER_BIN
+        bin_path = _BIN_OUTPUT_PATH[b]
         print(f"  Built: {bin_path} ({bin_path.stat().st_size // 1024 // 1024} MiB)")
     return True
 
@@ -386,6 +452,84 @@ def deploy_trader(client: paramiko.SSHClient, dry_run: bool, skip_binary: bool =
     return status == "active"
 
 
+def sync_indicator_config(client: paramiko.SSHClient, dry_run: bool) -> bool:
+    """rsync `indicator/config/indicator.toml` to Oracle — one file, no
+    "latest wins" selection like `sync_config`'s strategy_*.toml glob (the
+    indicator crate has exactly one config file, not a dated series)."""
+    print(f"\n  rsyncing {LOCAL_INDICATOR_CFG} → Oracle...")
+    remote_dir = f"{INDICATOR_BASE}/config/"
+    if dry_run:
+        print(f"  [dry-run] mkdir -p {remote_dir}")
+    else:
+        ssh(client, f"mkdir -p {remote_dir}", timeout=10)
+    return rsync(LOCAL_INDICATOR_CFG, remote_dir, dry_run)
+
+
+def deploy_indicator(client: paramiko.SSHClient, dry_run: bool) -> bool:
+    """rsync the binary + config, keep poly-indicator.service's unit file in
+    sync, then `systemctl restart` it — same always-through-systemd posture
+    as `deploy_trader`/`deploy_price_feed` (never kill/tmux a Restart=always
+    unit directly)."""
+    bin_path = INDICATOR_BIN
+    if not bin_path.exists():
+        print(f"  Binary not found: {bin_path}")
+        return False
+
+    print(f"\n  rsyncing {bin_path} → Oracle...")
+    remote_dir = f"{INDICATOR_BASE}/target/release/"
+    if dry_run:
+        print(f"  [dry-run] mkdir -p {remote_dir}")
+    else:
+        ssh(client, f"mkdir -p {remote_dir}", timeout=10)
+    if not rsync(bin_path, remote_dir, dry_run):
+        return False
+
+    if not sync_indicator_config(client, dry_run):
+        return False
+
+    unit_content = _indicator_unit_file()
+    print(f"  Checking {INDICATOR_UNIT_PATH}...")
+    rc, current, _ = ssh(client, f"cat {INDICATOR_UNIT_PATH} 2>/dev/null", timeout=5)
+    unit_changed = current.strip() != unit_content.strip()
+
+    if unit_changed:
+        print("  Unit file missing or differs — installing.")
+        if dry_run:
+            print(f"  [dry-run] write {INDICATOR_UNIT_PATH} + sudo systemctl daemon-reload + enable")
+        else:
+            sftp = client.open_sftp()
+            with sftp.file("/tmp/poly-indicator.service.new", "w") as f:
+                f.write(unit_content)
+            sftp.close()
+            rc, out, err = ssh(
+                client,
+                f"sudo cp /tmp/poly-indicator.service.new {INDICATOR_UNIT_PATH} && "
+                f"sudo systemctl daemon-reload && sudo systemctl enable {INDICATOR_SERVICE}",
+                timeout=15,
+            )
+            if rc != 0:
+                print(f"  unit file install failed:\n{out}{err}")
+                return False
+    else:
+        print("  Unit file already matches — no changes.")
+
+    print(f"  Restarting {INDICATOR_SERVICE} (systemd)...")
+    if dry_run:
+        print(f"  [dry-run] sudo systemctl restart {INDICATOR_SERVICE}")
+        return True
+    rc, out, err = ssh(client, f"sudo systemctl restart {INDICATOR_SERVICE}", timeout=20)
+    if rc != 0:
+        print(f"  systemctl restart failed:\n{out}{err}")
+        return False
+
+    time.sleep(3)
+    rc2, out2, _ = ssh(client, f"systemctl is-active {INDICATOR_SERVICE}")
+    status = out2.strip()
+    rc3, pid_out, _ = ssh(client, f"systemctl show {INDICATOR_SERVICE} -p MainPID --value")
+    print(f"  {INDICATOR_SERVICE}: {status} (PID {pid_out.strip()})")
+    return status == "active"
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -394,6 +538,7 @@ def main() -> None:
     ap.add_argument("--skip-build",      action="store_true", help="Skip cross-compile, use existing binaries")
     ap.add_argument("--price-feed-only", action="store_true", help="Deploy price_feed only")
     ap.add_argument("--trader-only",     action="store_true", help="Deploy trader only")
+    ap.add_argument("--indicator-only",  action="store_true", help="Deploy indicator only")
     ap.add_argument("--config-only",     action="store_true",
                      help="Sync strategy config (rsync trader/config/ + git pull btc_5mins) and "
                           "restart trader-live.service only — no build, no binary rsync")
@@ -428,12 +573,21 @@ def main() -> None:
         print("\nDone." if ok else "\nDone (with errors).")
         sys.exit(0 if ok else 1)
 
-    do_price_feed = not args.trader_only
-    do_trader     = not args.price_feed_only
+    # Any *_only flag narrows scope to just that component; with none set,
+    # every component deploys (the historical two-flag behavior, generalized
+    # to three — see build()'s _BIN_CRATE_DIR for the matching bin-name map).
+    only_flags_set = args.price_feed_only or args.trader_only or args.indicator_only
+    do_price_feed = args.price_feed_only or not only_flags_set
+    do_trader     = args.trader_only or not only_flags_set
+    do_indicator  = args.indicator_only or not only_flags_set
 
     # ── 1. build ──────────────────────────────────────────────────────────────
     if not args.skip_build:
-        bins = (["price_feed"] if do_price_feed else []) + (["live"] if do_trader else [])
+        bins = (
+            (["price_feed"] if do_price_feed else [])
+            + (["live"] if do_trader else [])
+            + (["indicator"] if do_indicator else [])
+        )
         print(f"\n[build] cross-compiling for {TARGET}: {bins}")
         if not build(bins, args.dry_run):
             sys.exit(1)
@@ -473,6 +627,13 @@ def main() -> None:
             if not deploy_trader(client, args.dry_run):
                 print("  trader deploy failed.")
                 ok = False
+
+    # ── 4. indicator ──────────────────────────────────────────────────────────
+    if do_indicator:
+        print("\n[indicator] deploying...")
+        if not deploy_indicator(client, args.dry_run):
+            print("  indicator deploy failed.")
+            ok = False
 
     client.close()
     print("\nDone." if ok else "\nDone (with errors).")

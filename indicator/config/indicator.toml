@@ -7,7 +7,12 @@
 # the shapes are validated at startup, but stale betas are silently wrong.
 
 nats_url = "nats://localhost:4222"
-assets = ["BTC"]
+# All 6 reversal assets the paper run trades (plan_unwind_5u_maker_2026-07-19
+# §1.1) — betas/nu below are already fitted for all of them. Widened from
+# BTC-only (the local docker A/B validation scope, indicator/doc/
+# perf_indicator_docker_2026-07-18.md) now that a trader-side gate
+# (pup_edge_min_rev) actually consumes the snapshots.
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
 market = "5m"            # cycle clock: 5m / 15m / 1h-et / 4h
 emit_interval_ms = 250   # min gap between publishes per asset (0 = every tick)
 
