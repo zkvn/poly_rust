@@ -3416,11 +3416,15 @@ mod balance_halt_scope_tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::PolyTick(PolyTick {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,

@@ -590,6 +590,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_binance(BinanceTick {
             ts: 1200.0,
@@ -599,6 +601,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_binance(BinanceTick {
             ts: 1250.0,
@@ -620,6 +624,8 @@ mod tests {
             ts: 1270.0,
             up: 0.35,
             dn: 0.65,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(rec.is_some(), "expected a TIMEOUT record");
         let rec = rec.unwrap();
@@ -675,6 +681,8 @@ mod tests {
             ts: 1269.0, // entry_ts + 29s, 1s short of the 30s threshold
             up: 0.35,
             dn: 0.65,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(rec.is_none(), "must not fire before the threshold elapses");
         assert!(m.is_holding(), "position must still be open");
@@ -694,6 +702,8 @@ mod tests {
             ts: 1280.0,
             up: 0.35,
             dn: 0.65,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(
             rec.is_none(),
@@ -718,6 +728,8 @@ mod tests {
                 ts: 1291.0,
                 up: 0.35,
                 dn: 0.65,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("must force-unwind within 10s of cycle end");
         assert_eq!(rec.outcome, Outcome::Unwind);
@@ -759,6 +771,8 @@ mod tests {
                 ts: 1291.0,
                 up: 0.35,
                 dn: 0.65,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("expected an exit");
         assert_eq!(rec.outcome, Outcome::Unwind);
@@ -776,6 +790,8 @@ mod tests {
             ts: 1270.0,
             up: 0.55,
             dn: 0.45,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(rec.is_some());
         assert_eq!(
@@ -797,6 +813,8 @@ mod tests {
                 ts: 1270.0,
                 up: 0.28,
                 dn: 0.72,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .unwrap();
         assert_eq!(rec_up.outcome, Outcome::Timeout);
@@ -809,6 +827,8 @@ mod tests {
                 ts: 1270.0,
                 up: 0.35,
                 dn: 0.65,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .unwrap();
         assert_eq!(rec_dn.outcome, Outcome::Timeout);
@@ -827,6 +847,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
 
         // Drop binance → delta_pct < 0 (required for DOWN entry)
@@ -840,6 +862,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
 
         // Entry evaluation: time_left=50 >= no_enter=10, all gates pass
@@ -856,6 +880,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(rec.is_some(), "expected UNWIND record");
         let rec = rec.unwrap();
@@ -879,6 +905,8 @@ mod tests {
             ts: 1180.0,
             up: 0.80,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // dn dips below 0.20
         m.on_binance(BinanceTick {
             ts: 1200.0,
@@ -888,6 +916,8 @@ mod tests {
             ts: 1200.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // dn high
         m.on_binance(BinanceTick {
             ts: 1240.0,
@@ -901,6 +931,8 @@ mod tests {
             ts: 1260.0,
             up: 0.45,
             dn: 0.55,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(rec.is_some());
         let rec = rec.unwrap();
@@ -930,6 +962,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // dip latches saw_low_dn
         m.on_binance(BinanceTick {
             ts: 1200.0,
@@ -941,6 +975,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(
             m.is_holding(),
@@ -968,11 +1004,15 @@ mod tests {
             ts: 1680.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // dip latches saw_low_dn
         m.on_poly(PolyTick {
             ts: 1740.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // recovery, no BinanceTick yet this cycle
         assert!(
             !m.is_holding(),
@@ -997,6 +1037,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // dip latches saw_low_dn
 
         // Recovery is visible now, but delta_pct isn't cached yet (no BinanceTick this
@@ -1006,6 +1048,8 @@ mod tests {
             ts: 1210.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(
             !m.is_holding(),
@@ -1031,7 +1075,9 @@ mod tests {
             .on_poly(PolyTick {
                 ts: 1211.0,
                 up: 0.55,
-                dn: 0.45, // <= entry(0.70) - sl_pnl_rev(0.20) = 0.50
+                dn: 0.45, // <= entry(0.70) - sl_pnl_rev(0.20) = 0.50,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("stop-loss should fire");
 
@@ -1065,6 +1111,8 @@ mod tests {
             ts: 1180.0,
             up: 0.80,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_binance(BinanceTick {
             ts: 1200.0,
@@ -1074,6 +1122,8 @@ mod tests {
             ts: 1200.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_binance(BinanceTick {
             ts: 1240.0,
@@ -1100,6 +1150,8 @@ mod tests {
             ts: 1180.0,
             up: 0.80,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_binance(BinanceTick {
             ts: 1200.0,
@@ -1109,6 +1161,8 @@ mod tests {
             ts: 1200.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_binance(BinanceTick {
             ts: 1240.0,
@@ -1146,16 +1200,22 @@ mod tests {
             ts: 1100.0,
             up: 0.75,
             dn: 0.25,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // high1 latched
         m.on_poly(PolyTick {
             ts: 1180.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // low-after-high latched
         m.on_poly(PolyTick {
             ts: 1240.0,
             up: 0.70,
             dn: 0.30,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // >= high2 -> enters UP at 0.70
         assert!(m.is_holding(), "setup: expected Holding after full V");
         m
@@ -1171,6 +1231,8 @@ mod tests {
                 ts: 1250.0,
                 up: 0.75,
                 dn: 0.25,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("take-profit must fire");
         assert_eq!(rec.strategy, "v_shape");
@@ -1190,11 +1252,15 @@ mod tests {
             ts: 1100.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_poly(PolyTick {
             ts: 1180.0,
             up: 0.72,
             dn: 0.28,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         // (dn side latched its own high1 at ts=1100 (dn=0.75) but never dipped to
         // 0.30 after it, so neither side may fire.)
@@ -1211,6 +1277,8 @@ mod tests {
                 ts: 1250.0,
                 up: 0.35,
                 dn: 0.65,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("stop-loss must fire");
         assert_eq!(rec.outcome, Outcome::StopLoss);
@@ -1229,6 +1297,8 @@ mod tests {
                 ts: 1265.0,
                 up: 0.72,
                 dn: 0.28,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("timeout must fire at 25s");
         assert_eq!(rec.outcome, Outcome::Timeout);
@@ -1245,6 +1315,8 @@ mod tests {
                 ts: 1291.0, // cycle ends 1300 — inside the 10s window
                 up: 0.71,
                 dn: 0.29,
+                up_bid: 0.0,
+                up_ask: 0.0,
             })
             .expect("must force-unwind near cycle end");
         assert_eq!(rec.outcome, Outcome::Unwind);
@@ -1260,11 +1332,15 @@ mod tests {
             ts: 1100.0,
             up: 0.75,
             dn: 0.25,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_poly(PolyTick {
             ts: 1180.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // full prefix latched this cycle
 
         // New cycle: the recovery alone must NOT fire off last cycle's prefix.
@@ -1273,6 +1349,8 @@ mod tests {
             ts: 1400.0,
             up: 0.72,
             dn: 0.28,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(
             !m.is_holding(),
@@ -1303,16 +1381,22 @@ mod tests {
             ts: 1100.0,
             up: 0.75,
             dn: 0.25,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_poly(PolyTick {
             ts: 1180.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         m.on_poly(PolyTick {
             ts: 1240.0,
             up: 0.70,
             dn: 0.30,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(!m.is_holding(), "halted v_shape machine must not enter");
     }

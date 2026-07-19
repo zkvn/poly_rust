@@ -13,6 +13,21 @@ pub struct PolyTick {
     pub ts: f64,
     pub up: f64,
     pub dn: f64,
+    /// Real best bid/ask for the UP token (plan_unwind_5u_maker_2026-07-19
+    /// §2.2's mid-vs-bid TODO) — `0.0` (the `#[serde(default)]` value when
+    /// the publisher's payload doesn't carry them, e.g. an old `price_feed`
+    /// mid-rollout, or backtest replay data with no recorded spread) means
+    /// "not available this tick, treat as unknown," never a real quote —
+    /// consumers must fall back to `up`/`dn` (the mid) when `<= 0.0`. DOWN's
+    /// own best bid/ask are never observed independently (`marketdata.rs`
+    /// only ever subscribes to the UP token) but are exactly derivable from
+    /// these via the unified mint/merge book's complementary-token identity
+    /// (`docs/plan_market_maker_mvp_2026-07-19.md` §1): DOWN's bid = `1 -
+    /// up_ask`, DOWN's ask = `1 - up_bid`.
+    #[serde(default)]
+    pub up_bid: f64,
+    #[serde(default)]
+    pub up_ask: f64,
 }
 
 #[derive(Debug, Clone, Copy)]

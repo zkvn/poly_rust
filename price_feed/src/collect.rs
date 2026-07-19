@@ -85,11 +85,27 @@ fn binance_nats_payload(received_at_ms: i64, price: f64, server_ts_ms: i64) -> S
 /// Build the `price.poly.*` NATS payload. `server_ts` is the CLOB's own event
 /// timestamp for this bba/price-change update — see `binance_nats_payload`'s
 /// doc comment for why this (not `ts`) is what measures real exchange latency.
-fn poly_nats_payload(received_at_ms: i64, up_mid: f64, server_ts_ms: i64) -> String {
+///
+/// `up_bid`/`up_ask` (added plan_unwind_5u_maker_2026-07-19 §2.2's mid-vs-bid
+/// fix) are the real observed best bid/ask for the UP token, additive fields
+/// alongside the existing `up`/`dn` mid — NOT persisted to the `poly` parquet
+/// schema (`poly_schema()` below is unchanged), NATS-only. The trader's
+/// `PolyTick` deserializes them with `#[serde(default)]`, so an old trader
+/// binary (predating this field) or a rolling-deploy mismatch window simply
+/// ignores them, same forward-compat posture as `server_ts`.
+fn poly_nats_payload(
+    received_at_ms: i64,
+    up_mid: f64,
+    up_bid: f64,
+    up_ask: f64,
+    server_ts_ms: i64,
+) -> String {
     let ts = received_at_ms as f64 / 1000.0;
     let dn = 1.0 - up_mid;
     let server_ts = server_ts_json(server_ts_ms);
-    format!(r#"{{"ts":{ts:.3},"up":{up_mid:.6},"dn":{dn:.6},"server_ts":{server_ts}}}"#)
+    format!(
+        r#"{{"ts":{ts:.3},"up":{up_mid:.6},"dn":{dn:.6},"up_bid":{up_bid:.6},"up_ask":{up_ask:.6},"server_ts":{server_ts}}}"#
+    )
 }
 
 fn make_slug(asset: &str, slot: u64, suffix: &str) -> String {
@@ -1235,8 +1251,13 @@ fn spawn_bba_task(
                                         && idx < assets.len()
                                     {
                                         let up_mid = (bid + ask) / 2.0;
-                                        let payload =
-                                            poly_nats_payload(received_at_ms, up_mid, server_ts_ms);
+                                        let payload = poly_nats_payload(
+                                            received_at_ms,
+                                            up_mid,
+                                            bid,
+                                            ask,
+                                            server_ts_ms,
+                                        );
                                         let subject = format!("price.poly.{}", assets[idx]);
                                         let _ =
                                             nc.publish(subject, payload.into_bytes().into()).await;
@@ -1767,19 +1788,19 @@ mod tests {
 
     #[test]
     fn poly_nats_payload_includes_server_ts_and_complement_dn() {
-        let payload = poly_nats_payload(1_751_234_567_123, 0.65, 1_751_234_567_010);
+        let payload = poly_nats_payload(1_751_234_567_123, 0.65, 0.64, 0.66, 1_751_234_567_010);
         assert_eq!(
             payload,
-            r#"{"ts":1751234567.123,"up":0.650000,"dn":0.350000,"server_ts":1751234567.010}"#
+            r#"{"ts":1751234567.123,"up":0.650000,"dn":0.350000,"up_bid":0.640000,"up_ask":0.660000,"server_ts":1751234567.010}"#
         );
     }
 
     #[test]
     fn poly_nats_payload_omits_server_ts_when_unavailable() {
-        let payload = poly_nats_payload(1_000, 0.5, -1);
+        let payload = poly_nats_payload(1_000, 0.5, 0.49, 0.51, -1);
         assert_eq!(
             payload,
-            r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"server_ts":null}"#
+            r#"{"ts":1.000,"up":0.500000,"dn":0.500000,"up_bid":0.490000,"up_ask":0.510000,"server_ts":null}"#
         );
     }
 

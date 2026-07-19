@@ -97,6 +97,8 @@ mod tests {
             ts: 1190.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(s.saw_low());
     }
@@ -110,6 +112,8 @@ mod tests {
             ts: 1050.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(!s.saw_low());
     }
@@ -123,6 +127,8 @@ mod tests {
             ts: 1295.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(!s.saw_low());
     }
@@ -136,6 +142,8 @@ mod tests {
             ts: 1190.0,
             up: 0.35,
             dn: 0.65,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(!s.saw_low());
     }
@@ -148,6 +156,8 @@ mod tests {
             ts: 1190.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         assert!(s.saw_low());
         s.reset(&ctx(1300.0));

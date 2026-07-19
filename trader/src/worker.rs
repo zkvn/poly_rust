@@ -1174,6 +1174,24 @@ impl Worker {
             return vec![];
         }
 
+        // Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2), reversal only:
+        // rest at the real observed best bid — "join the bid" per the source
+        // MVP plan — not the signal's own mid. Falls back to mid when no
+        // real bid/ask has been observed yet this run (a fresh
+        // `LatestPolySignal`, an old price_feed predating this field, or
+        // backtest replay). Computed once, up front, so the pup gate below
+        // (§2.3) evaluates against the price that will *actually* be paid —
+        // using mid there instead would make the veto needlessly strict
+        // whenever the real bid undercuts it.
+        let is_maker_reversal = self.maker_entry && matches!(self.kind, StrategyKind::Reversal(_));
+        let entry_price = if is_maker_reversal {
+            self.latest_poly
+                .best_bid(intent.side)
+                .unwrap_or_else(|| intent.token_price())
+        } else {
+            intent.token_price()
+        };
+
         // p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3),
         // reversal only, checked before `mark_fired()` so a veto (like any
         // other gate block) doesn't lock the strategy out for the rest of
@@ -1190,7 +1208,7 @@ impl Worker {
                     pup_note = Some(Action::PupGateNote {
                         side: intent.side,
                         p_side: None,
-                        price: intent.token_price(),
+                        price: entry_price,
                         outcome: PupGateOutcome::SkippedNoData,
                     });
                 }
@@ -1199,11 +1217,11 @@ impl Worker {
                         Side::Up => p_up,
                         Side::Down => 1.0 - p_up,
                     };
-                    if p_side < intent.token_price() + min_edge {
+                    if p_side < entry_price + min_edge {
                         return vec![Action::PupGateNote {
                             side: intent.side,
                             p_side: Some(p_side),
-                            price: intent.token_price(),
+                            price: entry_price,
                             outcome: PupGateOutcome::Veto,
                         }];
                     }
@@ -1217,20 +1235,18 @@ impl Worker {
             StrategyKind::VShape(v) => v.mark_fired(),
         }
 
-        // Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2), reversal only:
-        // rest a GTC BUY at the signal price instead of a marketable FAK buy.
-        if self.maker_entry && matches!(self.kind, StrategyKind::Reversal(_)) {
+        if is_maker_reversal {
             self.state = WorkerState::EnteringMaker(MakerQuote {
                 side: intent.side,
                 entry_type: intent.entry_type,
-                quote_price: intent.token_price(),
+                quote_price: entry_price,
                 order_id: None,
                 quoted_at: now,
             });
             let mut actions = vec![
                 Action::PlaceLimitBuy {
                     side: intent.side,
-                    price: intent.token_price(),
+                    price: entry_price,
                     shares: MIN_GTC_SHARES,
                     signal_ts: now,
                 },
@@ -2039,11 +2055,15 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // dip latches saw_low_dn
         w.step(Event::PolyTick(PolyTick {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // recovery > reversal 0.60; delta_pct not yet known, no fire
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -2077,11 +2097,15 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::PolyTick(PolyTick {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // delta_pct not yet known, no fire
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -2119,16 +2143,22 @@ mod tests {
             ts: 1100.0,
             up: 0.75,
             dn: 0.25,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // high1 latched
         w.step(Event::PolyTick(PolyTick {
             ts: 1180.0,
             up: 0.25,
             dn: 0.75,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // low-after-high latched
         let actions = w.step(Event::PolyTick(PolyTick {
             ts: 1240.0,
             up: 0.70,
             dn: 0.30,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // >= high2 -> entry, no binance tick ever fed
         assert_eq!(
             actions,
@@ -2155,6 +2185,8 @@ mod tests {
             ts: 1400.0,
             up: 0.72,
             dn: 0.28,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(
             actions.is_empty(),
@@ -2180,6 +2212,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // dip latches saw_low_dn
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1200.0,
@@ -2190,6 +2224,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert_eq!(
             actions,
@@ -2232,12 +2268,16 @@ mod tests {
             ts: 1680.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // dip latches saw_low_dn
         // Recovery with NO BinanceTick yet this cycle — must not fire off stale dp.
         let actions = w.step(Event::PolyTick(PolyTick {
             ts: 1740.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(
             actions.is_empty(),
@@ -2277,6 +2317,8 @@ mod tests {
                 ts: 1180.0,
                 up: 0.85,
                 dn: 0.15,
+                up_bid: 0.0,
+                up_ask: 0.0,
             }));
             w.step(Event::BinanceTick(BinanceTick {
                 ts: 1200.0,
@@ -2286,6 +2328,8 @@ mod tests {
                 ts: 1240.0,
                 up: 0.30,
                 dn: 0.70,
+                up_bid: 0.0,
+                up_ask: 0.0,
             }));
             w.step(Event::BinanceTick(BinanceTick {
                 ts: 1250.0,
@@ -2439,6 +2483,8 @@ mod tests {
             ts: 1680.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1700.0,
@@ -2448,6 +2494,8 @@ mod tests {
             ts: 1740.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1750.0,
@@ -2477,11 +2525,15 @@ mod tests {
             ts: 101_180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::PolyTick(PolyTick {
             ts: 101_240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // delta_pct not yet known this cycle, no fire
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 101_250.0,
@@ -2693,6 +2745,8 @@ mod tests {
             ts: 1260.0,
             up: 0.55,
             dn: 0.45,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
         assert!(
@@ -2715,6 +2769,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1200.0,
@@ -2724,6 +2780,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -2997,6 +3055,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // entry 0.70 + unwind 0.03
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
@@ -3025,6 +3085,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         let actions = w.step(Event::UnwindFilled {
             sold_shares: 10.0,
@@ -3071,6 +3133,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1200.0,
@@ -3080,6 +3144,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -3096,6 +3162,8 @@ mod tests {
             ts: 1260.0,
             up: 0.12,
             dn: 0.88,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
@@ -3151,6 +3219,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
@@ -3208,6 +3278,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
@@ -3260,6 +3332,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // crosses tp -> Unwinding
         assert!(matches!(w.state, WorkerState::Unwinding(_)));
 
@@ -3279,6 +3353,8 @@ mod tests {
             ts: 1261.0,
             up: 0.20,
             dn: 0.80,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(
             actions.iter().any(|a| matches!(a, Action::ClosePosition { reason: CloseReason::TakeProfit, limit_price: Some(tp), .. } if (*tp - 0.73).abs() < 1e-9)),
@@ -3306,6 +3382,8 @@ mod tests {
             ts: 1260.0,
             up: 0.45,
             dn: 0.49,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert_eq!(
             actions,
@@ -3334,6 +3412,8 @@ mod tests {
             ts: 1260.0,
             up: 0.45,
             dn: 0.49,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // triggers StopExiting
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
 
@@ -3362,6 +3442,8 @@ mod tests {
             ts: 1280.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // 1250 + 30
         assert_eq!(
             actions,
@@ -3389,6 +3471,8 @@ mod tests {
             ts: 1279.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // 1250 + 29
         assert_eq!(actions, vec![], "must not fire 1s before the threshold");
         assert!(matches!(w.state, WorkerState::Holding(_)));
@@ -3405,6 +3489,8 @@ mod tests {
             ts: 100_000.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert_eq!(
             actions,
@@ -3428,6 +3514,8 @@ mod tests {
             ts: 1280.0,
             up: 0.45,
             dn: 0.49,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert_eq!(
             actions,
@@ -3457,6 +3545,8 @@ mod tests {
             ts: 1280.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // triggers TimingOut
         assert!(matches!(w.state, WorkerState::TimingOut(_)));
 
@@ -3474,6 +3564,8 @@ mod tests {
             ts: 1281.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert_eq!(
             actions,
@@ -3500,6 +3592,8 @@ mod tests {
             ts: 1280.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // triggers TimingOut
 
         let actions = w.step(Event::TimeoutSellFilled {
@@ -3532,6 +3626,8 @@ mod tests {
             ts: 1280.0,
             up: 0.40,
             dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // triggers TimingOut
 
         let snap = w.to_persisted();
@@ -3633,6 +3729,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::UnwindFilled {
             sold_shares: 10.0,
@@ -3665,6 +3763,8 @@ mod tests {
             ts: 1260.0,
             up: 0.55,
             dn: 0.45,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
         w.step(Event::StopSellFilled {
@@ -3905,6 +4005,8 @@ mod tests {
             ts: 1260.0,
             up: 0.27,
             dn: 0.73,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::UnwindFilled {
             sold_shares: 10.0,
@@ -4065,6 +4167,8 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1200.0,
@@ -4074,6 +4178,8 @@ mod tests {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -4108,11 +4214,15 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // dip latches saw_low_dn
         w.step(Event::PolyTick(PolyTick {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         })); // recovery > reversal 0.60; delta_pct not yet known, no fire
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -4149,6 +4259,165 @@ mod tests {
         assert!(
             (q.quoted_at - 1250.0).abs() < 1e-9,
             "quoted_at must be the entry-fire tick, for pull-to-cancel latency"
+        );
+    }
+
+    // ── Real best-bid quoting (plan_unwind_5u_maker_2026-07-19 §2.2 mid-vs-bid fix) ──
+
+    /// DOWN's quote price derives from the UP token's real *ask* (`1 -
+    /// up_ask`), not the mid — the exact gap the README TODO flagged and
+    /// this fix closes.
+    #[test]
+    fn maker_entry_down_side_quotes_at_real_best_bid_not_mid() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+            up_bid: 0.84,
+            up_ask: 0.86,
+        })); // dip latches saw_low_dn
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70, // mid — if the bug were still present, the quote would land here
+            up_bid: 0.29,
+            up_ask: 0.31,
+        })); // recovery > reversal 0.60; delta_pct not yet known, no fire
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        })); // dp < 0 -> fires entry
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [Action::PlaceLimitBuy { price, .. }, Action::Persist]
+                    if (*price - 0.69).abs() < 1e-9 // 1 - up_ask(0.31), NOT mid(0.70)
+            ),
+            "expected quote at the real best bid 0.69 (1 - up_ask), not mid 0.70: {actions:?}"
+        );
+        let WorkerState::EnteringMaker(q) = &w.state else {
+            panic!("expected EnteringMaker, got {:?}", w.state);
+        };
+        assert!((q.quote_price - 0.69).abs() < 1e-9);
+    }
+
+    /// UP's quote price reads the UP token's real *bid* directly, not the mid.
+    #[test]
+    fn maker_entry_up_side_quotes_at_real_best_bid_not_mid() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.15,
+            dn: 0.85,
+            up_bid: 0.14,
+            up_ask: 0.16,
+        })); // dip latches saw_low_up
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.70, // mid — if the bug were still present, the quote would land here
+            dn: 0.30,
+            up_bid: 0.68,
+            up_ask: 0.72,
+        })); // recovery > reversal 0.60
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 60_100.0, // dp > 0 -> fires UP entry
+        }));
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [
+                    Action::PlaceLimitBuy {
+                        side: Side::Up,
+                        price,
+                        ..
+                    },
+                    Action::Persist
+                ] if (*price - 0.68).abs() < 1e-9 // up_bid directly, NOT mid(0.70)
+            ),
+            "expected quote at the real best bid 0.68 (up_bid), not mid 0.70: {actions:?}"
+        );
+    }
+
+    /// No real bid/ask observed this run (e.g. an old price_feed, or a
+    /// fresh worker that hasn't seen a tick with real spread data) — falls
+    /// back to mid exactly like before this fix, not a panic or a zero price.
+    #[test]
+    fn maker_entry_falls_back_to_mid_when_no_bid_ask_observed() {
+        let p = maker_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        quote_down_position(&mut w); // uses up_bid: 0.0, up_ask: 0.0 throughout
+        let WorkerState::EnteringMaker(q) = &w.state else {
+            panic!("expected EnteringMaker, got {:?}", w.state);
+        };
+        assert!(
+            (q.quote_price - 0.70).abs() < 1e-9,
+            "must fall back to mid (0.70) when no real bid/ask was ever observed"
+        );
+    }
+
+    /// The pup gate's `price` reference is the same real entry price the
+    /// quote actually rests at, not mid — using mid there would make the
+    /// veto needlessly strict whenever the real bid undercuts it.
+    #[test]
+    fn pup_gate_uses_the_real_best_bid_as_entry_price_not_mid() {
+        let p = pup_gate_params(0.0);
+        let p = AssetParams {
+            maker_entry: true,
+            ..p
+        };
+        let mut w = Worker::new_reversal("BTC", &p);
+        // p_up=0.35 -> p_side (DOWN) = 0.65. Against mid (0.70) this would
+        // veto (0.65 < 0.70); against the real best bid 0.69 (1 - up_ask
+        // 0.31) it also vetoes (0.65 < 0.69) but the logged `price` field
+        // must reflect 0.69, not 0.70, either way.
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.35,
+            ts: 1245.0,
+        });
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+            up_bid: 0.84,
+            up_ask: 0.86,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+            up_bid: 0.29,
+            up_ask: 0.31,
+        }));
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }));
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [Action::PupGateNote {
+                    outcome: PupGateOutcome::Veto,
+                    price,
+                    ..
+                }] if (*price - 0.69).abs() < 1e-9
+            ),
+            "PupGateNote.price must be the real best bid (0.69), not mid (0.70): {actions:?}"
         );
     }
 
@@ -4261,7 +4530,9 @@ mod tests {
         let actions = w.step(Event::PolyTick(PolyTick {
             ts: 1290.0, // cycle_end_ts(1300) - 1290 = 10s <= 15s
             up: 0.30,
-            dn: 0.70, // still above reversal 0.60 — time, not price, must fire this
+            dn: 0.70, // still above reversal 0.60 — time, not price, must fire this,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(
             matches!(
@@ -4299,7 +4570,9 @@ mod tests {
         let actions = w.step(Event::PolyTick(PolyTick {
             ts: 1260.0, // well before T-15s (1285)
             up: 0.45,
-            dn: 0.55, // dropped back to/below reversal 0.60
+            dn: 0.55, // dropped back to/below reversal 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(
             matches!(
@@ -4336,7 +4609,9 @@ mod tests {
         let actions = w.step(Event::PolyTick(PolyTick {
             ts: 1245.0,
             up: 0.31,
-            dn: 0.69, // still > reversal 0.60, plenty of time left
+            dn: 0.69, // still > reversal 0.60, plenty of time left,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         assert!(actions.is_empty(), "{actions:?}");
         assert!(matches!(w.state, WorkerState::EnteringMaker(_)));
@@ -4372,6 +4647,8 @@ mod tests {
             ts: 1010.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1015.0,
@@ -4411,11 +4688,15 @@ mod tests {
             ts: 1180.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::PolyTick(PolyTick {
             ts: 1240.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         w.step(Event::BinanceTick(BinanceTick {
             ts: 1250.0,
@@ -4614,6 +4895,8 @@ mod tests {
             ts: 1010.0,
             up: 0.85,
             dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }));
         let actions = w.step(Event::BinanceTick(BinanceTick {
             ts: 1015.0,

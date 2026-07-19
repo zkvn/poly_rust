@@ -235,6 +235,8 @@ fn merge_ticks(b_cycle: &[BinanceRow], p_cycle: &[PolyRow]) -> Vec<MergedTick> {
                     ts: p_cycle[idx].ts,
                     up: p_cycle[idx].up,
                     dn: p_cycle[idx].dn,
+                    up_bid: 0.0,
+                    up_ask: 0.0,
                 })
             } else {
                 MergedTick::Binance(BinanceTick {

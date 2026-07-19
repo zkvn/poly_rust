@@ -140,6 +140,8 @@ mod tests {
             ts: poly_ts,
             up: 0.70,
             dn: 0.30,
+            up_bid: 0.0,
+            up_ask: 0.0,
         };
         spread.on_poly(tick);
         lp.on_poly(tick);

@@ -291,12 +291,16 @@ mod tests {
             ts: 1180.0,
             up: 0.80,
             dn: 0.20,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         // current price: dn=0.70 (> reversal 0.60), and dp < 0 (price fell)
         lp.on_poly(PolyTick {
             ts: 1250.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         dp.on_binance(BinanceTick {
             ts: 1250.0,
@@ -331,6 +335,8 @@ mod tests {
             ts: 1250.0,
             up: 0.30,
             dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         dp.on_binance(BinanceTick {
             ts: 1250.0,
@@ -364,6 +370,8 @@ mod tests {
             ts: 1270.0,
             up: 0.86,
             dn: 0.14,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         dp.on_binance(BinanceTick {
             ts: 1270.0,
@@ -395,6 +403,8 @@ mod tests {
             ts: 1200.0,
             up: 0.86,
             dn: 0.14,
+            up_bid: 0.0,
+            up_ask: 0.0,
         });
         dp.on_binance(BinanceTick {
             ts: 1200.0,
@@ -425,6 +435,8 @@ mod tests {
                 ts,
                 up,
                 dn: 1.0 - up,
+                up_bid: 0.0,
+                up_ask: 0.0,
             };
             v_up.on_poly(t);
             v_dn.on_poly(t);
@@ -484,6 +496,8 @@ mod tests {
             ts: 1100.0,
             up: 0.75,
             dn: 0.25,
+            up_bid: 0.0,
+            up_ask: 0.0,
         };
         v_up.on_poly(t);
         v_dn.on_poly(t);

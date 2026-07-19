@@ -93,6 +93,8 @@ mod tests {
             ts,
             up,
             dn: 1.0 - up,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }
     }
 
@@ -155,6 +157,8 @@ mod tests {
             ts: 1020.0,
             up: 0.0,
             dn: 1.0,
+            up_bid: 0.0,
+            up_ask: 0.0,
         }); // up=0.0 <= low but must be ignored as a non-price
         assert!(!s.dipped_after_high());
     }

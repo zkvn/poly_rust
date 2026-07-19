@@ -363,6 +363,12 @@ pub fn spawn_poly_task(
                                 ts: now_secs_f64(),
                                 up,
                                 dn: 1.0 - up,
+                                // Real observed bid/ask, already validated finite
+                                // and positive above — plan_unwind_5u_maker_2026-07-19
+                                // §2.2's mid-vs-bid fix: maker-entry quotes rest at
+                                // these, not the merged mid.
+                                up_bid: bid,
+                                up_ask: ask,
                             })
                             .is_err()
                         {
