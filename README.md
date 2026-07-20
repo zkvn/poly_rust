@@ -145,11 +145,31 @@ The recorder writes files per asset per hour into `price_feed/raw/` (and aggrega
 |---|---|---|
 | `{asset}_book_{date}_{HH}.parquet` | Full order-book snapshots (bid/ask ladder, sizes) | `subscribe_orderbook` |
 | `{asset}_poly_{date}_{HH}.parquet` | CLOB price feed: best-bid/ask + last trade price | `subscribe_best_bid_ask` + `subscribe_prices` |
-| `{asset}_binance_{date}_{HH}.parquet` | Binance spot trade price + latency (`raw/` only, period-independent) | `wss://stream.binance.com:9443/ws/{symbol}@trade` |
+| `{asset}_binance_{date}_{HH}.parquet` | Binance price (see below) + latency (`raw/` only, period-independent) | `@trade` (latency) + `@bookTicker` (price) |
 
 `{HH}` is the 2-digit HKT hour (00–23). Every `poly`/`book` row also carries `server_ts` (source
 exchange timestamp, ms) and `latency_ms` (local receive time − `server_ts`) for both the
 Polymarket CLOB feed and the Binance feed — this is the latency figure to read for either source.
+
+**Binance price source (changed 2026-07-20, `price_feed/doc/plan_binance_ws_quality_2026-07-20.md`
+§3):** `price_feed` now runs *two* Binance WS connections per asset instead of one —
+`wss://stream.binance.com:9443/ws/{symbol}@trade` (unchanged, still the source for `server_ts`/
+`latency_ms`) **and** a new `wss://stream.binance.com:9443/ws/{symbol}@bookTicker` connection,
+whose best-bid/ask mid (`(b+a)/2`) is now what gets published as `price` on `price.binance.<ASSET>`
+and written to the `binance` parquet's `binance` column. Root cause: `@trade` only fires on an
+executed trade, so a low-liquidity pair during a quiet period can genuinely go 10-60s+ with
+nothing to send (confirmed via Oracle log forensics — no connection failure, just no trades —
+`trader/doc/audit_48hr_unwind_maker_2026-07-20.md` §1); `@bookTicker` fires on any bid/ask change,
+which happens far more often, closing that gap for the p(up)/HAR-vol indicator that consumes this
+feed. The NATS payload gained a `trade_ts` field (paired with `server_ts`, both from `@trade`) so
+the Telegram exchange-latency figure stays anchored to a real timestamped Binance event even
+though `ts`/`price` now come from a different stream — see the plan doc's "Implementation notes"
+for why this couldn't be a simple URL swap. Considered and explicitly **not** doing: combining all
+assets onto one shared Binance connection, or running duplicate connections to the same stream for
+redundancy — see `price_feed/doc/data_ws_duplicates_2026-07-20.md` (research only) for why neither
+is warranted right now. `@bookTicker`-side observe-only staleness logging (mirroring the existing
+CLOB-side `[OBSERVE-STALE]` logger) is planned but deliberately not yet implemented — see the plan
+doc's §4 for the rollout order.
 
 **Assets recorded:** BNB, BTC, DOGE, ETH, HYPE, SOL, XRP (HYPE has no Binance market — its
 `_binance_` files are legitimately absent, not a bug).

@@ -1,6 +1,11 @@
 # Plan — Binance WS "staleness" is mostly a stream-choice problem, not a connection-health problem
 
-Status: **proposal only, not implemented.** Written per user request after
+Status: **§3 (bookTicker) implemented and deployed 2026-07-20.** §4 (observe-only staleness
+logging for Binance) deliberately **not yet implemented** — user's explicit rollout order was
+"§3 first, once that's tested ok, roll out §4" — so §4 stays pending until §3 has some live
+soak time on Oracle to confirm it actually closes the staleness gaps before adding more
+machinery on top. §5 (REST reconciliation) untouched, per §6's original "only if §4's data
+still shows a gap" ordering. Originally written per user request after
 `trader/doc/audit_48hr_unwind_maker_2026-07-20.md` §1 found a real DOGE indicator-staleness
 incident traced back to `price_feed`'s Binance ingestion. This doc researches root cause and
 proposes fixes for `price_feed`'s Binance leg specifically; it does not touch the `indicator`/
@@ -87,6 +92,45 @@ midpoint would skew (e.g. spread-driven noise on a wide-spread quiet pair)? `ind
 math.rs`/`engine.rs` weren't audited for this in writing this plan — needs a check (and ideally
 a side-by-side replay comparison, `indicator`'s own `replay` subcommand exists exactly for this)
 before switching the live feed, not assumed safe by analogy alone.
+
+### Implementation notes (2026-07-20) — what actually shipped, and why it differs from "just switch the URL"
+
+User's explicit refinement changed the shape of this fix from a straight replacement to an
+**addition**: `@bookTicker` runs *alongside* `@trade`, not instead of it — "so that telegram
+latency info is still based on actual server ts and there's some objective data, but price
+source definitely can be switched to mid price for downstream calculations like delta and
+p(up)." This surfaced a real design tension the original one-line "change the URL" proposal
+glossed over: the published `ts` field is consumed by *two* different downstream things that
+need different semantics —
+
+- `indicator`'s `on_tick(ts, price)` needs `ts` to keep advancing in near-real-time (it drives a
+  1Hz price-fill loop) — so `ts` has to track whichever stream is actually updating, which after
+  this fix means `@bookTicker`.
+- Trader's `exchange_latency_ms(local_ts, server_ts)` needs `local_ts` and `server_ts` to be two
+  timestamps *of the same message* — pairing a bookTicker receipt time against `@trade`'s `E`
+  field would make the "latency" figure meaningless (comparing unrelated events).
+
+Resolved by decoupling the wire format into two independent pairs instead of one: `ts`/`price`
+(from `@bookTicker`, used for indicator freshness + downstream delta/p(up)) and a **new**
+`server_ts`/`trade_ts` pair (both from `@trade`, used exclusively for the Telegram latency
+figure — `trade_ts` is new, `price_feed`'s own local receipt time of the `@trade` message that
+produced `server_ts`). `price_feed`'s `BinanceState` struct, `spawn_binance_task` (`@trade`,
+now latency-only) and the new `spawn_binance_bookticker_task` (`@bookTicker`, now the sole
+price source) implement this split; `trader`'s `AssetSlot` gained a matching
+`last_binance_trade_ts` field and `extract_trade_ts` parser so `exchange_latency_ms` uses the
+right pair. Both crates: full test suite green (299 trader + 47 live.rs + 44 price_feed tests),
+`cargo fmt --all --check` and `cargo clippy --all-targets --all-features -- -D warnings` clean.
+Verified live against real Binance payloads before writing this section (not assumed from docs
+alone, matching this doc's own §3 discipline): `@bookTicker` carries `b`/`a` (best bid/ask) and
+no `E` field, confirming the open question above — no server event-time to lose by switching.
+
+The `indicator`-math open question above was reasoned through rather than replay-tested:
+`indicator::AssetEngine::on_tick(ts, price)` treats `price` as an opaque generic input series (no
+"last trade" assumption anywhere in `engine.rs`) — a continuously-updating midpoint is a strict
+improvement for its 1Hz fill logic, not a risk. A side-by-side replay comparison remains a good
+idea for validating the *quality* (not correctness) of p(up) under the new price source once
+enough live data has accumulated, but isn't a blocker the way a hard code assumption would have
+been.
 
 ## 4. Phase 1 (cheap, do this regardless of §3's outcome): observe-only staleness logging for Binance
 
