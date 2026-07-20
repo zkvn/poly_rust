@@ -68,18 +68,32 @@ fn server_ts_json(server_ts_ms: i64) -> String {
     }
 }
 
-/// Build the `price.binance.*` NATS payload. `ts` is the sample's own real
-/// receive timestamp (`received_at_ms`, ms since epoch) — deliberately *not*
-/// the 250ms sampler tick's fire time, which is quantized to a 0.25s grid for
-/// parquet bucketing and can round up to 125ms into the future of when the
-/// price was actually received, producing a negative signal_latency downstream
-/// in trader/src/bin/live.rs. `server_ts` is Binance's own event timestamp
-/// (the `E` field) — lets the trader compute real exchange network latency
-/// (received_at_ms - server_ts) instead of just the local NATS+processing hop.
-fn binance_nats_payload(received_at_ms: i64, price: f64, server_ts_ms: i64) -> String {
-    let ts = received_at_ms as f64 / 1000.0;
-    let server_ts = server_ts_json(server_ts_ms);
-    format!(r#"{{"ts":{ts:.3},"price":{price:.6},"server_ts":{server_ts}}}"#)
+/// Build the `price.binance.*` NATS payload. `ts` is the price sample's own
+/// real receive timestamp (`price_received_at_ms`, ms since epoch, sourced
+/// from `@bookTicker` as of 2026-07-20 — see `BinanceState`) — deliberately
+/// *not* the 250ms sampler tick's fire time, which is quantized to a 0.25s
+/// grid for parquet bucketing and can round up to 125ms into the future of
+/// when the price was actually received, producing a negative signal_latency
+/// downstream in trader/src/bin/live.rs.
+///
+/// `server_ts`/`trade_ts` are a *separate* pair, both from `@trade`: Binance's
+/// own event timestamp (the `E` field) and this project's local receipt time
+/// of that same trade message — deliberately decoupled from `ts`/`price`
+/// (plan_binance_ws_quality_2026-07-20.md §3) so the trader can still compute
+/// real exchange network latency (`trade_ts - server_ts`) from two timestamps
+/// of the same message, even though `ts`/`price` now track a different
+/// stream. `null` when `@trade` hasn't delivered a message yet (or a message
+/// arrived with no `E` field).
+fn binance_nats_payload(
+    price_received_at_ms: i64,
+    price: f64,
+    trade_server_ts_ms: i64,
+    trade_received_at_ms: i64,
+) -> String {
+    let ts = price_received_at_ms as f64 / 1000.0;
+    let server_ts = server_ts_json(trade_server_ts_ms);
+    let trade_ts = server_ts_json(trade_received_at_ms);
+    format!(r#"{{"ts":{ts:.3},"price":{price:.6},"server_ts":{server_ts},"trade_ts":{trade_ts}}}"#)
 }
 
 /// Build the `price.poly.*` NATS payload. `server_ts` is the CLOB's own event
@@ -874,11 +888,26 @@ impl AssetWriters {
 // shared across the 5m/15m/4hr durations, matching Python's single
 // prices/{ASSET}_binance.parquet) ────────────────────────────────────────────
 
+/// Two independent halves, written by two independent WS tasks
+/// (plan_binance_ws_quality_2026-07-20.md §3):
+///
+/// - `price`/`price_received_at_ms` come from `spawn_binance_bookticker_task`
+///   (`@bookTicker`'s best-bid/ask mid) — fires on *any* quote change, so it
+///   keeps updating through the multi-second quiet-market gaps a trade-only
+///   feed leaves on low-liquidity pairs. This is what `indicator`/`trader`
+///   use downstream as the Binance "price" for delta_pct/p(up).
+/// - `trade_server_ts_ms`/`trade_received_at_ms` come from `spawn_binance_task`
+///   (`@trade`'s own `E` event-time field + this project's local receipt of
+///   that same message) — kept fully decoupled from `price`'s source so the
+///   exchange-latency figure trader shows in Telegram always compares two
+///   timestamps from the *same* message (bookTicker carries no server
+///   event-time field to pair against a receipt time with).
 #[derive(Clone, Copy, Default)]
 struct BinanceState {
     price: f64,
-    server_ts_ms: i64,   // Binance `E` field (event time, ms)
-    received_at_ms: i64, // client-side ms when the WS message was received
+    price_received_at_ms: i64,
+    trade_server_ts_ms: i64,
+    trade_received_at_ms: i64,
 }
 
 struct BinanceWriters {
@@ -967,9 +996,13 @@ impl BinanceWriters {
 
 /// One WS connection to `wss://stream.binance.com:9443/ws/{symbol}@trade` per
 /// asset. Public endpoint, no auth/subscribe handshake. Reconnects with a 2s
-/// backoff on drop. Writes the latest trade price + Binance's own `E` (event
-/// time) into the shared per-asset slot — the 250ms sampler (in `run()`) reads
-/// it, so this task never blocks on file I/O.
+/// backoff on drop. As of 2026-07-20 (plan_binance_ws_quality_2026-07-20.md §3)
+/// this stream no longer supplies the published "price" — that's
+/// `spawn_binance_bookticker_task`'s job now — it exists purely to capture
+/// Binance's own `E` (event time) + this project's local receipt of that same
+/// trade message, so the exchange-latency figure trader shows in Telegram
+/// stays anchored to a real timestamped Binance event. The 250ms sampler (in
+/// `run()`) reads the shared slot, so this task never blocks on file I/O.
 fn spawn_binance_task(asset: String, idx: usize, state: Arc<Mutex<Vec<BinanceState>>>) {
     let symbol = format!("{}usdt", asset.to_lowercase());
     tokio::spawn(async move {
@@ -977,23 +1010,26 @@ fn spawn_binance_task(asset: String, idx: usize, state: Arc<Mutex<Vec<BinanceSta
         loop {
             match tokio_tungstenite::connect_async(&url).await {
                 Ok((ws, _)) => {
-                    eprintln!("[{asset}] binance ws connected: {url}");
+                    eprintln!("[{asset}] binance trade ws connected: {url}");
                     let (_write, mut read) = ws.split();
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(Message::Text(txt)) => {
                                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                                    let price = v["p"].as_str().and_then(|s| s.parse::<f64>().ok());
-                                    if let Some(price) = price {
+                                    // Validity gate only, matching the pre-2026-07-20
+                                    // behavior — `p` isn't stored anymore, `@bookTicker`
+                                    // supplies the published price now.
+                                    let is_trade = v["p"]
+                                        .as_str()
+                                        .and_then(|s| s.parse::<f64>().ok())
+                                        .is_some();
+                                    if is_trade {
                                         let server_ts_ms = v["E"].as_i64().unwrap_or(0);
                                         let received_at_ms = now_ms();
                                         let mut st = state.lock().unwrap();
                                         if idx < st.len() {
-                                            st[idx] = BinanceState {
-                                                price,
-                                                server_ts_ms,
-                                                received_at_ms,
-                                            };
+                                            st[idx].trade_server_ts_ms = server_ts_ms;
+                                            st[idx].trade_received_at_ms = received_at_ms;
                                         }
                                     }
                                 }
@@ -1002,9 +1038,61 @@ fn spawn_binance_task(asset: String, idx: usize, state: Arc<Mutex<Vec<BinanceSta
                             _ => {}
                         }
                     }
-                    eprintln!("[{asset}] binance ws closed, reconnecting…");
+                    eprintln!("[{asset}] binance trade ws closed, reconnecting…");
                 }
-                Err(e) => eprintln!("[{asset}] binance connect failed: {e:#}, retrying…"),
+                Err(e) => eprintln!("[{asset}] binance trade connect failed: {e:#}, retrying…"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+}
+
+/// One WS connection to `wss://stream.binance.com:9443/ws/{symbol}@bookTicker`
+/// per asset — added 2026-07-20 (plan_binance_ws_quality_2026-07-20.md §3)
+/// *alongside*, not instead of, `spawn_binance_task`'s `@trade` stream.
+/// `@bookTicker` fires on any best-bid/ask change, which happens far more
+/// often than executed trades on a quiet low-liquidity pair — publishing
+/// `(bid+ask)/2` as `price` here is what actually closes the multi-second
+/// staleness gaps `@trade`-only sampling left in `indicator`'s p(up)/HAR-vol
+/// feed (trader/doc/audit_48hr_unwind_maker_2026-07-20.md §1). The bookTicker
+/// payload carries no server event-time (`E`) field, so this task never
+/// touches `trade_server_ts_ms`/`trade_received_at_ms` — those stay
+/// exclusively the `@trade` task's job (see `BinanceState` doc comment).
+fn spawn_binance_bookticker_task(asset: String, idx: usize, state: Arc<Mutex<Vec<BinanceState>>>) {
+    let symbol = format!("{}usdt", asset.to_lowercase());
+    tokio::spawn(async move {
+        let url = format!("wss://stream.binance.com:9443/ws/{symbol}@bookTicker");
+        loop {
+            match tokio_tungstenite::connect_async(&url).await {
+                Ok((ws, _)) => {
+                    eprintln!("[{asset}] binance bookTicker ws connected: {url}");
+                    let (_write, mut read) = ws.split();
+                    while let Some(msg) = read.next().await {
+                        match msg {
+                            Ok(Message::Text(txt)) => {
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                    let bid = v["b"].as_str().and_then(|s| s.parse::<f64>().ok());
+                                    let ask = v["a"].as_str().and_then(|s| s.parse::<f64>().ok());
+                                    if let (Some(bid), Some(ask)) = (bid, ask) {
+                                        let mid = (bid + ask) / 2.0;
+                                        let received_at_ms = now_ms();
+                                        let mut st = state.lock().unwrap();
+                                        if idx < st.len() {
+                                            st[idx].price = mid;
+                                            st[idx].price_received_at_ms = received_at_ms;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            _ => {}
+                        }
+                    }
+                    eprintln!("[{asset}] binance bookTicker ws closed, reconnecting…");
+                }
+                Err(e) => {
+                    eprintln!("[{asset}] binance bookTicker connect failed: {e:#}, retrying…")
+                }
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
@@ -1595,6 +1683,7 @@ pub async fn run(
     let binance_state = Arc::new(Mutex::new(vec![BinanceState::default(); n]));
     for (i, asset) in assets.iter().enumerate() {
         spawn_binance_task(asset.clone(), i, Arc::clone(&binance_state));
+        spawn_binance_bookticker_task(asset.clone(), i, Arc::clone(&binance_state));
     }
     let mut binance_writers: Vec<BinanceWriters> = assets
         .iter()
@@ -1687,12 +1776,23 @@ pub async fn run(
                     if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
                     if let Some(ref nc) = nats {
-                        let payload = binance_nats_payload(sample.received_at_ms, sample.price, sample.server_ts_ms);
+                        let payload = binance_nats_payload(
+                            sample.price_received_at_ms,
+                            sample.price,
+                            sample.trade_server_ts_ms,
+                            sample.trade_received_at_ms,
+                        );
                         let _ = nc.publish(format!("price.binance.{}", assets[i]), payload.into_bytes().into()).await;
                     }
                     let slug = slugs.get(i).cloned().unwrap_or_default();
                     if slug.is_empty() { continue; }
-                    if let Err(e) = binance_writers[i].write_sample(ts, sample.price, &slug, sample.server_ts_ms, sample.received_at_ms) {
+                    if let Err(e) = binance_writers[i].write_sample(
+                        ts,
+                        sample.price,
+                        &slug,
+                        sample.trade_server_ts_ms,
+                        sample.trade_received_at_ms,
+                    ) {
                         eprintln!("[{}] binance write: {e:#}", assets[i]);
                     }
                 }
@@ -1759,20 +1859,25 @@ mod tests {
     #[test]
     fn binance_nats_payload_uses_exact_received_at_ms_unrounded() {
         // 1751234567.123s, deliberately not aligned to any 0.25s/0.2s grid point.
-        let received_at_ms: i64 = 1_751_234_567_123;
-        let payload = binance_nats_payload(received_at_ms, 42.5, 1_751_234_567_010);
+        let price_received_at_ms: i64 = 1_751_234_567_123;
+        let payload = binance_nats_payload(
+            price_received_at_ms,
+            42.5,
+            1_751_234_567_010,
+            1_751_234_567_050,
+        );
         assert_eq!(
             payload,
-            r#"{"ts":1751234567.123,"price":42.500000,"server_ts":1751234567.010}"#
+            r#"{"ts":1751234567.123,"price":42.500000,"server_ts":1751234567.010,"trade_ts":1751234567.050}"#
         );
     }
 
     #[test]
     fn binance_nats_payload_formats_price_with_six_decimals() {
-        let payload = binance_nats_payload(1_000, 0.1, 900);
+        let payload = binance_nats_payload(1_000, 0.1, 900, 950);
         assert_eq!(
             payload,
-            r#"{"ts":1.000,"price":0.100000,"server_ts":0.900}"#
+            r#"{"ts":1.000,"price":0.100000,"server_ts":0.900,"trade_ts":0.950}"#
         );
     }
 
@@ -1780,10 +1885,15 @@ mod tests {
     /// (see `server_ts_ms = v["E"].as_i64().unwrap_or(0)` above) — the NATS
     /// payload must publish `null`, not a bogus `0.000` timestamp the trader
     /// would otherwise treat as a real (and wildly wrong) exchange latency.
+    /// Same treatment for `trade_ts` when `@trade` hasn't delivered anything
+    /// yet (both default to 0 together — see `BinanceState::default()`).
     #[test]
     fn binance_nats_payload_omits_server_ts_when_zero() {
-        let payload = binance_nats_payload(1_000, 0.1, 0);
-        assert_eq!(payload, r#"{"ts":1.000,"price":0.100000,"server_ts":null}"#);
+        let payload = binance_nats_payload(1_000, 0.1, 0, 0);
+        assert_eq!(
+            payload,
+            r#"{"ts":1.000,"price":0.100000,"server_ts":null,"trade_ts":null}"#
+        );
     }
 
     #[test]

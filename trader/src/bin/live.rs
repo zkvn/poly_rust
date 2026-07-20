@@ -579,6 +579,25 @@ fn extract_server_ts(payload: &[u8]) -> Option<f64> {
         .and_then(|s| s.server_ts)
 }
 
+/// `price.binance.*`-only field (added 2026-07-20, plan_binance_ws_quality_
+/// 2026-07-20.md §3): this project's own local receipt time of the `@trade`
+/// message that produced `server_ts`, published as `trade_ts` and kept
+/// separate from the tick's own `ts` (which now tracks `@bookTicker` instead
+/// — see `price_feed/src/collect.rs`'s `binance_nats_payload` doc comment).
+/// Paired with `server_ts` for `exchange_latency_ms` so the latency figure
+/// always compares two timestamps of the *same* Binance message, even though
+/// `ts`/`price` come from a different stream now.
+fn extract_trade_ts(payload: &[u8]) -> Option<f64> {
+    #[derive(serde::Deserialize)]
+    struct TradeTs {
+        #[serde(default)]
+        trade_ts: Option<f64>,
+    }
+    serde_json::from_slice::<TradeTs>(payload)
+        .ok()
+        .and_then(|s| s.trade_ts)
+}
+
 /// `/status`'s win/loss/pnl counters — `Worker` has no notion of these, they're
 /// purely this binary's `AssetSlot` bookkeeping. Persisted alongside the
 /// worker's own `PersistedState` so a restart with no new trade in between
@@ -965,6 +984,15 @@ struct AssetSlot {
     /// the trigger tick's own moment.
     last_binance_ts: Option<f64>,
     last_poly_ts: Option<f64>,
+    /// Binance-only (added 2026-07-20, plan_binance_ws_quality_2026-07-20.md
+    /// §3): the last `@trade` message's own local receipt time, paired with
+    /// `last_binance_server_ts` for `exchange_latency_ms`. Since `last_binance_ts`
+    /// now tracks `@bookTicker` (a different stream, with no server event-time
+    /// field to pair against), it can no longer stand in for this — see
+    /// `price_feed`'s `binance_nats_payload` doc comment for why the two are
+    /// deliberately decoupled. No `_poly` counterpart: the CLOB feed was never
+    /// split into two streams.
+    last_binance_trade_ts: Option<f64>,
 }
 
 impl AssetSlot {
@@ -1292,7 +1320,7 @@ impl Driver<'_> {
                 let clob_latency_ms =
                     exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
                 let binance_latency_ms =
-                    exchange_latency_ms(slot.last_binance_ts, slot.last_binance_server_ts);
+                    exchange_latency_ms(slot.last_binance_trade_ts, slot.last_binance_server_ts);
                 let clob_tag = match feed {
                     Feed::Clob => "trigger".to_string(),
                     Feed::Binance => fmt_ago(slot.last_poly_ts, received_ts),
@@ -2102,8 +2130,13 @@ async fn main() -> Result<()> {
     // from Polymarket CLOB's/Binance's own event time), when the source
     // provided one — `None` on the direct-WS (non-NATS) path, which has no
     // price_feed hop to have captured it.
+    // Binance only, fourth element: `@trade`'s own local receipt time (`trade_ts`,
+    // plan_binance_ws_quality_2026-07-20.md §3) — paired with the third element
+    // for `exchange_latency_ms`, since the tick's own `ts` now tracks
+    // `@bookTicker` instead of `@trade`. Always `None` on the direct-WS path
+    // and on `price.poly.*` (no split there).
     let (binance_tx, mut binance_rx) =
-        mpsc::unbounded_channel::<(String, BinanceTick, Option<f64>)>();
+        mpsc::unbounded_channel::<(String, BinanceTick, Option<f64>, Option<f64>)>();
     let (poly_tx, mut poly_rx) = mpsc::unbounded_channel::<(String, PolyTick, Option<f64>)>();
     // (asset, strategy, Some(won)/None-on-timeout) handoff from background
     // Gamma-resolution watchers (spawned per closed trade) back into the
@@ -2224,7 +2257,7 @@ async fn main() -> Result<()> {
                     let a = asset.clone();
                     tokio::spawn(async move {
                         while let Some(tick) = raw_rx.recv().await {
-                            if out.send((a.clone(), tick, None)).is_err() {
+                            if out.send((a.clone(), tick, None, None)).is_err() {
                                 return;
                             }
                         }
@@ -2272,6 +2305,7 @@ async fn main() -> Result<()> {
                     last_poly_server_ts: None,
                     last_binance_ts: None,
                     last_poly_ts: None,
+                    last_binance_trade_ts: None,
                 });
                 // A restart-restored halt (or lack of one) is otherwise invisible
                 // to control_log.jsonl — the previous process's own halt/resume/
@@ -2316,7 +2350,8 @@ async fn main() -> Result<()> {
                             println!("[NATS] first binance tick for {a}: price={:.4}", tick.price);
                         }
                         let server_ts = extract_server_ts(&msg.payload);
-                        if out.send((a.clone(), tick, server_ts)).is_err() {
+                        let trade_ts = extract_trade_ts(&msg.payload);
+                        if out.send((a.clone(), tick, server_ts, trade_ts)).is_err() {
                             return;
                         }
                     }
@@ -2550,11 +2585,12 @@ async fn main() -> Result<()> {
                 indicator_store.update(snap);
             }
 
-            Some((asset, tick, server_ts)) = binance_rx.recv() => {
+            Some((asset, tick, server_ts, trade_ts)) = binance_rx.recv() => {
                 for slot in assets.iter_mut().filter(|s| s.worker.asset == asset) {
                     slot.last_binance = tick.price;
                     slot.last_binance_server_ts = server_ts;
                     slot.last_binance_ts = Some(tick.ts);
+                    slot.last_binance_trade_ts = trade_ts;
                     // `Worker`'s own state machine already can't fire a second
                     // entry within one cycle (on_binance only acts from
                     // Watching, and entering leaves Watching until the next
@@ -3418,6 +3454,23 @@ mod exchange_latency_tests {
     }
 
     #[test]
+    fn extract_trade_ts_reads_the_field_when_present() {
+        let payload = br#"{"ts":1751234567.123,"price":42.5,"server_ts":1751234567.010,"trade_ts":1751234567.050}"#;
+        assert_eq!(extract_trade_ts(payload), Some(1751234567.050));
+    }
+
+    #[test]
+    fn extract_trade_ts_is_none_on_null_or_missing() {
+        let with_null = br#"{"ts":1.0,"price":1.0,"server_ts":null,"trade_ts":null}"#;
+        assert_eq!(extract_trade_ts(with_null), None);
+
+        // Pre-2026-07-20 payloads (or a price_feed that hasn't been
+        // redeployed yet) simply lack the field — must not error out.
+        let without_field = br#"{"ts":1.0,"price":1.0,"server_ts":0.9}"#;
+        assert_eq!(extract_trade_ts(without_field), None);
+    }
+
+    #[test]
     fn fmt_latency_formats_some_and_none() {
         assert_eq!(fmt_latency(Some(12.4)), "12ms");
         assert_eq!(fmt_latency(Some(-3.0)), "-3ms");
@@ -3728,6 +3781,7 @@ mod halt_persist_tests {
             last_poly_server_ts: None,
             last_binance_ts: None,
             last_poly_ts: None,
+            last_binance_trade_ts: None,
         }
     }
 
