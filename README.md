@@ -19,6 +19,31 @@ maker-entry reversal strategy with a p(up) negative-edge veto. Design intent:
 entry/exit rules, the maker-quote lifecycle, fill simulation, CSV/console log reference:
 `trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md`.
 
+**Order flow per trade:** two resting GTC limit orders in the normal case — an entry BUY at
+the real observed best bid, then (the instant that fills) an exit SELL at the take-profit
+target (`entry_price + unwind_pnl_rev`). The exit order is placed in the *same* synchronous
+action batch as the entry-fill confirmation (`worker.rs::finalize_entry_fill`), not just
+typically-fast — there's no tick/event window where anything else can run in between. If
+price reaches the take-profit target before `unwind_time_rev` (26–30s per asset) elapses, that
+second limit order fills too (`Outcome::Unwind`). If it doesn't, the still-resting exit limit
+gets **cancelled unfilled** and a **third, different order type** — an unbounded market (FAK)
+close — force-exits the position instead (`Outcome::Timeout`; stop-loss is disabled for this
+run, so timeout is the only other exit path). Real example, both outcomes, from
+`trader/live_logs/live.log`:
+
+```
+[ORDER] MAKER ENTRY BUY 5.00 @ 0.7600 (Down)           # entry limit placed
+[PAPER-FILL] resting Buy paper-2 filled 5.00 @ 0.7600  # entry fills
+[ORDER] LIMIT SELL 5.0000 @ 0.9100                     # exit limit placed, same instant
+[PAPER-FILL] resting Sell paper-3 filled 5.00 @ 0.9100 # take-profit hit -> Unwind
+
+[ORDER] MAKER ENTRY BUY 5.00 @ 0.8200 (Down)           # entry limit placed
+[PAPER-FILL] resting Buy paper-15 filled 5.00 @ 0.8200 # entry fills
+[ORDER] LIMIT SELL 5.0000 @ 0.9700                     # exit limit placed, same instant
+[ORDER] CANCEL paper-16 -> true                        # unwind_time_rev elapsed first
+[ORDER] CLOSE 5.0000 (Timeout) -> status=Matched       # unbounded market close instead
+```
+
 <details>
 <summary><strong>Git branch convention</strong></summary>
 
