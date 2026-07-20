@@ -66,6 +66,16 @@ impl IndicatorStore {
             .get(asset)
             .filter(|s| now - s.ts <= max_age_secs)
     }
+
+    /// The asset's latest snapshot regardless of age — `None` only when the
+    /// asset has never been seen at all. Lets a display distinguish "never
+    /// received" from "stale" instead of collapsing both into a blank "no
+    /// data" (trader/doc/plan_stale_data_gate_2026-07-20.md §1, audit item 1:
+    /// a reader should be able to see the last-known reading and its age, not
+    /// just that it's too old to act on).
+    pub fn raw(&self, asset: &str) -> Option<&IndicatorSnapshot> {
+        self.latest.get(asset)
+    }
 }
 
 #[cfg(test)]

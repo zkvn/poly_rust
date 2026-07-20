@@ -73,27 +73,32 @@ pub enum CancelQuoteReason {
 
 // ── p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3) ──────────
 
-/// Snapshots older than this read as absent for the pup gate specifically —
-/// a fixed 10s fail-open window, distinct from `StrategyToml.indicator_max_age_secs`
-/// (default 5.0s, used by the Phase-1 heartbeat display) per the plan's own
-/// wording. `pub` so `bin/live.rs`'s Telegram/`\`/status\`` indicator displays
-/// can use the same window the gate itself decides on — using the tighter
-/// heartbeat default there instead produced a real, confusing contradiction:
-/// a quote whose `[PUP-GATE]` line never fired (meaning the gate found fresh
-/// data and passed cleanly) showing "no data" in the same notification,
-/// because 5.0s had already elapsed by render time but 10.0s hadn't. See
-/// trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md §4.
-pub const PUP_GATE_MAX_AGE_SECS: f64 = 10.0;
+/// Snapshots older than this read as absent for the pup gate — and, as of
+/// 2026-07-20, for every display that shows a `p_up` reading too (Telegram,
+/// `/status`, the console heartbeat): one constant, no separate display-only
+/// threshold. Was `10.0` (fail-open window) until the "never trade on stale
+/// information" principle (`CLAUDE.md` "Trading principles") replaced the
+/// gate's fail-open behavior with fail-closed — see `PupGateOutcome::StaleBlocked`
+/// and `trader/doc/plan_stale_data_gate_2026-07-20.md` §1. Tightened to `2.0`
+/// in the same change: a fail-*closed* gate should use a genuinely tight
+/// freshness bar, not the looser window that only made sense when staleness
+/// was merely informational.
+pub const PUP_GATE_MAX_AGE_SECS: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PupGateOutcome {
     /// `p_side < entry_price + pup_edge_min_rev` — the entry was blocked.
     Veto,
     /// No fresh `p_up` reading (never received, or older than
-    /// `PUP_GATE_MAX_AGE_SECS`) — fails open (does NOT veto) so a dead
-    /// indicator daemon can't silently halt all trading, but is still logged
-    /// so indicator uptime is measurable from the 48h evaluation.
-    SkippedNoData,
+    /// `PUP_GATE_MAX_AGE_SECS`) — the entry is blocked, same as `Veto`.
+    /// Never trade on stale information (`CLAUDE.md` "Trading principles"):
+    /// this used to fail open (does NOT veto), on the premise that a dead
+    /// indicator daemon must never silently halt trading — reversed
+    /// 2026-07-20 after a genuine indicator staleness window let a bad-edge
+    /// DOGE entry through (`trader/doc/audit_48hr_unwind_maker_2026-07-20.md`
+    /// §1). A Telegram warning is sent instead so a degraded/dead indicator
+    /// stays visible without silently blocking-and-hiding the block.
+    StaleBlocked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,9 +333,23 @@ pub enum Action {
         size_usdc: f64,
         signal_ts: f64,
     },
+    /// `side`/`entry_price` are the position's own entry, carried along so
+    /// the driver can send one merged "entry filled -> exit resting"
+    /// Telegram message instead of two (audit item 2,
+    /// trader/doc/plan_stale_data_gate_2026-07-20.md §2) — the exit order is
+    /// always placed in the same synchronous action batch as the entry-fill
+    /// confirmation (`finalize_entry_fill`), so there's never a real "later"
+    /// moment to report the fill separately. `via_maker_entry` scopes the
+    /// merged notification to the maker-entry path only, where there's no
+    /// other fill-time notification to duplicate; the FAK path's existing
+    /// "Order placed" message already covers the fill, so `PlaceLimitSell`
+    /// stays console-only there.
     PlaceLimitSell {
         shares: f64,
         price: f64,
+        side: Side,
+        entry_price: f64,
+        via_maker_entry: bool,
     },
     /// Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2): rest a GTC BUY at
     /// `price` for `shares` (`execution::MIN_GTC_SHARES`) instead of a
@@ -357,16 +376,14 @@ pub enum Action {
         quoted_at: f64,
     },
     /// p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3):
-    /// diagnostic-only, logged by the driver (`Veto` needs a CSV row so the
-    /// 48h evaluation can gamma-resolve the counterfactual; `SkippedNoData`
-    /// just needs a console line for indicator-uptime counting). Emitted
-    /// alongside — never instead of — whatever `try_enter` otherwise
-    /// returns: a `Veto` replaces the entry actions entirely (the entry
-    /// never fires), a `SkippedNoData` is appended after them (the entry
-    /// still fires).
+    /// logged by the driver (`Veto` needs a CSV row so the 48h evaluation
+    /// can gamma-resolve the counterfactual; `StaleBlocked` gets a console
+    /// line plus a debounced Telegram warning). Both outcomes **replace**
+    /// whatever `try_enter` would otherwise return — the entry never fires
+    /// for either (`trader/doc/plan_stale_data_gate_2026-07-20.md` §1).
     PupGateNote {
         side: Side,
-        /// `None` for `SkippedNoData` (no reading to report).
+        /// `None` for `StaleBlocked` (no reading to report).
         p_side: Option<f64>,
         price: f64,
         outcome: PupGateOutcome,
@@ -1193,10 +1210,13 @@ impl Worker {
         };
 
         // p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3),
-        // reversal only, checked before `mark_fired()` so a veto (like any
+        // reversal only, checked before `mark_fired()` so a block (like any
         // other gate block) doesn't lock the strategy out for the rest of
-        // the cycle — a later tick with a more favorable p_up can still fire.
-        let mut pup_note: Option<Action> = None;
+        // the cycle — a later tick with a more favorable/fresher p_up can
+        // still fire. Both outcomes now block the entry outright (never
+        // trade on stale information — CLAUDE.md "Trading principles",
+        // trader/doc/plan_stale_data_gate_2026-07-20.md §1): there is no
+        // "note and proceed anyway" path left.
         if matches!(self.kind, StrategyKind::Reversal(_))
             && let Some(min_edge) = self.pup_edge_min_rev
         {
@@ -1205,12 +1225,12 @@ impl Worker {
             });
             match fresh_p_up {
                 None => {
-                    pup_note = Some(Action::PupGateNote {
+                    return vec![Action::PupGateNote {
                         side: intent.side,
                         p_side: None,
                         price: entry_price,
-                        outcome: PupGateOutcome::SkippedNoData,
-                    });
+                        outcome: PupGateOutcome::StaleBlocked,
+                    }];
                 }
                 Some(p_up) => {
                     let p_side = match intent.side {
@@ -1243,7 +1263,7 @@ impl Worker {
                 order_id: None,
                 quoted_at: now,
             });
-            let mut actions = vec![
+            return vec![
                 Action::PlaceLimitBuy {
                     side: intent.side,
                     price: entry_price,
@@ -1252,16 +1272,12 @@ impl Worker {
                 },
                 Action::Persist,
             ];
-            if let Some(note) = pup_note {
-                actions.push(note);
-            }
-            return actions;
         }
 
         self.state = WorkerState::Entering;
         // Stash the intent's side/entry_type/token_price for when the fill lands.
         self.pending_entry = Some((intent.side, intent.entry_type, intent.token_price()));
-        let mut actions = vec![
+        vec![
             Action::PlaceBuy {
                 side: intent.side,
                 price: intent.token_price(),
@@ -1269,11 +1285,7 @@ impl Worker {
                 signal_ts: now,
             },
             Action::Persist,
-        ];
-        if let Some(note) = pup_note {
-            actions.push(note);
-        }
-        actions
+        ]
     }
 
     /// Whether a resting maker-entry quote should be cancelled now: T-15s
@@ -1452,13 +1464,17 @@ impl Worker {
             cost,
             entry_signal_latency_ms,
             entry_process_latency_ms,
+            false,
         )
     }
 
     /// Shared tail of `on_order_filled` (FAK entry) and `on_entry_quote_filled`/
     /// `on_limit_buy_placed`'s `Matched` branch (maker entry): build the
     /// resulting `Holding` — position lifecycle from here on is identical
-    /// regardless of how the entry itself was filled.
+    /// regardless of how the entry itself was filled. `via_maker_entry`
+    /// distinguishes the two callers only for `Action::PlaceLimitSell`'s
+    /// merged-notification scoping (see that variant's doc comment).
+    #[allow(clippy::too_many_arguments)]
     fn finalize_entry_fill(
         &mut self,
         side: Side,
@@ -1467,6 +1483,7 @@ impl Worker {
         cost: f64,
         entry_signal_latency_ms: f64,
         entry_process_latency_ms: f64,
+        via_maker_entry: bool,
     ) -> Vec<Action> {
         if filled_shares <= 0.0 {
             self.state = WorkerState::Watching;
@@ -1487,6 +1504,9 @@ impl Worker {
                 vec![Action::PlaceLimitSell {
                     shares: filled_shares,
                     price: tp_price,
+                    side,
+                    entry_price: cost,
+                    via_maker_entry,
                 }],
             )
         } else {
@@ -1549,6 +1569,7 @@ impl Worker {
                     q.quote_price,
                     signal_latency_ms,
                     process_latency_ms,
+                    true,
                 )
             }
             SellStatus::Failed | SellStatus::DryRun => {
@@ -1580,6 +1601,7 @@ impl Worker {
             cost,
             signal_latency_ms,
             process_latency_ms,
+            true,
         )
     }
 
@@ -4381,10 +4403,11 @@ mod tests {
         // p_up=0.35 -> p_side (DOWN) = 0.65. Against mid (0.70) this would
         // veto (0.65 < 0.70); against the real best bid 0.69 (1 - up_ask
         // 0.31) it also vetoes (0.65 < 0.69) but the logged `price` field
-        // must reflect 0.69, not 0.70, either way.
+        // must reflect 0.69, not 0.70, either way. ts 1249 keeps this within
+        // PUP_GATE_MAX_AGE_SECS (2.0s) of the triggering tick at 1250.
         w.step(Event::IndicatorUpdate {
             p_up: 0.35,
-            ts: 1245.0,
+            ts: 1249.0,
         });
         w.step(Event::CycleOpen {
             ctx: ctx(1_000.0),
@@ -4728,9 +4751,11 @@ mod tests {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
         // DOWN entry at price 0.70; p_up=0.35 -> p_side=1-0.35=0.65 < 0.70.
+        // ts 1249 keeps this within PUP_GATE_MAX_AGE_SECS (2.0s) of the
+        // triggering tick at 1250 in fire_down_reversal.
         w.step(Event::IndicatorUpdate {
             p_up: 0.35,
-            ts: 1245.0,
+            ts: 1249.0,
         });
         let actions = fire_down_reversal(&mut w);
         assert_eq!(
@@ -4752,10 +4777,11 @@ mod tests {
     fn pup_gate_passes_when_p_side_at_or_above_entry_price() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // p_up=0.20 -> p_side=0.80 >= 0.70.
+        // p_up=0.20 -> p_side=0.80 >= 0.70. ts 1249 keeps this within
+        // PUP_GATE_MAX_AGE_SECS (2.0s) of the triggering tick at 1250.
         w.step(Event::IndicatorUpdate {
             p_up: 0.20,
-            ts: 1245.0,
+            ts: 1249.0,
         });
         let actions = fire_down_reversal(&mut w);
         assert_eq!(
@@ -4778,63 +4804,94 @@ mod tests {
     fn pup_gate_exact_equality_is_not_a_veto() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // p_up=0.30 -> p_side=0.70 == price 0.70 exactly.
+        // p_up=0.30 -> p_side=0.70 == price 0.70 exactly. ts 1249 keeps this
+        // within PUP_GATE_MAX_AGE_SECS (2.0s) of the triggering tick at 1250.
         w.step(Event::IndicatorUpdate {
             p_up: 0.30,
-            ts: 1245.0,
+            ts: 1249.0,
         });
         let actions = fire_down_reversal(&mut w);
         assert!(matches!(actions.first(), Some(Action::PlaceBuy { .. })));
     }
 
     #[test]
-    fn pup_gate_fails_open_when_no_snapshot_ever_arrived() {
+    fn pup_gate_blocks_when_no_snapshot_ever_arrived() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
         let actions = fire_down_reversal(&mut w);
         assert_eq!(
             actions,
-            vec![
-                Action::PlaceBuy {
-                    side: Side::Down,
-                    price: 0.70,
-                    size_usdc: p.trade_size_usdc,
-                    signal_ts: 1250.0,
-                },
-                Action::Persist,
-                Action::PupGateNote {
-                    side: Side::Down,
-                    p_side: None,
-                    price: 0.70,
-                    outcome: PupGateOutcome::SkippedNoData,
-                },
-            ],
-            "a dead indicator daemon must not silently halt the entry"
+            vec![Action::PupGateNote {
+                side: Side::Down,
+                p_side: None,
+                price: 0.70,
+                outcome: PupGateOutcome::StaleBlocked,
+            }],
+            "never trade on stale/missing information — no snapshot must block the entry, \
+             not fire it (CLAUDE.md \"Trading principles\")"
+        );
+        assert!(
+            matches!(w.state, WorkerState::Watching),
+            "a stale-block must not lock the strategy out — no mark_fired()"
         );
     }
 
     #[test]
-    fn pup_gate_fails_open_on_a_stale_snapshot() {
+    fn pup_gate_blocks_on_a_stale_snapshot() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // A snapshot that WOULD veto (p_side 0.65 < 0.70) but is stale by the
-        // time the entry fires (ts 1250 - snapshot ts 1230 = 20s > 10s).
+        // A snapshot that would ALSO veto on p_side alone (0.65 < 0.70), but
+        // is stale by the time the entry fires regardless (ts 1250 -
+        // snapshot ts 1230 = 20s > PUP_GATE_MAX_AGE_SECS 2.0s).
         w.step(Event::IndicatorUpdate {
             p_up: 0.35,
             ts: 1230.0,
         });
         let actions = fire_down_reversal(&mut w);
-        assert!(
-            matches!(actions.first(), Some(Action::PlaceBuy { .. })),
-            "stale snapshot must fail open (fire), not veto: {actions:?}"
+        assert_eq!(
+            actions,
+            vec![Action::PupGateNote {
+                side: Side::Down,
+                p_side: None,
+                price: 0.70,
+                outcome: PupGateOutcome::StaleBlocked,
+            }],
+            "stale snapshot must block the entry: {actions:?}"
         );
+    }
+
+    #[test]
+    fn pup_gate_fires_once_snapshot_is_fresh_again() {
+        let p = pup_gate_params(0.0);
+        let mut w = Worker::new_reversal("BTC", &p);
+        // Stale snapshot blocks first (mirrors pup_gate_blocks_on_a_stale_snapshot).
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.20, // p_side 0.80 >= 0.70 -> would pass, but it's stale
+            ts: 1230.0,
+        });
         assert!(matches!(
-            actions.last(),
+            fire_down_reversal(&mut w).first(),
             Some(Action::PupGateNote {
-                outcome: PupGateOutcome::SkippedNoData,
+                outcome: PupGateOutcome::StaleBlocked,
                 ..
             })
         ));
+        assert!(matches!(w.state, WorkerState::Watching));
+
+        // A fresh snapshot on a later tick lets the same still-armed signal
+        // fire — the earlier block never called mark_fired().
+        w.step(Event::IndicatorUpdate {
+            p_up: 0.20,
+            ts: 1251.0,
+        });
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1252.0,
+            price: 59_900.0,
+        }));
+        assert!(
+            matches!(actions.first(), Some(Action::PlaceBuy { .. })),
+            "{actions:?}"
+        );
     }
 
     /// A vetoed entry can still fire on a later tick once p_up improves —
@@ -4845,7 +4902,9 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         w.step(Event::IndicatorUpdate {
             p_up: 0.35, // p_side 0.65 < 0.70 -> veto
-            ts: 1245.0,
+            // ts 1249 keeps this within PUP_GATE_MAX_AGE_SECS (2.0s) of the
+            // triggering tick at 1250.
+            ts: 1249.0,
         });
         let actions = fire_down_reversal(&mut w);
         assert!(matches!(

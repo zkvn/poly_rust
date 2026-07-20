@@ -28,10 +28,6 @@ pub struct StrategyToml {
     /// unchanged.
     #[serde(default)]
     pub indicator_enabled: bool,
-    /// Snapshots older than this read as absent — a dead indicator process
-    /// must look like "no indicator", same posture as `max_price_age_secs`.
-    #[serde(default = "default_indicator_max_age_secs")]
-    pub indicator_max_age_secs: f64,
     /// FAK BUY retry knob — process-wide, not per-asset (execution.rs's
     /// `LiveConfig`). Previously the live binary ignored this and used
     /// `LiveConfig::default()`'s hardcoded 2, silently diverging from whatever
@@ -66,6 +62,10 @@ pub struct StrategyToml {
 
     pub reversal: HashMap<String, f64>,
     pub reversal_low_threshold: HashMap<String, f64>,
+    /// Seconds *remaining* in the cycle when the reversal entry window opens
+    /// (not seconds elapsed — see `signal::saw_low::SawLowSignal`'s doc
+    /// comment, the canonical explanation this mirrors). Window closes at
+    /// `no_enter_when_time_left`.
     pub reversal_start_time: HashMap<String, i64>,
     /// Seconds after a position closes before the Gamma resolution watcher
     /// starts polling — Gamma "usually won't give you anything until 20-60s
@@ -152,10 +152,6 @@ pub struct StrategyToml {
     pub market_durations: HashMap<String, Vec<String>>,
 }
 
-fn default_indicator_max_age_secs() -> f64 {
-    5.0
-}
-
 /// Resolved per-asset parameters (all scalars).
 #[derive(Debug, Clone)]
 pub struct AssetParams {
@@ -169,6 +165,8 @@ pub struct AssetParams {
     // Reversal
     pub reversal: f64,
     pub reversal_low_threshold: f64,
+    /// Seconds *remaining* when the entry window opens — see the
+    /// `StrategyToml` field of the same name above.
     pub reversal_start_time: f64,
     pub gamma_poll_delay_secs: f64,
     pub gamma_poll_interval_secs: f64,
@@ -404,16 +402,19 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // strategy_20260719.toml (plan_unwind_5u_maker_2026-07-19.md's 5-share
-        // maker-entry paper-trade config): table 1.1 values verbatim for every
-        // reversal-scoped field; sl_reversal/sl_pnl_rev = 0.0 for every asset
-        // (plan 1.2, Scenario A — unwind_time_rev IS the stop).
+        // strategy_20260720_24h.toml (trader/doc/plan_stale_data_gate_2026-07-20.md
+        // §3's 24h re-pick, delta_pct_rev bounded to [0.0003,0.0008] favoring
+        // win_rate — see that file's meta.source for the full method and
+        // picked-row stats): BTC picked delta=0.0008/reversal=0.55/low=0.20/
+        // unwind_pnl=0.15/unwind_time=30.0 (168 trades, 85.1% win over the
+        // calibration window). sl_reversal/sl_pnl_rev stay 0.0 for every asset
+        // regardless (plan 1.2, Scenario A — unwind_time_rev IS the stop).
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
-            "BTC reversal = 0.55 (table 1.1)"
+            "BTC reversal = 0.55 (24h re-pick)"
         );
         assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
+        assert!((p.delta_pct_rev - 0.0008).abs() < 1e-9);
         assert_eq!(p.halt_rev, 1);
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
@@ -423,7 +424,7 @@ mod tests {
         // per-asset fields are carried over unchanged from strategy_20260717.toml.
         assert!((p.unwind_pnl_hp - 0.15).abs() < 1e-9);
         assert!((p.sl_pnl_hp - 0.20).abs() < 1e-9);
-        assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
+        assert!((p.unwind_time_rev - 30.0).abs() < 1e-9);
         assert!((p.unwind_time_hp - 25.0).abs() < 1e-9);
         assert!(p.maker_entry, "maker_entry = true for this run");
         assert_eq!(p.pup_edge_min_rev, Some(0.0));
@@ -440,10 +441,10 @@ mod tests {
     fn unwind_time_falls_back_to_default_and_resolves_asset_override() {
         let mut toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // strategy_20260719.toml gives every real trade asset its own
-        // unwind_time_rev (table 1.1), so none of them exercise the
-        // default-fallback path — use a fictitious asset key instead to
-        // demonstrate the fallback chain directly.
+        // strategy_20260720_24h.toml gives every real trade asset its own
+        // unwind_time_rev too, so none of them exercise the default-fallback
+        // path — use a fictitious asset key instead to demonstrate the
+        // fallback chain directly.
         let p = toml.resolve("NOTREAL").expect("resolve NOTREAL");
         assert!((p.unwind_time_rev - 26.0).abs() < 1e-9);
         // Asset-specific override takes priority over default when present.
@@ -460,11 +461,11 @@ mod tests {
     fn default_fallback() {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // strategy_20260719.toml gives every real trade asset its own
-        // delta_pct_rev (table 1.1) too — same fictitious-key approach as
+        // strategy_20260720_24h.toml gives every real trade asset its own
+        // delta_pct_rev too — same fictitious-key approach as
         // unwind_time_falls_back_to_default_and_resolves_asset_override.
         let p = toml.resolve("NOTREAL").expect("resolve NOTREAL");
-        assert!((p.delta_pct_rev - 0.0010).abs() < 1e-9);
+        assert!((p.delta_pct_rev - 0.0008).abs() < 1e-9);
     }
 
     #[test]
@@ -607,7 +608,7 @@ mod tests {
         assert_eq!(
             p.strategies,
             vec!["reversal"],
-            "5m list unchanged (strategy_20260719.toml: reversal only, high_prob removed)"
+            "5m list unchanged (strategy_20260720_24h.toml: reversal only, high_prob removed)"
         );
     }
 
@@ -667,8 +668,8 @@ mod tests {
     /// `default`) resolves to `None` (disabled) — not `Some(0.0)`.
     #[test]
     fn pup_edge_min_rev_absent_resolves_to_none() {
-        // strategy_20260719.toml (latest) enables this gate — load an older
-        // pinned file that predates it, matching
+        // The latest config enables this gate — load an older pinned file
+        // that predates it, matching
         // load_file_reads_the_exact_file_given_not_the_latest's pattern.
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/config");
         let toml = load_file(&format!("{dir}/strategy_20260717.toml")).expect("load config");

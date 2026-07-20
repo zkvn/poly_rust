@@ -226,8 +226,8 @@ mod tests {
         assert_eq!(e.asset, "BTC");
         assert_eq!(e.event, "startup");
         assert_eq!(e.strategies, vec!["reversal".to_string()]);
-        // strategy_20260719.toml (plan_unwind_5u_maker_2026-07-19.md's paper-
-        // trade config): every real trade asset has explicit table-1.1
+        // strategy_20260720_24h.toml (trader/doc/plan_stale_data_gate_2026-07-20.md
+        // §3's 24h re-pick): every real trade asset has explicit per-asset
         // `reversal`/`delta_pct_rev` overrides, so both resolve to BTC's own
         // override, not "default".
         assert!((e.reversal.get("BTC").unwrap_or(&e.reversal["default"]) - 0.55).abs() < 1e-9);
@@ -235,7 +235,7 @@ mod tests {
             (e.delta_pct_rev
                 .get("BTC")
                 .unwrap_or(&e.delta_pct_rev["default"])
-                - 0.0010)
+                - 0.0008)
                 .abs()
                 < 1e-9
         );

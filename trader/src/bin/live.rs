@@ -805,36 +805,58 @@ fn fmt_ago(last_tick_ts: Option<f64>, now_ts: f64) -> String {
 
 /// Compact indicator context for Telegram/`/status` surfaces, so a dead
 /// `poly-indicator.service` is visible at a glance instead of only showing up
-/// as a silent `SKIPPED_NO_DATA` in the console log. Shows `p_up` plus each
-/// side's edge vs the live CLOB price (`p_side - price`) — the exact sign
-/// convention `worker.rs`'s pup gate computes (positive = the model likes
-/// this side more than the market does). `up_price`/`dn_price` are `None`
-/// when there's no active cycle yet (the edge figures would be meaningless
-/// against a stale/zero price).
+/// as a silent `STALE_BLOCKED` in the console log. Shows `p_up` plus the
+/// traded side's edge vs the live CLOB price (`p_side - price`) — the exact
+/// sign convention `worker.rs`'s pup gate computes (positive = the model
+/// likes this side more than the market does). `up_price`/`dn_price` are
+/// `None` when there's no active cycle yet (the edge figures would be
+/// meaningless against a stale/zero price). `side` is `Some` at both
+/// Telegram call sites (they always know the traded side already, so
+/// showing the opposite side's near-mirror-image edge alongside it was pure
+/// duplication — audit item 4); `None` for the console heartbeat, which
+/// isn't tied to one trade and still shows both.
+///
+/// Distinguishes "never received a snapshot for this asset" (`no data`) from
+/// "received one, but it's older than `max_age_secs`" (`stale`, still shows
+/// the last-known `p_up` and its age) — collapsing both into a blank "no
+/// data" hid the last-known reading a human reviewing the message could
+/// otherwise still learn something from (audit item 1).
 fn fmt_indicator(
     store: &IndicatorStore,
     asset: &str,
     now: f64,
     max_age_secs: f64,
     prices: Option<(f64, f64)>,
+    side: Option<Side>,
 ) -> String {
-    let Some(snap) = store.fresh(asset, now, max_age_secs) else {
+    let Some(snap) = store.raw(asset) else {
         return "ind: no data".to_string();
     };
     let Some(&p_up) = snap.vals.get("p_up") else {
         return "ind: warming".to_string();
     };
+    let age = now - snap.ts;
+    if age > max_age_secs {
+        return format!("ind: stale (p_up={p_up:.4}, {age:.1}s old)");
+    }
     let vol_str = match snap.vals.get("vol_har") {
         Some(v) => format!(" vol={v:.2e}"),
         None => String::new(),
     };
-    match prices {
-        Some((up_price, dn_price)) => format!(
+    match (prices, side) {
+        (Some((up_price, _)), Some(Side::Up)) => {
+            format!("ind: p_up={p_up:.4} (edge{:+.4}){vol_str}", p_up - up_price)
+        }
+        (Some((_, dn_price)), Some(Side::Down)) => format!(
+            "ind: p_up={p_up:.4} (edge{:+.4}){vol_str}",
+            (1.0 - p_up) - dn_price
+        ),
+        (Some((up_price, dn_price)), None) => format!(
             "ind: p_up={p_up:.4} (edge UP{:+.4}/DN{:+.4}){vol_str}",
             p_up - up_price,
             (1.0 - p_up) - dn_price,
         ),
-        None => format!("ind: p_up={p_up:.4}{vol_str}"),
+        (None, _) => format!("ind: p_up={p_up:.4}{vol_str}"),
     }
 }
 
@@ -904,6 +926,12 @@ struct AssetSlot {
     /// worker.rs's timeout check re-fires `ClosePosition{Timeout}` every
     /// PolyTick the same way stop-loss does.
     timeout_notified: bool,
+    /// Same guard, for the "ENTRY BLOCKED — stale indicator" warning
+    /// (`PupGateOutcome::StaleBlocked`, trader/doc/plan_stale_data_gate_2026-07-20.md
+    /// §1.3) — `try_enter` re-evaluates every tick while the underlying
+    /// signal stays latched, so without this the same stale snapshot would
+    /// re-alert on every tick until it either recovers or the cycle ends.
+    pup_stale_notified: bool,
     wins: u32,
     losses: u32,
     stoplosses: u32,
@@ -1129,8 +1157,18 @@ impl Driver<'_> {
                         Some(slot.params.reversal_start_time),
                     ),
                 };
+            // T-{s}s convention matches every other time-left display in this
+            // file — `reversal_start_time` is seconds *remaining* when the
+            // entry window opens, not seconds elapsed (confirmed against
+            // SawLowSignal's own doc comment, trader/src/signal/saw_low.rs;
+            // see trader/doc/plan_stale_data_gate_2026-07-20.md §2 item 6 —
+            // the bare "start=120s" this replaces read as elapsed time to
+            // anyone not already holding that signal's internals in mind).
             let start_str = match start {
-                Some(s) => format!("  start={s:.0}s"),
+                Some(s) => format!(
+                    "  entry_window=T-{s:.0}s..T-{:.0}s",
+                    slot.params.no_enter_when_time_left
+                ),
                 None => String::new(),
             };
             // Maker entries (plan_unwind_5u_maker_2026-07-19 §2.2), reversal
@@ -1158,6 +1196,7 @@ impl Driver<'_> {
                             now_secs_f64(),
                             indicator_max_age_secs,
                             Some((slot.last_poly_up, slot.last_poly_dn)),
+                            None,
                         );
                         mkt_lines.push(format!(
                             "  {name}  binance=${:.5}  UP={:.4}  DN={:.4}  Δ={:.5}\n    {ind_str}",
@@ -1287,6 +1326,7 @@ impl Driver<'_> {
                     now_secs_f64(),
                     indicator_max_age_secs,
                     Some((slot.last_poly_up, slot.last_poly_dn)),
+                    Some(*side),
                 );
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
@@ -1309,7 +1349,13 @@ impl Driver<'_> {
                     Some(Event::OrderRejected)
                 }
             }
-            Action::PlaceLimitSell { shares, price } => {
+            Action::PlaceLimitSell {
+                shares,
+                price,
+                side,
+                entry_price,
+                via_maker_entry,
+            } => {
                 let token_id = slot.current_token_id?;
                 let received_ts = now_secs_f64();
                 let r = self
@@ -1324,6 +1370,23 @@ impl Driver<'_> {
                     r.order_id,
                     r.error
                 );
+                // Merged "entry filled -> exit resting" notification (audit
+                // item 2): the exit order is always placed in the same
+                // synchronous action batch as the entry-fill confirmation
+                // (README "Order flow per trade"), so there's never a
+                // separate later moment to report the fill in — one message,
+                // not two. Maker-entry only (`via_maker_entry`): the FAK path
+                // already sends its own "Order placed" notification at fill
+                // time with different diagnostic content, so a second one
+                // here would be the exact duplication this is meant to avoid.
+                if *via_maker_entry && matches!(r.status, SellStatus::Live) {
+                    let dt = hkt_now().format("%H:%M:%S");
+                    let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                    self.notify(&format!(
+                        "🎯 <b>{}</b> ENTRY filled → EXIT quote resting | {dt} | T-{time_left}s | {} | {}\n{shares:.2}sh @ {entry_price:.4} → exit target {price:.4}",
+                        slot.market_key(), arrow_side(*side), slot.worker.strategy_name
+                    )).await;
+                }
                 // No external signal_ts for this action (it's an internal
                 // follow-up to the entry fill, not driven by a market tick) —
                 // only the process leg is meaningful here.
@@ -1368,9 +1431,10 @@ impl Driver<'_> {
                         now_secs_f64(),
                         indicator_max_age_secs,
                         Some((slot.last_poly_up, slot.last_poly_dn)),
+                        Some(*side),
                     );
                     self.notify(&format!(
-                        "📝 <b>{}</b> Maker quote resting | {dt} | T-{time_left}s | {} | {}\nBUY {shares:.2}sh @ {price:.4} | {ind_str}",
+                        "📝 <b>{}</b> ENTRY quote resting | {dt} | T-{time_left}s | {} | {}\nBUY {shares:.2}sh @ {price:.4} | {ind_str}",
                         slot.market_key(), arrow_side(*side), slot.worker.strategy_name
                     )).await;
                 }
@@ -1611,11 +1675,30 @@ impl Driver<'_> {
                         );
                         log_pup_veto(slot, *side, p_side, *price);
                     }
-                    PupGateOutcome::SkippedNoData => {
+                    PupGateOutcome::StaleBlocked => {
                         println!(
-                            "[PUP-GATE] {} pup_gate=SKIPPED_NO_DATA side={side:?} price={price:.4}",
+                            "[PUP-GATE] {} pup_gate=STALE_BLOCKED side={side:?} price={price:.4}",
                             slot.market_key()
                         );
+                        // Debounced like sl_notified/timeout_notified — try_enter
+                        // re-evaluates every tick while the underlying signal stays
+                        // latched, so an unthrottled alert here would spam badly
+                        // (confirmed from the audit: 100+ identical consecutive
+                        // checks from one stale snapshot). Reset at cycle-open.
+                        if !slot.pup_stale_notified {
+                            slot.pup_stale_notified = true;
+                            let now = now_secs_f64();
+                            let age_str = match indicator_store.raw(&slot.worker.asset) {
+                                Some(snap) => format!("{:.1}s ago", now - snap.ts),
+                                None => "never".to_string(),
+                            };
+                            let dt = hkt_now().format("%H:%M:%S");
+                            let time_left = (slot.worker.cycle_end_ts() - now).max(0.0) as i64;
+                            self.notify(&format!(
+                                "⚠️ <b>{}</b> ENTRY BLOCKED — stale indicator | {dt} | T-{time_left}s | {} | {}\nwould-be price={price:.4} | p_up last seen {age_str}",
+                                slot.market_key(), arrow_side(*side), slot.worker.strategy_name
+                            )).await;
+                        }
                     }
                 }
                 None
@@ -1696,14 +1779,16 @@ impl Driver<'_> {
                             now_secs_f64(),
                             indicator_max_age_secs,
                             Some((slot.last_poly_up, slot.last_poly_dn)),
+                            Some(rec.side),
                         );
+                        let dur_secs = (now_secs_f64() - rec.entry_ts).max(0.0);
                         self.notify(&format!(
-                            "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | cycle: ${:.2}→${:.2} | delta={delta_pct:+.3}% | pnl={sign}${:.4} | {}W/{}L | {ind_str}",
+                            "{icon} <b>{} TRADE {}</b> | {} | {} | {}\nentry={:.4} → exit={:.4} | dur={dur_secs:.0}s | cycle open→exit: ${:.2}→${:.2} | delta={delta_pct:+.3}% | pnl={sign}${:.4} | {}W/{}L/{}SL/{}UW/{}TO | {ind_str}",
                             slot.market_key(), rec.outcome.as_str(), hkt_now().format("%H:%M:%S"),
                             arrow_side(rec.side), slot.worker.strategy_name,
                             rec.token_price, rec.exit_price,
                             slot.worker.cycle_open_binance(), slot.last_binance,
-                            rec.pnl.abs(), slot.wins, slot.losses
+                            rec.pnl.abs(), slot.wins, slot.losses, slot.stoplosses, slot.unwinds, slot.timeouts
                         )).await;
 
                         spawn_resolution_watcher(
@@ -2170,6 +2255,7 @@ async fn main() -> Result<()> {
                     cycle_trades: 0,
                     sl_notified: false,
                     timeout_notified: false,
+                    pup_stale_notified: false,
                     wins: stats.wins,
                     losses: stats.losses,
                     stoplosses: stats.stoplosses,
@@ -2390,15 +2476,29 @@ async fn main() -> Result<()> {
     // immediately and the select arm below goes permanently quiet; with tasks,
     // their `WeatherSinks` clone keeps it open.
     drop(weather_tx);
+    // Per-slot size, not one shared `args.size_usdc` for the whole fleet
+    // (audit item 5) — that was wrong under maker-entry (fixed size=$X.XX)
+    // display, the same bug already fixed for `/status` (`render_status`'s
+    // own `size_str`, mirrored here) — README's 2026-07-19 "showed
+    // trade_size_usdc ($1.00)..." entry flagged this banner as the deferred
+    // half of that fix.
     let asset_strategy_summary = assets
         .iter()
-        .map(|s| format!("{}:{}", s.worker.asset, s.worker.strategy_name))
+        .map(|s| {
+            let size_str = if s.params.maker_entry && s.worker.strategy_name == "reversal" {
+                format!("{MIN_GTC_SHARES:.2}sh (maker)")
+            } else {
+                format!("${:.2}", s.params.trade_size_usdc)
+            };
+            format!("{}:{} ({size_str})", s.worker.asset, s.worker.strategy_name)
+        })
         .collect::<Vec<_>>()
         .join(", ");
+    let dt = hkt_now().format("%H:%M:%S");
     driver
         .notify(&format!(
-            "🟢 live driver started: <b>{asset_strategy_summary}</b> (size=${:.2}, max_trades={})",
-            args.size_usdc, args.max_trades
+            "🟢 live driver started | {dt} | <b>{asset_strategy_summary}</b> (max_trades={})",
+            args.max_trades
         ))
         .await;
 
@@ -2563,7 +2663,7 @@ async fn main() -> Result<()> {
                         // stays greppable per slot. Empty string when disabled,
                         // stale, or not yet received.
                         let ind = indicator_store
-                            .fresh(&slot.worker.asset, now, toml.indicator_max_age_secs)
+                            .fresh(&slot.worker.asset, now, PUP_GATE_MAX_AGE_SECS)
                             .map(|s| format!(" ind[{}]", s.render()))
                             .unwrap_or_default();
                         println!("[live] heartbeat {} ({}) slug={slug} T-{time_left:.0}s binance={:.4} up={:.4} dn={:.4}{ind}",
@@ -2616,6 +2716,7 @@ async fn main() -> Result<()> {
                     slot.cycle_trades = 0;
                     slot.sl_notified = false;
                     slot.timeout_notified = false;
+                    slot.pup_stale_notified = false;
 
                     let slug = slot.duration.slug(&asset, slot_now);
                     match fetch_meta(&http, &slug).await {
@@ -3192,19 +3293,23 @@ mod fmt_indicator_tests {
     fn no_data_when_asset_never_seen() {
         let store = IndicatorStore::default();
         assert_eq!(
-            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4))),
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4)), None),
             "ind: no data"
         );
     }
 
+    /// A snapshot that exists but is older than `max_age_secs` shows the
+    /// last-known reading and its age instead of a blank "no data" — audit
+    /// item 1: a human reviewing the message can still see what the model
+    /// last thought, even though the gate itself would treat this as absent.
     #[test]
-    fn no_data_when_snapshot_is_stale() {
+    fn stale_shows_last_known_p_up_and_age() {
         let mut store = IndicatorStore::default();
         store.update(snapshot("BTC", 50.0, &[("p_up", 0.6)]));
         // 100 - 50 = 50s old, max_age_secs = 10.0.
         assert_eq!(
-            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4))),
-            "ind: no data"
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4)), None),
+            "ind: stale (p_up=0.6000, 50.0s old)"
         );
     }
 
@@ -3213,7 +3318,7 @@ mod fmt_indicator_tests {
         let mut store = IndicatorStore::default();
         store.update(snapshot("BTC", 99.0, &[]));
         assert_eq!(
-            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4))),
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.6, 0.4)), None),
             "ind: warming"
         );
     }
@@ -3223,16 +3328,17 @@ mod fmt_indicator_tests {
         let mut store = IndicatorStore::default();
         store.update(snapshot("BTC", 99.0, &[("p_up", 0.62)]));
         assert_eq!(
-            fmt_indicator(&store, "BTC", 100.0, 10.0, None),
+            fmt_indicator(&store, "BTC", 100.0, 10.0, None, None),
             "ind: p_up=0.6200"
         );
     }
 
     /// The exact sign convention `worker.rs`'s pup gate uses:
     /// `edge = p_side - price`, positive = the model likes this side more
-    /// than the market does.
+    /// than the market does. `side: None` (not tied to one trade — the
+    /// console heartbeat's usage) still shows both.
     #[test]
-    fn shows_p_up_edge_and_vol_when_fresh_with_active_cycle_prices() {
+    fn shows_both_edges_and_vol_when_side_unspecified() {
         let mut store = IndicatorStore::default();
         store.update(snapshot(
             "BTC",
@@ -3240,8 +3346,42 @@ mod fmt_indicator_tests {
             &[("p_up", 0.62), ("vol_har", 0.00081)],
         ));
         assert_eq!(
-            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.60, 0.40))),
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.60, 0.40)), None),
             "ind: p_up=0.6200 (edge UP+0.0200/DN-0.0200) vol=8.10e-4"
+        );
+    }
+
+    /// A known traded side (both Telegram call sites always have one — audit
+    /// item 4) shows only that side's edge, no UP/DN tag.
+    #[test]
+    fn shows_only_the_traded_sides_edge() {
+        let mut store = IndicatorStore::default();
+        store.update(snapshot(
+            "BTC",
+            99.0,
+            &[("p_up", 0.62), ("vol_har", 0.00081)],
+        ));
+        assert_eq!(
+            fmt_indicator(
+                &store,
+                "BTC",
+                100.0,
+                10.0,
+                Some((0.60, 0.40)),
+                Some(Side::Up)
+            ),
+            "ind: p_up=0.6200 (edge+0.0200) vol=8.10e-4"
+        );
+        assert_eq!(
+            fmt_indicator(
+                &store,
+                "BTC",
+                100.0,
+                10.0,
+                Some((0.60, 0.40)),
+                Some(Side::Down)
+            ),
+            "ind: p_up=0.6200 (edge-0.0200) vol=8.10e-4"
         );
     }
 
@@ -3250,7 +3390,7 @@ mod fmt_indicator_tests {
         let mut store = IndicatorStore::default();
         store.update(snapshot("BTC", 99.0, &[("p_up", 0.50)]));
         assert_eq!(
-            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.50, 0.50))),
+            fmt_indicator(&store, "BTC", 100.0, 10.0, Some((0.50, 0.50)), None),
             "ind: p_up=0.5000 (edge UP+0.0000/DN+0.0000)"
         );
     }
@@ -3571,6 +3711,7 @@ mod halt_persist_tests {
             cycle_trades: 0,
             sl_notified: false,
             timeout_notified: false,
+            pup_stale_notified: false,
             wins: 0,
             losses: 0,
             stoplosses: 0,
