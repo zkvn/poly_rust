@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily price_feed data-quality digest (09:00 HKT) — CLOB bba + Binance bookTicker
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

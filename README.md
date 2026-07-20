@@ -172,10 +172,10 @@ CLOB-side `[OBSERVE-STALE]` logger, plan doc §4) shipped the same day once §3 
 working locally — reuses `staleness.rs`'s escalating-bucket logger unmodified, tracks
 `price_received_at_ms` (the `@bookTicker` field, not `@trade`'s `server_ts`/`trade_ts`, a separate
 concern), logs only, takes no recovery action, same phase-1 discipline as the CLOB bba logger it
-mirrors. Results are checkable without SSH+grep via a daily Telegram digest
-(`binance-stale-digest.timer`, "Cron / long-running process" section below) — reuses trader's
-existing bot/chat,
-sends once per day (not per-event) with a per-asset event count + worst gap length, or a "no
+mirrors. Results (and the CLOB bba logger's, since the digest covers both) are checkable without
+SSH+grep via a daily Telegram digest (`data-quality-digest.timer`, "Cron / long-running process"
+section below) — reuses trader's existing bot/chat,
+sends once per day (not per-event) with a per-asset event count + worst gap length per feed, or a "no
 staleness" confirmation when there's nothing to report.
 
 **WS heartbeat/reconnect behavior (researched 2026-07-20, no code changes):** neither the Binance
@@ -1155,17 +1155,19 @@ the host, as `kev`. Inspect: `systemctl --user list-timers siglab-report-push.ti
 
 | Timer | Cadence | Job | Service |
 |---|---|---|---|
-| `binance-stale-digest.timer` | daily, 09:00 HKT | Rolls up the last 24h of `price_feed`'s `[OBSERVE-STALE]` binance bookTicker lines (per-asset event count + worst gap length) into one Telegram message — added 2026-07-20 alongside item 4's observer logger so results don't require SSH+grep to check. | `binance-stale-digest.service` → runs `price_feed/scripts/binance_stale_digest.sh` |
+| `data-quality-digest.timer` | daily, 09:00 HKT | Rolls up the last 24h of `price_feed`'s `[OBSERVE-STALE]` lines from **both** feeds — CLOB bba and Binance bookTicker — into one Telegram message (per-asset event count + worst gap length per feed) — added 2026-07-20 (Binance-only originally, widened same day to cover CLOB too) so results don't require SSH+grep to check. | `data-quality-digest.service` → runs `price_feed/scripts/data_quality_digest.sh` |
 
 Runs as `ubuntu` (same user as `poly-collector.service`), reads `TELEGRAM_BOT_TOKEN`/
 `TELEGRAM_CHAT_ID` from `trader/.env` (reuses trader's existing bot/chat rather than duplicating
 credentials — `price_feed` has no Telegram config of its own). Deliberately a periodic digest, not
 per-event alerting — `[OBSERVE-STALE]` lines are journal-only and would be alert-fatigue noise sent
-one-by-one; the digest sends once daily even when there's nothing to report (a "✅ no staleness"
-message), both because that's useful confirmation the feed is healthy and because a monitor that
-only ever speaks up when something's wrong is indistinguishable from a monitor that's silently
-broken. Manual run for a custom window: `./binance_stale_digest.sh "2 hours ago"`. Inspect:
-`systemctl list-timers binance-stale-digest.timer`, `journalctl -u binance-stale-digest.service`.
+one-by-one; the digest sends once daily even when there's nothing to report (both feed sections say
+"no staleness"), both because that's useful confirmation the feeds are healthy and because a
+monitor that only ever speaks up when something's wrong is indistinguishable from a monitor that's
+silently broken. One shared parser (`digest_section()`, matched by a feed-specific text fragment)
+covers both feeds since their `[OBSERVE-STALE]` lines share the same shape. Manual run for a custom
+window: `./data_quality_digest.sh "2 hours ago"`. Inspect: `systemctl list-timers
+data-quality-digest.timer`, `journalctl -u data-quality-digest.service`.
 
 ### siglab Docker rebuild (manual, not scheduled)
 

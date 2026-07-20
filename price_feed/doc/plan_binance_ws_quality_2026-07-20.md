@@ -165,17 +165,24 @@ all assets connected cleanly post-restart, zero errors.
 **Follow-up (2026-07-20, same day):** user asked how to actually see this logger's results
 without SSH+grep, and specifically wanted a periodic Telegram digest rather than per-event
 alerts (per-event would just recreate the 2026-07-10 false-positive-storm failure mode in a new
-channel). Added `price_feed/scripts/binance_stale_digest.sh` +
-`binance-stale-digest.service`/`.timer` — a daily (09:00 HKT) systemd-timer job on Oracle that
-rolls the last 24h of `[OBSERVE-STALE] ... binance bookTicker ...` journal lines into one message
-(per-asset event count + worst bucket reached, or a "no staleness" confirmation), reusing
-trader's existing `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `trader/.env` rather than adding a
-second set of credentials. Verified locally against synthetic journal lines (multi-asset
-aggregation math, zero-events path, missing-`.env` graceful skip — all via a fake `journalctl`/
-`curl` harness before touching the real bot) and then end-to-end for real on Oracle (both a
-direct script run and a `systemctl start` of the actual service unit), confirming a real
-`{"ok":true,...}` response from the Telegram API before enabling the timer. See README's "Cron /
-long-running process" → "Oracle-side systemd" for the operational reference.
+channel). First shipped as a Binance-only `binance_stale_digest.sh`/`binance-stale-digest.timer`,
+then **widened the same day** (user follow-up: "update it to send out clob data observe stale
+info too? so it's a data quality message for both clob and binance") to a single unified
+`price_feed/scripts/data_quality_digest.sh` + `data-quality-digest.service`/`.timer` — a daily
+(09:00 HKT) systemd-timer job on Oracle that rolls the last 24h of `[OBSERVE-STALE]` journal
+lines from **both** feeds (CLOB bba, `plan_bba_feed_staleness_fix_2026-07-10.md`, and this plan's
+Binance bookTicker logger) into one message, one section per feed (per-asset event count + worst
+bucket reached, or "no staleness"). One shared parser handles both — every `[OBSERVE-STALE]` line
+from either feed has the identical shape from the asset name onward, so `digest_section()` just
+takes a feed-specific text fragment to filter on. Reuses trader's existing
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `trader/.env` rather than adding a second set of
+credentials. Verified locally against synthetic journal lines covering all four combinations
+(both feeds clean, both with events, only one with events, missing-`.env` graceful skip — via a
+fake `journalctl`/`curl` harness before touching the real bot), then end-to-end for real on
+Oracle (direct script run + a `systemctl start` of the actual service unit, old Binance-only
+unit cleanly removed first), confirming a real `{"ok":true,...}` Telegram API response before
+enabling the renamed timer. See README's "Cron / long-running process" → "Oracle-side systemd"
+for the operational reference.
 
 ## 5. Phase 2 (only if §4's data shows it's still needed after §3): REST reconciliation
 
