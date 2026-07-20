@@ -1722,6 +1722,15 @@ pub async fn run(
     let mut bba_last_seen_ms: Vec<i64> = vec![0; n];
     let mut bba_logged_bucket: Vec<usize> = vec![0; n];
 
+    // ── Binance @bookTicker staleness observation — logging only, same phase-1 discipline
+    // as bba above (price_feed/doc/plan_binance_ws_quality_2026-07-20.md §4). Tracks
+    // `price_received_at_ms` (the @bookTicker-sourced field, not @trade's server_ts/trade_ts,
+    // which is a separate concern entirely — see `BinanceState`'s doc comment). An asset with
+    // no Binance market at all (HYPE) never has `price > 0.0`, so it's naturally excluded —
+    // see the `sample.price <= 0.0` skip below.
+    let mut binance_last_seen_ms: Vec<i64> = vec![0; n];
+    let mut binance_logged_bucket: Vec<usize> = vec![0; n];
+
     loop {
         tokio::select! {
             _ = ticker_200ms.tick() => {
@@ -1775,6 +1784,25 @@ pub async fn run(
                 for (i, sample) in samples.into_iter().enumerate() {
                     if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
+
+                    // Staleness observation (logging only — see the comment above this
+                    // loop's ticker setup for why this never takes a recovery action).
+                    if sample.price_received_at_ms != binance_last_seen_ms[i] {
+                        binance_last_seen_ms[i] = sample.price_received_at_ms;
+                        binance_logged_bucket[i] = 0;
+                    } else {
+                        let silent_ms = now_ms() - sample.price_received_at_ms;
+                        let (crossed, new_logged) =
+                            crate::staleness::buckets_to_log(binance_logged_bucket[i], silent_ms);
+                        for bucket_ms in crossed {
+                            eprintln!(
+                                "[OBSERVE-STALE] {} binance bookTicker feed silent for >={bucket_ms}ms (actual {silent_ms}ms) — logging only, no action taken",
+                                assets[i]
+                            );
+                        }
+                        binance_logged_bucket[i] = new_logged;
+                    }
+
                     if let Some(ref nc) = nats {
                         let payload = binance_nats_payload(
                             sample.price_received_at_ms,
