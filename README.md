@@ -253,6 +253,17 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **DOGE's indicator feed periodically goes stale (~10-60s, low-liquidity `@trade`-stream gaps)
+  and its "no data" fail-open let a bad-edge entry slip the p(up) veto right after 10+ seconds of
+  correctly vetoing the same entry — found 2026-07-20, not fixed.** `PUP_GATE_MAX_AGE_SECS` fail-
+  open is intentional (a truly dead `poly-indicator.service` must not block all trading), but
+  today it can't distinguish that from "asset had no Binance trade print for a bit" — confirmed
+  via Oracle logs, 2 occurrences in 15h, both DOGE, both showing 100+ consecutive fresh `VETO`
+  checks immediately followed by one `SKIPPED_NO_DATA` check that let the entry through. Also
+  surfaced 5 smaller Telegram-output clarity issues (ambiguous "cycle:"/entry-vs-exit wording,
+  incomplete W/L breakdown, redundant UP/DN edge display, wrong boot-banner size, ambiguous
+  `/status` `start=120s`). Proposed fixes (display, alerting, and a possible gate-behavior change)
+  not yet applied — pending review. Full writeup: `trader/doc/audit_48hr_unwind_maker_2026-07-20.md`.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
