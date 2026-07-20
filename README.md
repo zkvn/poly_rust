@@ -168,8 +168,26 @@ for why this couldn't be a simple URL swap. Considered and explicitly **not** do
 assets onto one shared Binance connection, or running duplicate connections to the same stream for
 redundancy — see `price_feed/doc/data_ws_duplicates_2026-07-20.md` (research only) for why neither
 is warranted right now. `@bookTicker`-side observe-only staleness logging (mirroring the existing
-CLOB-side `[OBSERVE-STALE]` logger) is planned but deliberately not yet implemented — see the plan
-doc's §4 for the rollout order.
+CLOB-side `[OBSERVE-STALE]` logger, plan doc §4) shipped the same day once §3 was confirmed
+working locally — reuses `staleness.rs`'s escalating-bucket logger unmodified, tracks
+`price_received_at_ms` (the `@bookTicker` field, not `@trade`'s `server_ts`/`trade_ts`, a separate
+concern), logs only, takes no recovery action, same phase-1 discipline as the CLOB bba logger it
+mirrors.
+
+**WS heartbeat/reconnect behavior (researched 2026-07-20, no code changes):** neither the Binance
+nor the CLOB feed has a "no *data* in N seconds → force reconnect" mechanism — both only recover
+from an actual connection failure, not from a live-but-silent stream (which, per the whole
+investigation above, is usually the correct call — silence often just means a quiet market, not a
+broken feed).
+- **Binance**: WS-protocol ping/pong is handled automatically by `tungstenite`/`tokio-tungstenite`
+  even though `collect.rs` `.split()`s the socket and never touches the write half — confirmed by
+  reading the dependency's source (`read()` flushes any auto-queued Pong on the same underlying
+  stream object both split halves share). Reconnection triggers only on `Message::Close` or a
+  stream `Err`.
+- **CLOB** (`polymarket_client_sdk_v2`'s `ClobWsClient`): does implement an app-level heartbeat
+  (5s ping / 15s pong timeout) — but has a real gap in the fully-silent (no data either direction,
+  no TCP error) case; see the `## TODO` entry for details. Normal disconnects reconnect fine via
+  its own exponential backoff.
 
 **Assets recorded:** BNB, BTC, DOGE, ETH, HYPE, SOL, XRP (HYPE has no Binance market — its
 `_binance_` files are legitimately absent, not a bug).
@@ -281,17 +299,21 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **DOGE's indicator feed periodically goes stale (~10-60s, low-liquidity `@trade`-stream gaps)
-  and its "no data" fail-open let a bad-edge entry slip the p(up) veto right after 10+ seconds of
-  correctly vetoing the same entry — found 2026-07-20, not fixed.** `PUP_GATE_MAX_AGE_SECS` fail-
-  open is intentional (a truly dead `poly-indicator.service` must not block all trading), but
-  today it can't distinguish that from "asset had no Binance trade print for a bit" — confirmed
-  via Oracle logs, 2 occurrences in 15h, both DOGE, both showing 100+ consecutive fresh `VETO`
-  checks immediately followed by one `SKIPPED_NO_DATA` check that let the entry through. Also
-  surfaced 5 smaller Telegram-output clarity issues (ambiguous "cycle:"/entry-vs-exit wording,
-  incomplete W/L breakdown, redundant UP/DN edge display, wrong boot-banner size, ambiguous
-  `/status` `start=120s`). Proposed fixes (display, alerting, and a possible gate-behavior change)
-  not yet applied — pending review. Full writeup: `trader/doc/audit_48hr_unwind_maker_2026-07-20.md`.
+- **`polymarket_client_sdk_v2`'s CLOB WS heartbeat has a reconnect gap in the fully-silent case —
+  found 2026-07-20, not fixed (third-party dependency, not our code).** Its `ConnectionManager`
+  sends an app-level `"PING"` every 5s and expects `"PONG"` within 15s
+  (`src/ws/connection.rs`), but if that heartbeat times out while the connection is a true
+  bidirectional black hole (no data either way, but no TCP-level error either), the heartbeat task
+  just exits quietly — the main `tokio::select!` read loop never notices and keeps waiting on
+  `read.next()`/`sender_rx.recv()` forever instead of tearing the connection down and reconnecting.
+  Confirmed by reading the dependency's source (not guessed) and reproducing the exact `select!`
+  pattern in a standalone test — it hangs rather than falling through to recovery. Doesn't affect
+  the common failure path (an actual `Close`/`Err` from a real disconnect reconnects fine via
+  `connection_loop`'s exponential backoff); only the narrow "connection looks alive, delivers
+  nothing" case is at risk. Options if this ever matters in practice: report upstream, or add our
+  own outer silence-based watchdog around `ClobWsClient` as defense-in-depth. Not acted on yet —
+  no evidence this has actually happened in production, found while researching WS heartbeat/
+  reconnect behavior for `price_feed/doc/data_ws_duplicates_2026-07-20.md`.
 - **`trade_reconcile.py` doesn't read non-5m trade CSVs or BT-reconcile 15m/4h trades —
   known gap, 2026-07-17.** The new-markets feature writes non-5m trades to duration-tagged
   files (`live_trades_{asset}_{strategy}_{15m,1h-et,4h}.csv`) and control-log entries under
@@ -1145,6 +1167,23 @@ market resolutions and seeding/recording them into the local SQLite db
 until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
+
+### p(up) gate fail-open on stale/missing data let a bad-edge DOGE entry through — fixed, gate now fails closed (2026-07-20, fixed)
+
+Oracle log forensics found 2 `SKIPPED_NO_DATA` occurrences in ~15h, both DOGE, each immediately
+following 100+ consecutive fresh `VETO` checks on the same bad-edge reading — the indicator's
+`p(up)` snapshot going briefly stale (Binance `@trade` genuinely printing nothing for 10-60s on a
+quiet low-liquidity pair, not a dead daemon) let the fail-open path place an order the gate would
+otherwise have correctly blocked. Fixed by making the gate fail **closed**: `PUP_GATE_MAX_AGE_SECS`
+lowered 10.0s→2.0s and unified as the single threshold for both the gate and every display (no more
+separate display-only staleness setting, which had already caused one prior contradiction — see the
+`asbuilt_unwind_5u_maker_2026-07-19.md` §4 entry below); a stale/missing reading now blocks the
+entry outright and sends a debounced Telegram warning instead of silently proceeding. Also shipped
+the same day: 5 Telegram/`/status` display-clarity fixes, a fresh `strategy_20260720_24h.toml` paper
+window (parameters re-picked favoring win-rate per user instruction), and `price_feed`'s Binance
+`@bookTicker` feed (closes most of the root-cause quiet-market gaps at the source, separately from
+the gate fix). Full writeup: `trader/doc/audit_48hr_unwind_maker_2026-07-20.md`,
+`trader/doc/plan_stale_data_gate_2026-07-20.md`, `price_feed/doc/plan_binance_ws_quality_2026-07-20.md`.
 
 ### Maker-entry quotes rested at the signal mid-price instead of the true best bid — fixed, 48h paper window restarted (2026-07-19, fixed)
 

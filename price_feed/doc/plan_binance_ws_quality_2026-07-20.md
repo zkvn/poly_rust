@@ -1,11 +1,11 @@
 # Plan — Binance WS "staleness" is mostly a stream-choice problem, not a connection-health problem
 
-Status: **§3 (bookTicker) implemented and deployed 2026-07-20.** §4 (observe-only staleness
-logging for Binance) deliberately **not yet implemented** — user's explicit rollout order was
-"§3 first, once that's tested ok, roll out §4" — so §4 stays pending until §3 has some live
-soak time on Oracle to confirm it actually closes the staleness gaps before adding more
-machinery on top. §5 (REST reconciliation) untouched, per §6's original "only if §4's data
-still shows a gap" ordering. Originally written per user request after
+Status: **§3 (bookTicker) and §4 (observe-only staleness logging) both implemented and deployed
+2026-07-20**, per the user's explicit rollout order ("§3 first, once that's tested ok, roll out
+§4") — §3 shipped and was confirmed healthy on Oracle (all assets connected cleanly, zero
+errors) before §4 was added on top. §5 (REST reconciliation) untouched, per §6's original "only
+if §4's data still shows a gap" ordering — nothing yet to act on, §4 only just started
+collecting real data. Originally written per user request after
 `trader/doc/audit_48hr_unwind_maker_2026-07-20.md` §1 found a real DOGE indicator-staleness
 incident traced back to `price_feed`'s Binance ingestion. This doc researches root cause and
 proposes fixes for `price_feed`'s Binance leg specifically; it does not touch the `indicator`/
@@ -143,6 +143,24 @@ Gives real data on: which assets/hours actually see multi-second Binance gaps, w
 (bookTicker) eliminates them, and — if any remain even under bookTicker — how long they really
 run, before any reconnect/reconciliation logic gets designed against real numbers instead of a
 single incident's timestamps.
+
+### Implementation notes (2026-07-20)
+
+Shipped exactly as scoped above — wired into the `ticker_250ms` sampler in `run()`, right next to
+the pre-existing bba staleness block, using the identical pattern (reset `last_seen`/
+`logged_bucket` on a new sample, log newly-crossed `buckets_to_log` buckets on a repeat). Tracks
+`BinanceState::price_received_at_ms` (the `@bookTicker` field), not `@trade`'s
+`server_ts_ms`/`trade_received_at_ms` — those are a separate, latency-only concern (§3's
+implementation notes) and were never in scope for this staleness check. `HYPE` (no Binance market)
+is naturally excluded: its `price` never exceeds `0.0`, so it never reaches the staleness block at
+all — confirmed locally (empty `HYPE_binance_*.parquet`, zero rows, after a live 20s run). No new
+unit tests added — this wiring reuses `staleness::buckets_to_log`, already covered by its own pure-
+function test suite, and mirrors the bba wiring (also untested at the integration level, just at
+the pure-function level) rather than introducing a new testing pattern. Verified locally: a live
+20s run against real Binance data produced zero `[OBSERVE-STALE]` lines (expected — the whole
+point of §3 is that `@bookTicker` shouldn't go quiet under normal conditions), full crate test
+suite green (44 tests), `cargo fmt --check`/`clippy -D warnings` clean, then deployed to Oracle —
+all assets connected cleanly post-restart, zero errors.
 
 ## 5. Phase 2 (only if §4's data shows it's still needed after §3): REST reconciliation
 
