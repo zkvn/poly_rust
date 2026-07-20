@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Telegram digest of Binance bookTicker OBSERVE-STALE events
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/poly_rust/price_feed/scripts
+ExecStart=/home/ubuntu/apps/poly_rust/price_feed/scripts/binance_stale_digest.sh

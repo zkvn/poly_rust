@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Binance bookTicker staleness digest (09:00 HKT)
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
