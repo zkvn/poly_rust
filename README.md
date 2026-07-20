@@ -44,6 +44,14 @@ run, so timeout is the only other exit path). Real example, both outcomes, from
 [ORDER] CLOSE 5.0000 (Timeout) -> status=Matched       # unbounded market close instead
 ```
 
+**Trading principle: never trade on stale information.** Not trading is always an acceptable
+outcome; trading on a stale signal is not. Any entry gate that depends on an external signal
+(e.g. the indicator daemon's `p(up)`) must **block the entry** when that signal is missing or
+older than the gate's own freshness threshold — it must never fail open just because a fresh
+reading isn't available, and the freshness threshold is trading config (not a separate
+display-only setting). See `CLAUDE.md` "Trading principles" and
+`trader/doc/audit_48hr_unwind_maker_2026-07-20.md` §1 for the incident that established this.
+
 <details>
 <summary><strong>Git branch convention</strong></summary>
 

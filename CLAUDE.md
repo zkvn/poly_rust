@@ -11,6 +11,22 @@
 - **Incident-section entries: short, with a link, not a full inline writeup.** New entries under "Trading engine — known incidents" should be a `###` heading (topic + date + fixed/added) followed by 2-5 sentences of root cause/fix — ideally closer to a one-liner — plus `Full writeup: <path>` pointing at the detailed doc in `trader/doc/` or `price_feed/doc/`. The doc holds the full narrative (root cause, fix steps, verification, follow-ups); the README entry is an index pointer, not a copy. Existing older entries (pre-2026-07-12) are longer/inline and can stay as-is — this convention applies going forward, don't mass-rewrite history for its own sake.
 - Prefer diagnosing over patching — verify the actual cause (logs, processes, config) before proposing a fix.
 
+## Trading principles
+- **Never trade on stale information. Not trading is always an acceptable outcome; trading on a stale
+  signal is not.** If a signal an entry gate depends on (e.g. the indicator daemon's `p(up)`) is missing
+  or older than that gate's own freshness threshold, the gate must **block the entry** — it must never
+  fail open just because a fresh reading isn't available. Send a Telegram warning when this happens so a
+  dead/degraded upstream feed is visible, but the trade itself must not proceed. Confirmed 2026-07-20
+  after the `pup_edge_min_rev` gate's old fail-open behavior let a bad-edge DOGE entry through during a
+  genuine indicator staleness window — see `trader/doc/audit_48hr_unwind_maker_2026-07-20.md` §1 and
+  `trader/doc/plan_stale_data_gate_2026-07-20.md`. This overrides the older "a dead daemon must never
+  silently block trading" design premise from `plan_unwind_5u_maker_2026-07-19.md` §2.3 — that premise
+  optimized for uptime over correctness; the user's explicit call is the opposite trade-off.
+- **Freshness thresholds are trading config, not display config.** Don't add a separate "display-only"
+  staleness window distinct from the one the trading gate itself uses — that split has already caused one
+  real bug (`asbuilt_unwind_5u_maker_2026-07-19.md` §4, a stale-vs-fresh contradiction in the same Telegram
+  message). One threshold, used by both the gate and whatever renders it.
+
 ## Project notes
 - Rust project (Polymarket CLOB price recorder — streams live order-book/price data,
   writes daily Parquet). `cargo build` builds it; main binary is `price_feed`
