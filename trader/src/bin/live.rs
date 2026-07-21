@@ -81,6 +81,25 @@ fn should_suppress_startup_cycle(is_first_tick: bool, elapsed_into_slot: f64) ->
     is_first_tick && elapsed_into_slot > STARTUP_MID_CYCLE_GUARD_SECS
 }
 
+/// Synthetic starting balance for paper-mode's account-level drawdown guard
+/// (`trader/doc/incident_paper_balance_drawdown_2026-07-21.md`). Paper mode
+/// has no real CLOB wallet — `LiveExecutionEngine::fetch_balance` is never
+/// called (`live_engine` is `None`), so `BalanceGuard`'s 25%-drawdown "total
+/// pnl stop loss" and the scoped balance-decrease halt were both silently
+/// inert for every paper run to date. A fixed $50.00 baseline plus the
+/// fleet's running realized pnl (`paper_balance` below) gives both checks a
+/// real sample to work from.
+const PAPER_STARTING_BALANCE_USDC: f64 = 50.0;
+
+/// The synthetic paper-mode balance sample: starting balance plus the sum of
+/// every slot's running `total_pnl`. Pure and decoupled from `AssetSlot`'s
+/// concrete type (`pnls` is just each slot's current `total_pnl`) so it's
+/// directly unit-testable — mirrors `render_status`'s own `t_pnl` summation,
+/// the same aggregate already computed for the `/status` PNL section.
+fn paper_balance(starting_balance: f64, pnls: impl Iterator<Item = f64>) -> f64 {
+    starting_balance + pnls.sum::<f64>()
+}
+
 type Signer = alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>;
 
 #[derive(Parser, Debug)]
@@ -1121,12 +1140,20 @@ impl Driver<'_> {
         indicator_max_age_secs: f64,
     ) -> String {
         let now = hkt_now().format("%H:%M:%S HKT");
-        let balance = match self.live_engine {
-            Some(engine) => match engine.fetch_balance().await {
-                Some(b) => format!("${b:.4}"),
-                None => "n/a (fetch failed)".to_string(),
-            },
-            None => "n/a (dry-run)".to_string(),
+        let balance = if self.mode == RunMode::Paper {
+            let b = paper_balance(
+                PAPER_STARTING_BALANCE_USDC,
+                assets.iter().map(|s| s.total_pnl),
+            );
+            format!("${b:.4} (paper, ${PAPER_STARTING_BALANCE_USDC:.2} start)")
+        } else {
+            match self.live_engine {
+                Some(engine) => match engine.fetch_balance().await {
+                    Some(b) => format!("${b:.4}"),
+                    None => "n/a (fetch failed)".to_string(),
+                },
+                None => "n/a (dry-run)".to_string(),
+            }
         };
         let mut sections = vec![format!(
             "📊 <b>STATUS</b>  ({now})\nBalance: {balance}\n{}",
@@ -3030,11 +3057,20 @@ async fn main() -> Result<()> {
 
             _ = tokio::time::sleep_until(balance_deadline) => {
                 // Dry-run has no account: `bal` stays None, which both trackers
-                // treat as "unknown ⇒ don't act" (see balance.rs) — the whole
-                // arm is inert on paper runs.
-                let bal = match &live_engine {
-                    Some(engine) => engine.fetch_balance().await,
-                    None => None,
+                // treat as "unknown ⇒ don't act" (see balance.rs). Paper mode
+                // samples the synthetic balance instead (starting balance +
+                // running realized pnl across every slot) so both trackers get
+                // a real sample — trader/doc/incident_paper_balance_drawdown_2026-07-21.md.
+                let bal = if mode == RunMode::Paper {
+                    Some(paper_balance(
+                        PAPER_STARTING_BALANCE_USDC,
+                        assets.iter().map(|s| s.total_pnl),
+                    ))
+                } else {
+                    match &live_engine {
+                        Some(engine) => engine.fetch_balance().await,
+                        None => None,
+                    }
                 };
                 gamma_balance.record(bal);
 
@@ -3186,6 +3222,68 @@ mod resolve_trade_size_tests {
     #[test]
     fn explicit_cli_override_wins() {
         assert_eq!(resolve_trade_size_usdc(5.0, Some(2.5)), 2.5);
+    }
+}
+
+#[cfg(test)]
+mod paper_balance_tests {
+    use super::*;
+
+    /// trader/doc/incident_paper_balance_drawdown_2026-07-21.md: paper mode
+    /// had no balance sample at all (`live_engine` is always `None`), so
+    /// `BalanceGuard`'s 25%-drawdown halt never fired. No trades yet ->
+    /// exactly the starting balance.
+    #[test]
+    fn no_trades_yet_is_exactly_the_starting_balance() {
+        assert_eq!(
+            paper_balance(PAPER_STARTING_BALANCE_USDC, std::iter::empty()),
+            50.0
+        );
+    }
+
+    #[test]
+    fn sums_pnl_across_every_slot() {
+        // Three slots: +2.00, -0.50, +1.25 -> 50.00 + 2.75 = 52.75.
+        let pnls = [2.00, -0.50, 1.25];
+        assert!(
+            (paper_balance(PAPER_STARTING_BALANCE_USDC, pnls.into_iter()) - 52.75).abs() < 1e-9
+        );
+    }
+
+    /// A losing session can genuinely push the synthetic balance below the
+    /// starting point (or even negative) — `paper_balance` doesn't clamp;
+    /// `BalanceGuard::check`'s drawdown ratio handles that correctly on its
+    /// own (a larger loss is just a larger drawdown fraction).
+    #[test]
+    fn losses_can_drop_the_balance_below_starting() {
+        let pnls = [-30.0, -25.0];
+        assert!(
+            (paper_balance(PAPER_STARTING_BALANCE_USDC, pnls.into_iter()) - (-5.0)).abs() < 1e-9
+        );
+    }
+
+    /// Feeding this straight into `BalanceGuard` reproduces the exact
+    /// "total pnl stop loss" the user asked for: a session that loses more
+    /// than 25% of the $50 starting balance must halt.
+    #[test]
+    fn drives_balance_guard_drawdown_halt_end_to_end() {
+        let guard = trader::balance::BalanceGuard::new();
+        // First sample (no trades yet) sets the baseline at $50.00.
+        assert!(!guard.check(Some(paper_balance(
+            PAPER_STARTING_BALANCE_USDC,
+            std::iter::empty()
+        ))));
+        // Losses so far: -$10 (20% drawdown) -> under the 25% limit, no halt.
+        assert!(!guard.check(Some(paper_balance(
+            PAPER_STARTING_BALANCE_USDC,
+            [-10.0].into_iter()
+        ))));
+        // Losses so far: -$13 (26% drawdown) -> halts.
+        assert!(guard.check(Some(paper_balance(
+            PAPER_STARTING_BALANCE_USDC,
+            [-13.0].into_iter()
+        ))));
+        assert!(guard.is_halted());
     }
 }
 

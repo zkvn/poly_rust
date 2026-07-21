@@ -1184,6 +1184,17 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### Paper mode had no balance sample — the 25% "total pnl stop loss" was silently inert (2026-07-21, added)
+
+`BalanceGuard`'s account-level 25%-drawdown halt (distinct from each strategy's own per-trade
+`sl_pnl_rev`) is fed once per cycle from `LiveExecutionEngine::fetch_balance()`, a real CLOB API
+call — paper mode has no CLOB client at all (`live_engine` is `None`), so that sample was always
+`None` and both the drawdown halt and its sibling scoped "balance decreased vs last cycle" check
+were silently inert for every paper run to date. Fixed with a synthetic $50.00 starting balance
+plus the fleet's running realized pnl (`paper_balance()`, reusing the same aggregate `/status`
+already computes) fed into both trackers when `mode == Paper`. `--dry-run` is unaffected —
+deliberately out of scope. Full writeup: `trader/doc/incident_paper_balance_drawdown_2026-07-21.md`.
+
 ### Telegram boot banner / `/status` showed size=$1.00 instead of $5.00 — a long-dormant CLI-override bug, exposed by the taker-entry sizing fix (2026-07-21, fixed)
 
 Root cause: `live.rs` unconditionally overwrote every slot's config-resolved `trade_size_usdc`
