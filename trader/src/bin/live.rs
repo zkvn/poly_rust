@@ -96,8 +96,17 @@ struct Args {
     #[arg(long, value_delimiter = ',', required = true)]
     asset: Vec<String>,
 
-    #[arg(long, default_value_t = 1.0)]
-    size_usdc: f64,
+    /// FAK/taker entry size in USDC, per (asset, strategy) slot — overrides
+    /// every slot's config-resolved `trade_size_usdc` when passed. Absent
+    /// (the default, and every production invocation — no deploy script
+    /// passes this) leaves each slot's own `strategy_*.toml`
+    /// `[trade_size_usdc]` value alone. See
+    /// `trader/doc/incident_wrong_size_2026-07-21.md`: this used to be a
+    /// plain `f64` defaulting to `1.0`, so it silently overrode every
+    /// config's real `trade_size_usdc` with `$1.00` on every run, since
+    /// nothing ever set it explicitly.
+    #[arg(long)]
+    size_usdc: Option<f64>,
 
     #[arg(long, default_value = "/home/kev/apps/btc_5mins/config")]
     config_dir: String,
@@ -379,6 +388,18 @@ fn append_csv_header_if_new(path: &str) -> Result<()> {
 /// break the naive comma-split so a raw SDK error message can't corrupt the row.
 fn csv_sanitize(s: &str) -> String {
     s.replace(',', ";").replace('\n', " ")
+}
+
+/// The per-slot USDC size used for a FAK/taker entry: the config-resolved
+/// `trade_size_usdc` (`config_value`) unless `--size-usdc` was explicitly
+/// passed on the CLI (`cli_override`), in which case that wins for every
+/// slot. `trader/doc/incident_wrong_size_2026-07-21.md`: this used to be an
+/// unconditional overwrite (`params.trade_size_usdc = args.size_usdc`, with
+/// `args.size_usdc` defaulting to `1.0`), which silently discarded every
+/// config's real `trade_size_usdc` on every run — no deploy script has ever
+/// passed `--size-usdc`, so the CLI's own default always won.
+fn resolve_trade_size_usdc(config_value: f64, cli_override: Option<f64>) -> f64 {
+    cli_override.unwrap_or(config_value)
 }
 
 const CANCELED_QUOTE_CSV_HEADER: &str =
@@ -2042,9 +2063,11 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&args.log_dir).with_context(|| format!("create {}", args.log_dir))?;
 
     println!(
-        "[live] assets={} size_usdc=${:.2} max_trades={} log_dir={}",
+        "[live] assets={} size_usdc={} max_trades={} log_dir={}",
         args.asset.join(","),
-        args.size_usdc,
+        args.size_usdc
+            .map(|v| format!("${v:.2} (CLI override)"))
+            .unwrap_or_else(|| "config default (per-slot trade_size_usdc)".to_string()),
         args.max_trades,
         args.log_dir
     );
@@ -2196,7 +2219,8 @@ async fn main() -> Result<()> {
             }
             // For "5m" this is exactly the pre-duration `toml.resolve(asset)`.
             let mut params = toml.resolve_for_duration(asset, &dur_label)?;
-            params.trade_size_usdc = args.size_usdc;
+            params.trade_size_usdc =
+                resolve_trade_size_usdc(params.trade_size_usdc, args.size_usdc);
             let max_buy_price = params.max_buy_price;
             if params.strategies.is_empty() {
                 anyhow::bail!(
@@ -3143,6 +3167,25 @@ mod restart_guard_tests {
     #[test]
     fn late_steady_state_tick_not_suppressed() {
         assert!(!should_suppress_startup_cycle(false, 100.0));
+    }
+}
+
+#[cfg(test)]
+mod resolve_trade_size_tests {
+    use super::*;
+
+    /// The regression this guards (trader/doc/incident_wrong_size_2026-07-21.md):
+    /// with no `--size-usdc` flag, every slot's real config `trade_size_usdc`
+    /// must survive untouched, not get silently reset to some CLI default.
+    #[test]
+    fn no_cli_override_keeps_config_value() {
+        assert_eq!(resolve_trade_size_usdc(5.0, None), 5.0);
+        assert_eq!(resolve_trade_size_usdc(1.0, None), 1.0);
+    }
+
+    #[test]
+    fn explicit_cli_override_wins() {
+        assert_eq!(resolve_trade_size_usdc(5.0, Some(2.5)), 2.5);
     }
 }
 

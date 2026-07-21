@@ -1184,6 +1184,20 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### Telegram boot banner / `/status` showed size=$1.00 instead of $5.00 — a long-dormant CLI-override bug, exposed by the taker-entry sizing fix (2026-07-21, fixed)
+
+Root cause: `live.rs` unconditionally overwrote every slot's config-resolved `trade_size_usdc`
+with the `--size-usdc` CLI flag (`params.trade_size_usdc = args.size_usdc`), which defaulted to
+`1.0` and was never explicitly passed by any deploy path — silently discarding the strategy
+TOML's real value on every run since the line was added 2026-07-17. Not display-only: real
+`Action::PlaceBuy` order sizing came from the same corrupted value, so today's taker-entry
+sizing fix (`trade_size_usdc` $1→$5, previous entry below) wasn't actually taking effect —
+paper trades between that deploy and this fix sized at $1, not $5. Dormant until now because
+maker-entry (2026-07-19 through today) bypassed `trade_size_usdc` for sizing entirely, and
+every config's value happened to already be `1.0` anyway. Fixed by making the CLI flag an
+explicit opt-in override (`Option<f64>`, no default) instead of an always-on overwrite. Full
+writeup: `trader/doc/incident_wrong_size_2026-07-21.md`.
+
 ### Maker-entry reversal fired 1 trade in 24h across 6 assets — replaced with an aggressive taker entry (2026-07-21, fixed)
 
 Local-synced `paper_trades_*.csv` from the `strategy_20260720_24h.toml` maker-entry window
