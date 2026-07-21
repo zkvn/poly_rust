@@ -194,6 +194,7 @@ mod tests {
             entry_ts: 1783046105.0,
             entry_price_ts: 1783046105.0,
             token_price: 0.93,
+            entry_signal_price: 0.93,
             exit_price: 1.0,
             outcome: Outcome::Win,
             pnl: 0.0753,

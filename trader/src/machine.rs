@@ -498,6 +498,9 @@ impl Machine {
             entry_ts: h.entry_ts,
             entry_price_ts: h.entry_price_ts,
             token_price: h.token_price,
+            // Backtest fills are instantaneous market replay, not a separate
+            // signal-then-execution round trip — no slippage to model.
+            entry_signal_price: h.token_price,
             exit_price,
             outcome,
             pnl,
@@ -562,6 +565,7 @@ mod tests {
             halt_reset_hour_hp: 8,
             halt_reset_hour_v: 2,
             max_buy_price: 0.95,
+            order_slippage: 0.05,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0, // large for unit tests; real value is 2.0

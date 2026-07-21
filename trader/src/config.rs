@@ -16,6 +16,14 @@ pub struct StrategyToml {
     pub assets: Vec<String>,
     pub trade_assets: Vec<String>,
     pub max_buy_price: f64,
+    /// Aggressive-taker entry buffer (plan_aggressive_taker_entry_2026-07-21
+    /// §2.1), reversal only: a non-maker reversal entry submits at
+    /// `best_ask + order_slippage` (capped at `max_buy_price`), not the mid —
+    /// "covers normal 1-tick bid-ask spread without sweeping wide asks."
+    /// Present in every `strategy_*.toml` to date but unused until this
+    /// change (grep confirmed zero references outside the TOML files
+    /// themselves before this field existed).
+    pub order_slippage: f64,
     pub no_enter_when_time_left: i64,
     pub spread_premium_limit: f64,
     pub spread_discount_limit: f64,
@@ -210,6 +218,8 @@ pub struct AssetParams {
 
     // Gates
     pub max_buy_price: f64,
+    /// See `StrategyToml::order_slippage`'s doc comment.
+    pub order_slippage: f64,
     pub spread_premium_limit: f64,
     pub spread_discount_limit: f64,
     pub max_price_age_secs: f64,
@@ -350,6 +360,7 @@ impl StrategyToml {
             halt_reset_hour_hp: req_chain(&self.halt_reset_hour_hp, keys, "halt_reset_hour_hp")?,
             halt_reset_hour_v: get_chain(&self.halt_reset_hour_v, keys).unwrap_or(2),
             max_buy_price: self.max_buy_price,
+            order_slippage: self.order_slippage,
             spread_premium_limit: self.spread_premium_limit,
             spread_discount_limit: self.spread_discount_limit,
             max_price_age_secs: self.max_price_age_secs,
@@ -402,16 +413,19 @@ mod tests {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
         let p = toml.resolve("BTC").expect("resolve BTC");
-        // strategy_20260720_24h.toml (trader/doc/plan_stale_data_gate_2026-07-20.md
-        // §3's 24h re-pick, delta_pct_rev bounded to [0.0003,0.0008] favoring
-        // win_rate — see that file's meta.source for the full method and
-        // picked-row stats): BTC picked delta=0.0008/reversal=0.55/low=0.20/
-        // unwind_pnl=0.15/unwind_time=30.0 (168 trades, 85.1% win over the
-        // calibration window). sl_reversal/sl_pnl_rev stay 0.0 for every asset
-        // regardless (plan 1.2, Scenario A — unwind_time_rev IS the stop).
+        // strategy_20260721_taker.toml (trader/doc/plan_aggressive_taker_entry_2026-07-21.md):
+        // switches reversal entries from maker to aggressive-taker and bumps
+        // trade_size_usdc, but carries every reversal per-asset parameter over
+        // verbatim from strategy_20260720_24h.toml's 24h re-pick (delta_pct_rev
+        // bounded to [0.0003,0.0008] favoring win_rate — see that file's
+        // meta.source for the full method and picked-row stats): BTC picked
+        // delta=0.0008/reversal=0.55/low=0.20/unwind_pnl=0.15/unwind_time=30.0
+        // (168 trades, 85.1% win over the calibration window). sl_reversal/
+        // sl_pnl_rev stay 0.0 for every asset regardless (plan 1.2, Scenario A
+        // — unwind_time_rev IS the stop).
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
-            "BTC reversal = 0.55 (24h re-pick)"
+            "BTC reversal = 0.55 (24h re-pick, carried over unchanged)"
         );
         assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
         assert!((p.delta_pct_rev - 0.0008).abs() < 1e-9);
@@ -426,7 +440,11 @@ mod tests {
         assert!((p.sl_pnl_hp - 0.20).abs() < 1e-9);
         assert!((p.unwind_time_rev - 30.0).abs() < 1e-9);
         assert!((p.unwind_time_hp - 25.0).abs() < 1e-9);
-        assert!(p.maker_entry, "maker_entry = true for this run");
+        assert!(
+            !p.maker_entry,
+            "maker_entry = false for this run — aggressive taker entry instead"
+        );
+        assert!((p.order_slippage - 0.05).abs() < 1e-9);
         assert_eq!(p.pup_edge_min_rev, Some(0.0));
         // gamma_poll_delay_secs/gamma_poll_interval_secs added 2026-07-09 (see
         // README's Gamma-halt section) — flat defaults, no per-asset override yet.
@@ -441,7 +459,7 @@ mod tests {
     fn unwind_time_falls_back_to_default_and_resolves_asset_override() {
         let mut toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // strategy_20260720_24h.toml gives every real trade asset its own
+        // strategy_20260721_taker.toml gives every real trade asset its own
         // unwind_time_rev too, so none of them exercise the default-fallback
         // path — use a fictitious asset key instead to demonstrate the
         // fallback chain directly.
@@ -461,7 +479,7 @@ mod tests {
     fn default_fallback() {
         let toml =
             load_latest(concat!(env!("CARGO_MANIFEST_DIR"), "/config")).expect("load config");
-        // strategy_20260720_24h.toml gives every real trade asset its own
+        // strategy_20260721_taker.toml gives every real trade asset its own
         // delta_pct_rev too — same fictitious-key approach as
         // unwind_time_falls_back_to_default_and_resolves_asset_override.
         let p = toml.resolve("NOTREAL").expect("resolve NOTREAL");
@@ -608,7 +626,7 @@ mod tests {
         assert_eq!(
             p.strategies,
             vec!["reversal"],
-            "5m list unchanged (strategy_20260720_24h.toml: reversal only, high_prob removed)"
+            "5m list unchanged (strategy_20260721_taker.toml: reversal only, high_prob removed)"
         );
     }
 

@@ -13,36 +13,30 @@ with config-adjustable HAR windows, republishes on `indicator.<ASSET>`; plan
 `indicator/doc/perf_indicator_docker_2026-07-18.md`). None of these read or write
 another's config/state.
 
-Currently paper-trading on Oracle (48h window, real-money trading paused): a 5-share
-maker-entry reversal strategy with a p(up) negative-edge veto. Design intent:
-`trader/doc/plan_unwind_5u_maker_2026-07-19.md`. What the running code actually does —
-entry/exit rules, the maker-quote lifecycle, fill simulation, CSV/console log reference:
-`trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md`.
+Currently paper-trading on Oracle (real-money trading paused): a reversal strategy with an
+**aggressive taker entry** (marketable buy at `best_ask + order_slippage`, capped at
+`max_buy_price`) and a maker take-profit exit, plus a p(up) negative-edge veto. Switched from
+a maker-entry (resting-quote) mechanism 2026-07-21 after a 24h maker-entry window fired only 1
+trade across 6 assets — root cause and design: `trader/doc/plan_aggressive_taker_entry_2026-07-21.md`.
+The original maker-entry design intent (still in the code, just off by default —
+`maker_entry = false`): `trader/doc/plan_unwind_5u_maker_2026-07-19.md`,
+`trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md` (entry/exit rules, fill simulation,
+CSV/console log reference — describes the maker-entry mechanics specifically, not the current
+taker-entry default).
 
-**Order flow per trade:** two resting GTC limit orders in the normal case — an entry BUY at
-the real observed best bid, then (the instant that fills) an exit SELL at the take-profit
-target (`entry_price + unwind_pnl_rev`). The exit order is placed in the *same* synchronous
-action batch as the entry-fill confirmation (`worker.rs::finalize_entry_fill`), not just
-typically-fast — there's no tick/event window where anything else can run in between. If
-price reaches the take-profit target before `unwind_time_rev` (26–30s per asset) elapses, that
-second limit order fills too (`Outcome::Unwind`). If it doesn't, the still-resting exit limit
-gets **cancelled unfilled** and a **third, different order type** — an unbounded market (FAK)
-close — force-exits the position instead (`Outcome::Timeout`; stop-loss is disabled for this
-run, so timeout is the only other exit path). Real example, both outcomes, from
-`trader/live_logs/live.log`:
-
-```
-[ORDER] MAKER ENTRY BUY 5.00 @ 0.7600 (Down)           # entry limit placed
-[PAPER-FILL] resting Buy paper-2 filled 5.00 @ 0.7600  # entry fills
-[ORDER] LIMIT SELL 5.0000 @ 0.9100                     # exit limit placed, same instant
-[PAPER-FILL] resting Sell paper-3 filled 5.00 @ 0.9100 # take-profit hit -> Unwind
-
-[ORDER] MAKER ENTRY BUY 5.00 @ 0.8200 (Down)           # entry limit placed
-[PAPER-FILL] resting Buy paper-15 filled 5.00 @ 0.8200 # entry fills
-[ORDER] LIMIT SELL 5.0000 @ 0.9700                     # exit limit placed, same instant
-[ORDER] CANCEL paper-16 -> true                        # unwind_time_rev elapsed first
-[ORDER] CLOSE 5.0000 (Timeout) -> status=Matched       # unbounded market close instead
-```
+**Order flow per trade (current, taker entry):** a marketable BUY fills immediately at the
+observed CLOB price (paper) or the actual matched price (live), then (the instant that fills,
+same synchronous action batch as the fill confirmation — `worker.rs::finalize_entry_fill`) a
+resting GTC exit SELL is placed at the take-profit target (`executed_price + unwind_pnl_rev`,
+not the signal price — see `trader/doc/plan_aggressive_taker_entry_2026-07-21.md` §2.3/§2.4 for
+why and how signal-vs-executed slippage is now logged alongside it). If price reaches the
+take-profit target before `unwind_time_rev` elapses, that resting sell fills too
+(`Outcome::Unwind`). If it doesn't, the still-resting exit limit gets **cancelled unfilled**
+and a **third, different order type** — an unbounded market (FAK) close — force-exits the
+position instead (`Outcome::Timeout`; stop-loss is disabled for this run, so timeout is the
+only other exit path). Console tag reference: `trader/doc/asbuilt_unwind_5u_maker_2026-07-19.md`
+§6 (still accurate for the shared exit-side tags; `[ORDER] ... MAKER ENTRY BUY ...` just no
+longer fires under the current config).
 
 **Trading principle: never trade on stale information.** Not trading is always an acceptable
 outcome; trading on a stale signal is not. Any entry gate that depends on an external signal

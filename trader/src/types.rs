@@ -154,6 +154,14 @@ pub struct TradeRecord {
     #[serde(default)]
     pub entry_price_ts: f64,
     pub token_price: f64,
+    /// The decision-time signal price (the mid) at entry — see
+    /// `worker::HoldingData::entry_signal_price`'s doc comment for the full
+    /// rationale. `token_price - entry_signal_price` is the entry's
+    /// signal-to-execution slippage. `#[serde(default)]` for records
+    /// predating this field (added 2026-07-21,
+    /// plan_aggressive_taker_entry_2026-07-21.md §2.4).
+    #[serde(default)]
+    pub entry_signal_price: f64,
     pub exit_price: f64,
     pub outcome: Outcome,
     pub pnl: f64,

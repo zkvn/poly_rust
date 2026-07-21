@@ -54,6 +54,20 @@ impl LatestPolySignal {
         }
     }
 
+    /// The real best ask for `side`, if ever observed — mirrors `best_bid`'s
+    /// shape the other way round: `Side::Up` reads the UP token's own ask
+    /// directly; `Side::Down` derives it from the UP token's *bid* via the
+    /// same complementary-token identity (DOWN's ask = `1 - up_bid`). `None`
+    /// means "never observed this tick / this run" — callers must fall back
+    /// to the mid.
+    pub fn best_ask(&self, side: Side) -> Option<f64> {
+        match side {
+            Side::Up if self.up_ask > 0.0 => Some(self.up_ask),
+            Side::Down if self.up_bid > 0.0 => Some(1.0 - self.up_bid),
+            _ => None,
+        }
+    }
+
     /// Age of the last poly tick relative to `now` (seconds).
     /// Returns +inf if never received.
     pub fn age(&self, now: f64) -> f64 {
@@ -219,6 +233,55 @@ mod tests {
         });
         assert!((s.best_bid(Side::Up).unwrap() - 0.68).abs() < 1e-9);
         assert!((s.best_bid(Side::Down).unwrap() - 0.28).abs() < 1e-9);
+    }
+
+    #[test]
+    fn best_ask_none_before_any_tick() {
+        let s = LatestPolySignal::new();
+        assert_eq!(s.best_ask(Side::Up), None);
+        assert_eq!(s.best_ask(Side::Down), None);
+    }
+
+    #[test]
+    fn best_ask_up_reads_up_ask_directly() {
+        let mut s = LatestPolySignal::new();
+        s.on_poly(PolyTick {
+            ts: 100.0,
+            up: 0.70,
+            dn: 0.30,
+            up_bid: 0.68,
+            up_ask: 0.72,
+        });
+        assert!((s.best_ask(Side::Up).unwrap() - 0.72).abs() < 1e-9);
+    }
+
+    /// DOWN's best ask is derived from the UP token's *bid*, per the unified
+    /// mint/merge book's complementary-token identity: DOWN ask = 1 - UP bid.
+    #[test]
+    fn best_ask_down_derives_from_up_bid() {
+        let mut s = LatestPolySignal::new();
+        s.on_poly(PolyTick {
+            ts: 100.0,
+            up: 0.70,
+            dn: 0.30,
+            up_bid: 0.68,
+            up_ask: 0.72,
+        });
+        assert!((s.best_ask(Side::Down).unwrap() - 0.32).abs() < 1e-9); // 1 - 0.68
+    }
+
+    #[test]
+    fn best_ask_none_when_bid_ask_never_observed() {
+        let mut s = LatestPolySignal::new();
+        s.on_poly(PolyTick {
+            ts: 100.0,
+            up: 0.70,
+            dn: 0.30,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        });
+        assert_eq!(s.best_ask(Side::Up), None);
+        assert_eq!(s.best_ask(Side::Down), None);
     }
 
     #[test]

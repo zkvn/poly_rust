@@ -106,6 +106,15 @@ pub struct HoldingData {
     pub side: Side,
     pub entry_type: EntryType,
     pub token_price: f64,
+    /// The decision-time signal price (the mid, `TradeIntent::token_price()`)
+    /// at the moment `try_enter` fired — distinct from `token_price`, the
+    /// actual fill cost. `token_price - entry_signal_price` is the entry's
+    /// signal-to-execution slippage (plan_aggressive_taker_entry_2026-07-21
+    /// §2.4). Zero for a maker fill by construction — a resting quote only
+    /// ever fills at exactly its own quoted price. `#[serde(default)]` so a
+    /// state file persisted before this field existed still deserializes.
+    #[serde(default)]
+    pub entry_signal_price: f64,
     pub entry_ts: f64,
     /// The cached poly-price observation's own timestamp (`LatestPolySignal::ts`) at fill
     /// time — see `TradeRecord::entry_price_ts`'s doc comment. `#[serde(default)]` so a
@@ -327,9 +336,16 @@ pub enum CloseReason {
 pub enum Action {
     /// `signal_ts` is the triggering tick's own timestamp — the driver uses it
     /// to compute the "Order placed" Telegram message's signal/process latency.
+    /// `price` is what actually gets submitted (for a reversal taker entry,
+    /// the aggressive best-ask+slippage ceiling — see
+    /// `plan_aggressive_taker_entry_2026-07-21.md` §2.1); `signal_price` is
+    /// the decision-time mid, kept separately so the driver can log
+    /// signal-to-execution slippage (`result.cost - signal_price`) once the
+    /// fill confirms.
     PlaceBuy {
         side: Side,
         price: f64,
+        signal_price: f64,
         size_usdc: f64,
         signal_ts: f64,
     },
@@ -597,6 +613,11 @@ pub struct Worker {
     /// Maker-entry mode (plan_unwind_5u_maker_2026-07-19 §2.2) — only ever
     /// consulted when `kind` is `StrategyKind::Reversal`.
     maker_entry: bool,
+    /// Aggressive-taker entry buffer (plan_aggressive_taker_entry_2026-07-21
+    /// §2.1) — only ever consulted when `kind` is `StrategyKind::Reversal`
+    /// and `maker_entry` is false. See `AssetParams.order_slippage`'s doc
+    /// comment.
+    order_slippage: f64,
     /// The reversal strategy's own entry threshold, duplicated from
     /// `AssetParams.reversal` (which `StrategyKind::Reversal` already holds
     /// privately) so `check_maker_quote_cancel` can re-check "is the
@@ -675,6 +696,7 @@ impl Worker {
                 price_high_rev: p.price_high_rev,
             },
             maker_entry: p.maker_entry,
+            order_slippage: p.order_slippage,
             reversal_threshold: p.reversal,
             pup_edge_min_rev: p.pup_edge_min_rev,
             pup_snapshot: None,
@@ -1108,6 +1130,7 @@ impl Worker {
             entry_ts: h.entry_ts,
             entry_price_ts: h.entry_price_ts,
             token_price: h.token_price,
+            entry_signal_price: h.entry_signal_price,
             exit_price,
             outcome,
             pnl,
@@ -1191,6 +1214,11 @@ impl Worker {
             return vec![];
         }
 
+        // The decision-time signal price (the mid) — always the reference
+        // point for slippage logging (plan_aggressive_taker_entry_2026-07-21
+        // §2.4), regardless of which entry mechanism below actually submits.
+        let signal_price = intent.token_price();
+
         // Maker entry (plan_unwind_5u_maker_2026-07-19 §2.2), reversal only:
         // rest at the real observed best bid — "join the bid" per the source
         // MVP plan — not the signal's own mid. Falls back to mid when no
@@ -1201,12 +1229,26 @@ impl Worker {
         // using mid there instead would make the veto needlessly strict
         // whenever the real bid undercuts it.
         let is_maker_reversal = self.maker_entry && matches!(self.kind, StrategyKind::Reversal(_));
+        // Aggressive taker entry (plan_aggressive_taker_entry_2026-07-21
+        // §2.1), reversal only, the `maker_entry = false` case: a resting
+        // quote rarely trades through before it gets pulled (see that plan's
+        // §1) — submit a marketable buy instead, priced to reliably cross
+        // the touch: real best ask + `order_slippage`, capped at
+        // `max_buy_price`. Falls back to mid + buffer when no real ask has
+        // been observed yet, same posture as the maker branch's bid fallback.
+        let is_taker_reversal = !self.maker_entry && matches!(self.kind, StrategyKind::Reversal(_));
         let entry_price = if is_maker_reversal {
             self.latest_poly
                 .best_bid(intent.side)
-                .unwrap_or_else(|| intent.token_price())
+                .unwrap_or(signal_price)
+        } else if is_taker_reversal {
+            let base = self
+                .latest_poly
+                .best_ask(intent.side)
+                .unwrap_or(signal_price);
+            (base + self.order_slippage).min(self.gate_params.max_buy_price)
         } else {
-            intent.token_price()
+            signal_price
         };
 
         // p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3),
@@ -1275,12 +1317,13 @@ impl Worker {
         }
 
         self.state = WorkerState::Entering;
-        // Stash the intent's side/entry_type/token_price for when the fill lands.
-        self.pending_entry = Some((intent.side, intent.entry_type, intent.token_price()));
+        // Stash the intent's side/entry_type/signal_price for when the fill lands.
+        self.pending_entry = Some((intent.side, intent.entry_type, signal_price));
         vec![
             Action::PlaceBuy {
                 side: intent.side,
-                price: intent.token_price(),
+                price: entry_price,
+                signal_price,
                 size_usdc: self.trade_size,
                 signal_ts: now,
             },
@@ -1454,7 +1497,7 @@ impl Worker {
         if !matches!(self.state, WorkerState::Entering) {
             return vec![];
         }
-        let Some((side, entry_type, _intent_price)) = self.pending_entry.take() else {
+        let Some((side, entry_type, signal_price)) = self.pending_entry.take() else {
             return vec![];
         };
         self.finalize_entry_fill(
@@ -1462,6 +1505,7 @@ impl Worker {
             entry_type,
             filled_shares,
             cost,
+            signal_price,
             entry_signal_latency_ms,
             entry_process_latency_ms,
             false,
@@ -1474,6 +1518,9 @@ impl Worker {
     /// regardless of how the entry itself was filled. `via_maker_entry`
     /// distinguishes the two callers only for `Action::PlaceLimitSell`'s
     /// merged-notification scoping (see that variant's doc comment).
+    /// `entry_signal_price` is the decision-time mid (`HoldingData`'s own doc
+    /// comment) — the maker caller passes its own quote price for it (zero
+    /// slippage by construction).
     #[allow(clippy::too_many_arguments)]
     fn finalize_entry_fill(
         &mut self,
@@ -1481,6 +1528,7 @@ impl Worker {
         entry_type: EntryType,
         filled_shares: f64,
         cost: f64,
+        entry_signal_price: f64,
         entry_signal_latency_ms: f64,
         entry_process_latency_ms: f64,
         via_maker_entry: bool,
@@ -1517,6 +1565,7 @@ impl Worker {
             side,
             entry_type,
             token_price: cost,
+            entry_signal_price,
             entry_ts: self.last_binance_ts(),
             entry_price_ts: self.latest_poly.ts,
             shares: filled_shares,
@@ -1567,6 +1616,7 @@ impl Worker {
                     q.entry_type,
                     MIN_GTC_SHARES,
                     q.quote_price,
+                    q.quote_price,
                     signal_latency_ms,
                     process_latency_ms,
                     true,
@@ -1599,6 +1649,7 @@ impl Worker {
             q.entry_type,
             filled_shares,
             cost,
+            q.quote_price,
             signal_latency_ms,
             process_latency_ms,
             true,
@@ -1637,6 +1688,7 @@ impl Worker {
                     entry_ts: h.entry_ts,
                     entry_price_ts: h.entry_price_ts,
                     token_price: h.token_price,
+                    entry_signal_price: h.entry_signal_price,
                     exit_price,
                     outcome: Outcome::Unwind,
                     pnl,
@@ -1736,6 +1788,7 @@ impl Worker {
             entry_ts: h.entry_ts,
             entry_price_ts: h.entry_price_ts,
             token_price: h.token_price,
+            entry_signal_price: h.entry_signal_price,
             exit_price,
             outcome,
             pnl,
@@ -2046,6 +2099,7 @@ mod tests {
             halt_reset_hour_hp: 8,
             halt_reset_hour_v: 2,
             max_buy_price: 0.95,
+            order_slippage: 0.05,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0, // large for unit tests; real config: 2.0
@@ -2138,7 +2192,11 @@ mod tests {
             vec![
                 Action::PlaceBuy {
                     side: Side::Down,
-                    price: 0.70,
+                    // Aggressive taker entry (plan_aggressive_taker_entry_2026-07-21
+                    // §2.1): mid 0.70 + order_slippage 0.05 = 0.75 (no real ask
+                    // observed this test, up_bid/up_ask stay 0.0 -> falls back to mid).
+                    price: 0.75,
+                    signal_price: 0.70,
                     size_usdc: 1.0,
                     signal_ts: 1250.0
                 },
@@ -2187,7 +2245,9 @@ mod tests {
             vec![
                 Action::PlaceBuy {
                     side: Side::Up,
+                    // v_shape never consults maker_entry/order_slippage — price stays mid.
                     price: 0.70,
+                    signal_price: 0.70,
                     size_usdc: 1.0,
                     signal_ts: 1240.0
                 },
@@ -2254,7 +2314,8 @@ mod tests {
             vec![
                 Action::PlaceBuy {
                     side: Side::Down,
-                    price: 0.70,
+                    price: 0.75, // mid 0.70 + order_slippage 0.05 (aggressive taker)
+                    signal_price: 0.70,
                     size_usdc: 1.0,
                     signal_ts: 1240.0
                 },
@@ -4081,6 +4142,7 @@ mod tests {
             side: Side::Down,
             entry_type: EntryType::Reversal,
             token_price: 0.70,
+            entry_signal_price: 0.70,
             entry_ts: 1250.0,
             entry_price_ts: 1250.0,
             shares: 10.0,
@@ -4110,6 +4172,7 @@ mod tests {
             side: Side::Down,
             entry_type: EntryType::Reversal,
             token_price: 0.70,
+            entry_signal_price: 0.70,
             entry_ts: 1250.0,
             entry_price_ts: 1250.0,
             shares: 10.0,
@@ -4142,6 +4205,7 @@ mod tests {
             side: Side::Up,
             entry_type: EntryType::Reversal,
             token_price: 0.70,
+            entry_signal_price: 0.70,
             entry_ts: 1250.0,
             entry_price_ts: 1250.0,
             shares: 10.0,
@@ -4737,7 +4801,8 @@ mod tests {
             vec![
                 Action::PlaceBuy {
                     side: Side::Down,
-                    price: 0.70,
+                    price: 0.75, // mid 0.70 + order_slippage 0.05 (aggressive taker)
+                    signal_price: 0.70,
                     size_usdc: p.trade_size_usdc,
                     signal_ts: 1250.0,
                 },
@@ -4750,7 +4815,8 @@ mod tests {
     fn pup_gate_vetoes_when_p_side_below_entry_price() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // DOWN entry at price 0.70; p_up=0.35 -> p_side=1-0.35=0.65 < 0.70.
+        // DOWN entry at the aggressive taker price 0.75 (mid 0.70 +
+        // order_slippage 0.05); p_up=0.35 -> p_side=1-0.35=0.65 < 0.75.
         // ts 1249 keeps this within PUP_GATE_MAX_AGE_SECS (2.0s) of the
         // triggering tick at 1250 in fire_down_reversal.
         w.step(Event::IndicatorUpdate {
@@ -4763,7 +4829,7 @@ mod tests {
             vec![Action::PupGateNote {
                 side: Side::Down,
                 p_side: Some(0.65),
-                price: 0.70,
+                price: 0.75,
                 outcome: PupGateOutcome::Veto,
             }]
         );
@@ -4777,7 +4843,8 @@ mod tests {
     fn pup_gate_passes_when_p_side_at_or_above_entry_price() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // p_up=0.20 -> p_side=0.80 >= 0.70. ts 1249 keeps this within
+        // p_up=0.20 -> p_side=0.80 >= the aggressive taker price 0.75 (mid
+        // 0.70 + order_slippage 0.05). ts 1249 keeps this within
         // PUP_GATE_MAX_AGE_SECS (2.0s) of the triggering tick at 1250.
         w.step(Event::IndicatorUpdate {
             p_up: 0.20,
@@ -4789,7 +4856,8 @@ mod tests {
             vec![
                 Action::PlaceBuy {
                     side: Side::Down,
-                    price: 0.70,
+                    price: 0.75,
+                    signal_price: 0.70,
                     size_usdc: p.trade_size_usdc,
                     signal_ts: 1250.0,
                 },
@@ -4804,10 +4872,11 @@ mod tests {
     fn pup_gate_exact_equality_is_not_a_veto() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // p_up=0.30 -> p_side=0.70 == price 0.70 exactly. ts 1249 keeps this
-        // within PUP_GATE_MAX_AGE_SECS (2.0s) of the triggering tick at 1250.
+        // p_up=0.25 -> p_side=0.75 == the aggressive taker price 0.75 (mid
+        // 0.70 + order_slippage 0.05) exactly. ts 1249 keeps this within
+        // PUP_GATE_MAX_AGE_SECS (2.0s) of the triggering tick at 1250.
         w.step(Event::IndicatorUpdate {
-            p_up: 0.30,
+            p_up: 0.25,
             ts: 1249.0,
         });
         let actions = fire_down_reversal(&mut w);
@@ -4824,7 +4893,7 @@ mod tests {
             vec![Action::PupGateNote {
                 side: Side::Down,
                 p_side: None,
-                price: 0.70,
+                price: 0.75, // aggressive taker price: mid 0.70 + order_slippage 0.05
                 outcome: PupGateOutcome::StaleBlocked,
             }],
             "never trade on stale/missing information — no snapshot must block the entry, \
@@ -4840,9 +4909,9 @@ mod tests {
     fn pup_gate_blocks_on_a_stale_snapshot() {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
-        // A snapshot that would ALSO veto on p_side alone (0.65 < 0.70), but
-        // is stale by the time the entry fires regardless (ts 1250 -
-        // snapshot ts 1230 = 20s > PUP_GATE_MAX_AGE_SECS 2.0s).
+        // A snapshot that would ALSO veto on p_side alone (0.65 < 0.75, the
+        // aggressive taker price), but is stale by the time the entry fires
+        // regardless (ts 1250 - snapshot ts 1230 = 20s > PUP_GATE_MAX_AGE_SECS 2.0s).
         w.step(Event::IndicatorUpdate {
             p_up: 0.35,
             ts: 1230.0,
@@ -4853,7 +4922,7 @@ mod tests {
             vec![Action::PupGateNote {
                 side: Side::Down,
                 p_side: None,
-                price: 0.70,
+                price: 0.75,
                 outcome: PupGateOutcome::StaleBlocked,
             }],
             "stale snapshot must block the entry: {actions:?}"
@@ -4866,7 +4935,7 @@ mod tests {
         let mut w = Worker::new_reversal("BTC", &p);
         // Stale snapshot blocks first (mirrors pup_gate_blocks_on_a_stale_snapshot).
         w.step(Event::IndicatorUpdate {
-            p_up: 0.20, // p_side 0.80 >= 0.70 -> would pass, but it's stale
+            p_up: 0.20, // p_side 0.80 >= 0.75 -> would pass, but it's stale
             ts: 1230.0,
         });
         assert!(matches!(
@@ -4901,7 +4970,7 @@ mod tests {
         let p = pup_gate_params(0.0);
         let mut w = Worker::new_reversal("BTC", &p);
         w.step(Event::IndicatorUpdate {
-            p_up: 0.35, // p_side 0.65 < 0.70 -> veto
+            p_up: 0.35, // p_side 0.65 < 0.75 -> veto
             // ts 1249 keeps this within PUP_GATE_MAX_AGE_SECS (2.0s) of the
             // triggering tick at 1250.
             ts: 1249.0,
@@ -4919,7 +4988,7 @@ mod tests {
         // p_up improves; conditions (dn=0.70, dp sign) are otherwise
         // unchanged since the cached binance/poly signals didn't move.
         w.step(Event::IndicatorUpdate {
-            p_up: 0.20, // p_side 0.80 >= 0.70 -> pass
+            p_up: 0.20, // p_side 0.80 >= 0.75 -> pass
             ts: 1251.0,
         });
         let actions = w.step(Event::BinanceTick(BinanceTick {

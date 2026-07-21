@@ -321,7 +321,8 @@ fn spawn_resolution_watcher(
 }
 
 const CSV_HEADER: &str = "logged_at,slug,strategy,side,entry_ts,token_price,exit_price,outcome,pnl,exit_attempts,exit_last_error,\
-     entry_signal_latency_ms,entry_process_latency_ms,exit_signal_latency_ms,exit_process_latency_ms";
+     entry_signal_latency_ms,entry_process_latency_ms,exit_signal_latency_ms,exit_process_latency_ms,\
+     entry_signal_price,entry_slippage";
 
 /// Writes the CSV header for a new file, or heals a stale header from an
 /// earlier schema generation (9 columns, pre-`exit_attempts`/`exit_last_error`;
@@ -539,9 +540,14 @@ fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
         .as_deref()
         .map(csv_sanitize)
         .unwrap_or_default();
+    // Signal-to-execution slippage (plan_aggressive_taker_entry_2026-07-21
+    // §2.4): 0.0 for records predating entry_signal_price (the field's own
+    // #[serde(default)]) — indistinguishable from a genuine zero-slippage
+    // fill, same caveat every other back-filled-default field here carries.
+    let entry_slippage = rec.token_price - rec.entry_signal_price;
     writeln!(
         f,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         trader::marketdata::now_secs_f64(),
         rec.slug,
         rec.strategy,
@@ -556,7 +562,9 @@ fn log_trade(path: &str, rec: &TradeRecord) -> Result<()> {
         rec.entry_signal_latency_ms,
         rec.entry_process_latency_ms,
         rec.exit_signal_latency_ms,
-        rec.exit_process_latency_ms
+        rec.exit_process_latency_ms,
+        rec.entry_signal_price,
+        entry_slippage
     )?;
     Ok(())
 }
@@ -1291,6 +1299,7 @@ impl Driver<'_> {
             Action::PlaceBuy {
                 side,
                 price,
+                signal_price,
                 size_usdc,
                 signal_ts,
             } => {
@@ -1335,8 +1344,13 @@ impl Driver<'_> {
                     "binance_latency={} ({binance_tag})",
                     fmt_latency(binance_latency_ms)
                 );
+                // Signal-to-execution slippage (plan_aggressive_taker_entry_2026-07-21
+                // §2.4): signal_price is the decision-time mid, result.cost is the
+                // actual fill — only meaningful once a fill happened (result.cost
+                // stays 0.0 on a rejection).
+                let slippage = result.cost - signal_price;
                 println!(
-                    "[ORDER] {} BUY {side:?} @ {price:.4} size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
+                    "[ORDER] {} BUY {side:?} @ {price:.4} (signal={signal_price:.4}) size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} slippage={slippage:+.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
                     slot.market_key(),
                     result.placed,
                     result.filled_shares,
@@ -1358,7 +1372,7 @@ impl Driver<'_> {
                 );
                 if result.placed && result.filled_shares > 0.0 {
                     self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nprice={:.4} | delta={delta_pct:+.3}% | {ind_str} | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nsignal={signal_price:.4} → executed={:.4} (slippage {slippage:+.4}) | delta={delta_pct:+.3}% | {ind_str} | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
                         slot.market_key(), arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
                     )).await;
                     Some(Event::OrderFilled {
@@ -1369,7 +1383,7 @@ impl Driver<'_> {
                     })
                 } else {
                     self.notify(&format!(
-                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={price:.4} | delta={delta_pct:+.3}% | n_attempts={} | error={}",
+                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={signal_price:.4} (submit ceiling {price:.4}) | delta={delta_pct:+.3}% | n_attempts={} | error={}",
                         slot.market_key(), arrow_side(*side), slot.worker.strategy_name,
                         result.attempts,
                         result.error.as_deref().unwrap_or("unknown")
@@ -1402,16 +1416,19 @@ impl Driver<'_> {
                 // item 2): the exit order is always placed in the same
                 // synchronous action batch as the entry-fill confirmation
                 // (README "Order flow per trade"), so there's never a
-                // separate later moment to report the fill in — one message,
-                // not two. Maker-entry only (`via_maker_entry`): the FAK path
-                // already sends its own "Order placed" notification at fill
-                // time with different diagnostic content, so a second one
-                // here would be the exact duplication this is meant to avoid.
-                if *via_maker_entry && matches!(r.status, SellStatus::Live) {
+                // separate later moment to report the fill in. Originally
+                // maker-entry only (the FAK path's own "Order placed"
+                // message covered the fill, this covered the TP-resting
+                // follow-up) — now sent for both mechanisms
+                // (plan_aggressive_taker_entry_2026-07-21 §2.4: a taker fill
+                // needs this visibility too, now that it's the active
+                // config), labelled by which mechanism produced the entry.
+                if matches!(r.status, SellStatus::Live) {
                     let dt = hkt_now().format("%H:%M:%S");
                     let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+                    let entry_kind = if *via_maker_entry { "maker" } else { "taker" };
                     self.notify(&format!(
-                        "🎯 <b>{}</b> ENTRY filled → EXIT quote resting | {dt} | T-{time_left}s | {} | {}\n{shares:.2}sh @ {entry_price:.4} → exit target {price:.4}",
+                        "🎯 <b>{}</b> ENTRY ({entry_kind}) filled → EXIT quote resting | {dt} | T-{time_left}s | {} | {}\n{shares:.2}sh @ {entry_price:.4} → exit target {price:.4}",
                         slot.market_key(), arrow_side(*side), slot.worker.strategy_name
                     )).await;
                 }
@@ -3165,7 +3182,8 @@ mod csv_header_tests {
     /// before `exit_attempts`/`exit_last_error` existed, with a mix of legacy
     /// 9-field rows and 11-field rows (pre-latency-columns, itself now a second,
     /// more-recent legacy generation) already appended underneath it. Both
-    /// generations must be padded up to the current 15-field schema.
+    /// generations must be padded up to the current 17-field schema (15 +
+    /// `entry_signal_price`/`entry_slippage`, plan_aggressive_taker_entry_2026-07-21 §2.4).
     #[test]
     fn heals_stale_header_and_pads_legacy_rows() {
         let path = scratch_path("stale");
@@ -3181,20 +3199,75 @@ mod csv_header_tests {
         let lines: Vec<&str> = healed.lines().collect();
         assert_eq!(lines[0], CSV_HEADER);
         assert_eq!(
-            lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,,,,,",
-            "9-field legacy row padded to 15 fields"
+            lines[1], "1.0,old-slug,high_prob,UP,1.0,0.93,1.0,WIN,0.0753,,,,,,,,",
+            "9-field legacy row padded to 17 fields"
         );
         assert_eq!(
-            lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price,,,,",
-            "11-field legacy row padded to 15 fields"
+            lines[2], "2.0,new-slug,reversal,UP,2.0,0.66,1.0,WIN,0.5152,284,no market price,,,,,,",
+            "11-field legacy row padded to 17 fields"
         );
         for line in &lines {
             assert_eq!(
                 line.matches(',').count(),
-                14,
-                "every row must have 15 fields: {line}"
+                16,
+                "every row must have 17 fields: {line}"
             );
         }
+        std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod log_trade_tests {
+    use super::*;
+    use trader::types::{Outcome, Side};
+
+    fn scratch_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("poly_rust_test_{name}_{}.csv", std::process::id()))
+    }
+
+    /// `entry_slippage` (plan_aggressive_taker_entry_2026-07-21 §2.4) is
+    /// computed at write time as `token_price - entry_signal_price`, not
+    /// stored on `TradeRecord` itself — verify the written row's trailing
+    /// two columns match that formula and the row parses to the same field
+    /// count as `CSV_HEADER`.
+    #[test]
+    fn writes_entry_signal_price_and_computed_slippage() {
+        let path = scratch_path("log_trade");
+        let _ = std::fs::remove_file(&path);
+        let rec = TradeRecord {
+            slug: "btc-updown-5m-1000".to_string(),
+            cycle_start: 1000.0,
+            strategy: "reversal",
+            side: Side::Down,
+            entry_ts: 1250.0,
+            entry_price_ts: 1250.0,
+            token_price: 0.75,
+            entry_signal_price: 0.70,
+            exit_price: 0.90,
+            outcome: Outcome::Win,
+            pnl: 0.15,
+            exit_attempts: 0,
+            exit_last_error: None,
+            entry_signal_latency_ms: 5.0,
+            entry_process_latency_ms: 10.0,
+            exit_signal_latency_ms: 0.0,
+            exit_process_latency_ms: 0.0,
+        };
+        log_trade(path.to_str().unwrap(), &rec).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let row = contents.trim_end();
+        assert_eq!(
+            row.matches(',').count() + 1,
+            CSV_HEADER.matches(',').count() + 1,
+            "row field count must match CSV_HEADER: {row}"
+        );
+        let fields: Vec<&str> = row.split(',').collect();
+        assert_eq!(fields[fields.len() - 2], "0.7", "entry_signal_price");
+        assert!(
+            (fields[fields.len() - 1].parse::<f64>().unwrap() - 0.05).abs() < 1e-9,
+            "entry_slippage = token_price(0.75) - entry_signal_price(0.70) = 0.05: {row}"
+        );
         std::fs::remove_file(&path).unwrap();
     }
 }
@@ -3578,6 +3651,7 @@ mod balance_halt_scope_tests {
             halt_reset_hour_hp: 8,
             halt_reset_hour_v: 2,
             max_buy_price: 0.95,
+            order_slippage: 0.05,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0,
@@ -3722,6 +3796,7 @@ mod halt_persist_tests {
             halt_reset_hour_hp: 8,
             halt_reset_hour_v: 2,
             max_buy_price: 0.95,
+            order_slippage: 0.05,
             spread_premium_limit: 1.05,
             spread_discount_limit: 0.95,
             max_price_age_secs: 300.0,
