@@ -90,6 +90,17 @@ pub const MIN_GTC_SHARES: f64 = 5.0;
 /// Minimum USDC notional Polymarket accepts for a marketable FAK/FOK order.
 pub const MIN_MARKETABLE_USDC: f64 = 1.0;
 
+/// Safe ceiling for a resting sell's limit price — a token's price can never
+/// reach a real 1.00 while still tradeable (1.00 is the *resolution* value,
+/// not a quotable price; the practical top of book sits a little under it).
+/// `worker.rs`'s take-profit target (`cost + unwind_pnl_rev`) had no ceiling
+/// at all, so any entry filled above `MAX_SELL_PRICE - unwind_pnl_rev`
+/// produced a target that could never be reached — see
+/// `trader/doc/incident_eth_trade_2026-07-21.md` #1 (a real ETH trade filled
+/// at 0.875 with `unwind_pnl_rev = 0.15`, producing an unreachable
+/// `tp_price = 1.025`).
+pub const MAX_SELL_PRICE: f64 = 0.99;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderKind {
     /// Rest on the book at a fixed price — only legal at `shares >= MIN_GTC_SHARES`.

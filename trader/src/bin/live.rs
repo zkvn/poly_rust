@@ -82,6 +82,21 @@ fn should_suppress_startup_cycle(is_first_tick: bool, elapsed_into_slot: f64) ->
     is_first_tick && elapsed_into_slot > STARTUP_MID_CYCLE_GUARD_SECS
 }
 
+/// Whether the per-second wall-clock re-check
+/// (trader/doc/incident_eth_trade_2026-07-21.md #2) should feed a synthetic
+/// same-price `PolyTick` to this slot: only while genuinely `Holding` (not
+/// `Watching`, and not already `Unwinding`/`StopExiting`/`TimingOut` — those
+/// have their own close attempt outstanding), and only once at least one
+/// real price has been observed this run (`last_poly_up`/`last_poly_dn`
+/// still `0.0` means never-ticked — can't synthesize a tick from data that
+/// was never seen; can't actually happen for a genuinely `Holding` slot,
+/// since it needed a real price to enter, but cheap to guard regardless).
+/// Pure and extracted so it's unit-testable without the full driver loop —
+/// same pattern as `should_suppress_startup_cycle` above.
+fn should_reevaluate_holding(is_holding: bool, last_poly_up: f64, last_poly_dn: f64) -> bool {
+    is_holding && last_poly_up > 0.0 && last_poly_dn > 0.0
+}
+
 /// Synthetic starting balance for paper-mode's account-level drawdown guard
 /// (`trader/doc/incident_paper_balance_drawdown_2026-07-21.md`). Paper mode
 /// has no real CLOB wallet — `LiveExecutionEngine::fetch_balance` is never
@@ -2987,6 +3002,35 @@ async fn main() -> Result<()> {
             }
 
             _ = ticker.tick() => {
+                // Wall-clock re-evaluation of every currently-Holding position,
+                // once per second, independent of whether a real PolyTick has
+                // arrived in that second — trader/doc/incident_eth_trade_2026-07-21.md
+                // #2: stop-loss/take-profit/timeout only ever ran inside
+                // on_poly, so a quiet order book (price_feed only publishes on
+                // a genuine best-bid-ask/price-change event, no keepalive)
+                // meant none of them could fire even past their own deadline.
+                // A synthetic same-price tick (last observed up/dn, up_bid/
+                // up_ask left at the "unobserved" 0.0 sentinel) re-runs the
+                // exact same on_poly checks a real tick would have. Skipped
+                // when no real price has ever been observed yet this run
+                // (last_poly_up/dn still 0.0) — can't happen for a genuinely
+                // Holding position (it needed a real price to enter), but
+                // cheap to guard regardless of a fresh/never-ticked slot.
+                for slot in assets
+                    .iter_mut()
+                    .filter(|s| should_reevaluate_holding(s.worker.is_holding(), s.last_poly_up, s.last_poly_dn))
+                {
+                    let synthetic = PolyTick {
+                        ts: now_secs_f64(),
+                        up: slot.last_poly_up,
+                        dn: slot.last_poly_dn,
+                        up_bid: 0.0,
+                        up_ask: 0.0,
+                    };
+                    let actions = slot.worker.step(Event::PolyTick(synthetic));
+                    driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
+                }
+
                 // Per-tick guard: several strategy slots can share one non-5m
                 // market; its direct WS subscription is refreshed once per
                 // boundary, not once per slot.
@@ -3445,6 +3489,36 @@ mod restart_guard_tests {
     #[test]
     fn late_steady_state_tick_not_suppressed() {
         assert!(!should_suppress_startup_cycle(false, 100.0));
+    }
+}
+
+#[cfg(test)]
+mod should_reevaluate_holding_tests {
+    use super::*;
+
+    /// The core case this exists for
+    /// (trader/doc/incident_eth_trade_2026-07-21.md #2): a genuinely Holding
+    /// position with real prices observed must be re-checked every second.
+    #[test]
+    fn holding_with_real_prices_is_reevaluated() {
+        assert!(should_reevaluate_holding(true, 0.70, 0.30));
+    }
+
+    /// Watching (no open position) must never be fed a synthetic tick — that
+    /// would re-run `try_enter` on stale data instead of a genuine signal.
+    #[test]
+    fn not_holding_is_never_reevaluated() {
+        assert!(!should_reevaluate_holding(false, 0.70, 0.30));
+    }
+
+    /// A slot that's never observed a real price yet (fresh process start,
+    /// or a slot that genuinely can't have a position) must not synthesize
+    /// one from the `0.0` "unobserved" sentinel.
+    #[test]
+    fn never_ticked_slot_is_never_reevaluated_even_if_marked_holding() {
+        assert!(!should_reevaluate_holding(true, 0.0, 0.0));
+        assert!(!should_reevaluate_holding(true, 0.70, 0.0));
+        assert!(!should_reevaluate_holding(true, 0.0, 0.30));
     }
 }
 

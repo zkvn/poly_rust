@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::backtest::{HaltCorrection, HaltTracker};
 use crate::config::AssetParams;
-use crate::execution::{MIN_GTC_SHARES, OrderKind, SellStatus, choose_exit_order_kind};
+use crate::execution::{
+    MAX_SELL_PRICE, MIN_GTC_SHARES, OrderKind, SellStatus, choose_exit_order_kind,
+};
 use crate::gates::{GateParams, check_gates};
 use crate::signal::{
     DeltaPctSignal, LatestBinanceSignal, LatestPolySignal, SawLowSignal, Signal, SpreadSignal,
@@ -524,6 +526,23 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
+/// Take-profit target for a position whose cost basis is `basis` per share —
+/// `basis + unwind_pnl_rev`, capped at `MAX_SELL_PRICE` so the target is
+/// always physically reachable (see that constant's doc comment /
+/// `trader/doc/incident_eth_trade_2026-07-21.md` #1: an uncapped target above
+/// the real max tradeable price can never be hit, silently defeating
+/// take-profit for any high-cost fill). A free function, not a `Worker`
+/// method, deliberately — several call sites already hold a `&mut
+/// self.state` borrow (via a `WorkerState::Holding(h)` match) when they need
+/// this, and a method taking `&self` would conflict with that. The single
+/// source of truth for this formula regardless: every call site that
+/// (re)computes a take-profit target must go through this, not repeat the
+/// arithmetic, so a future call site can't reintroduce the uncapped bug.
+#[inline]
+fn tp_price_for(basis: f64, unwind_pnl: f64) -> f64 {
+    (basis + unwind_pnl).min(MAX_SELL_PRICE)
+}
+
 /// Total pnl for a position being settled at `exit_price` right now: whatever
 /// was already locked in from an earlier partial fill (`h.realized_pnl`) plus
 /// the currently-held `h.shares`' own result (proceeds `shares * exit_price`
@@ -814,6 +833,18 @@ impl Worker {
     /// actually has exposure pending resolution, instead of halting everything.
     pub fn is_confirming(&self) -> bool {
         matches!(self.state, WorkerState::Confirming(_))
+    }
+
+    /// True while an open position is being held (not itself already
+    /// in-flight exiting — `Unwinding`/`StopExiting`/`TimingOut` don't count,
+    /// they have their own close attempt outstanding). Used to decide
+    /// whether a synthetic wall-clock tick should re-evaluate stop-loss/
+    /// take-profit/timeout even when no real `PolyTick` has arrived —
+    /// `trader/doc/incident_eth_trade_2026-07-21.md` #2: those checks only
+    /// ever ran inside `on_poly`, so a quiet order book meant none of them
+    /// could fire even past their own deadline.
+    pub fn is_holding(&self) -> bool {
+        matches!(self.state, WorkerState::Holding(_))
     }
 
     /// Current `(latest_binance - cycle_open) / cycle_open` — the live reading
@@ -1538,7 +1569,7 @@ impl Worker {
             return vec![Action::Persist];
         }
 
-        let tp_price = cost + self.unwind_pnl;
+        let tp_price = tp_price_for(cost, self.unwind_pnl);
         // GTC is only legal at/above Polymarket's resting-order share minimum
         // (execution::choose_exit_order_kind — see trader/README.md); below
         // it, PriceMonitor's bounded FAK (execution::close_position_at_price)
@@ -1677,7 +1708,7 @@ impl Worker {
             SellStatus::Matched => {
                 // Marketable limit — filled immediately; this *is* the unwind.
                 let mut h = h.clone();
-                let exit_price = h.token_price + self.unwind_pnl;
+                let exit_price = tp_price_for(h.token_price, self.unwind_pnl);
                 h.fees += taker_fee(h.shares, exit_price);
                 let pnl = settle_pnl(&h, exit_price);
                 let record = TradeRecord {
@@ -1705,7 +1736,7 @@ impl Worker {
             }
             SellStatus::Failed | SellStatus::DryRun => {
                 // Fall back to price-monitor backstop; stop-loss stays armed regardless.
-                let tp_price = h.token_price + self.unwind_pnl;
+                let tp_price = tp_price_for(h.token_price, self.unwind_pnl);
                 h.exit_arm = ExitArm::PriceMonitor { tp_price };
                 h.exit_attempts += 1;
                 h.exit_last_error = error;
@@ -1827,7 +1858,7 @@ impl Worker {
             h.exit_attempts += 1;
             h.exit_last_error = error;
             h.exit_arm = ExitArm::PriceMonitor {
-                tp_price: h.token_price + self.unwind_pnl,
+                tp_price: tp_price_for(h.token_price, self.unwind_pnl),
             };
             self.state = WorkerState::Holding(h);
         }
@@ -2058,6 +2089,28 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::types::{BinanceTick, PolyTick};
+
+    // ── tp_price_for (trader/doc/incident_eth_trade_2026-07-21.md #1) ────────
+
+    #[test]
+    fn tp_price_for_uncapped_case_is_plain_addition() {
+        assert!((tp_price_for(0.70, 0.15) - 0.85).abs() < 1e-9);
+    }
+
+    /// The exact regression this guards: the real ETH trade filled at 0.875
+    /// with unwind_pnl_rev=0.15, producing a would-be target of 1.025 — above
+    /// 1.0, structurally unreachable. Must clamp to MAX_SELL_PRICE (0.99).
+    #[test]
+    fn tp_price_for_caps_at_max_sell_price() {
+        assert!((tp_price_for(0.875, 0.15) - MAX_SELL_PRICE).abs() < 1e-9);
+    }
+
+    /// Exactly at the cap (not past it) must not clamp below its own natural
+    /// value — `.min`, not a hard override.
+    #[test]
+    fn tp_price_for_exactly_at_cap_is_unchanged() {
+        assert!((tp_price_for(0.84, 0.15) - 0.99).abs() < 1e-9);
+    }
 
     fn btc_params() -> AssetParams {
         AssetParams {
@@ -3620,6 +3673,126 @@ mod tests {
         assert!(matches!(w.state, WorkerState::TimingOut(_)));
     }
 
+    /// End-to-end reproduction of the ETH incident's issue 1
+    /// (trader/doc/incident_eth_trade_2026-07-21.md): a real entry fill at a
+    /// high cost must produce a *reachable* take-profit target through the
+    /// actual `finalize_entry_fill` path, not the raw uncapped
+    /// `cost + unwind_pnl_rev`. The real trade filled at 0.875 with
+    /// `unwind_pnl_rev = 0.15` — an uncapped target of 1.025.
+    #[test]
+    fn high_cost_fill_produces_a_capped_reachable_take_profit_target() {
+        let mut p = btc_params();
+        p.unwind_pnl_rev = 0.15; // matches the real ETH config
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        })); // dip latches saw_low_dn
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        })); // recovery > reversal 0.60
+        let actions = w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        })); // fires entry
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::PlaceBuy { .. }, Action::Persist]
+        ));
+
+        // Fill at a high cost (0.875, matching the real ETH trade) instead of
+        // enter_down_position's hardcoded 0.70 -- this is exactly the shape
+        // that produced an unreachable 1.025 target before the fix.
+        let actions = w.step(Event::OrderFilled {
+            filled_shares: 5.71,
+            cost: 0.875,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                Action::PlaceLimitSell { price, .. } if (*price - MAX_SELL_PRICE).abs() < 1e-9
+            )),
+            "take-profit target must be capped at MAX_SELL_PRICE (0.99), not the uncapped 1.025: {actions:?}"
+        );
+        let WorkerState::Holding(h) = &w.state else {
+            panic!("expected Holding, got {:?}", w.state);
+        };
+        assert!(
+            matches!(h.exit_arm, ExitArm::PriceMonitor { tp_price } if (tp_price - MAX_SELL_PRICE).abs() < 1e-9)
+        );
+    }
+
+    /// Complementary proof that the capped target from the test above isn't
+    /// just a number — it's genuinely reachable: once price actually gets
+    /// there, take-profit fires (before the fix, an uncapped 1.025 target
+    /// could never have fired this way; the position would have ridden to
+    /// cycle-close or timeout regardless of price).
+    #[test]
+    fn capped_take_profit_target_is_reachable_and_fires() {
+        let mut p = btc_params();
+        p.unwind_pnl_rev = 0.15;
+        let mut w = Worker::new_reversal("BTC", &p);
+        w.step(Event::CycleOpen {
+            ctx: ctx(1_000.0),
+            slug: "btc-updown-5m-1000".to_string(),
+        });
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1180.0,
+            up: 0.85,
+            dn: 0.15,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        }));
+        w.step(Event::PolyTick(PolyTick {
+            ts: 1240.0,
+            up: 0.30,
+            dn: 0.70,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        }));
+        w.step(Event::BinanceTick(BinanceTick {
+            ts: 1250.0,
+            price: 59_900.0,
+        }));
+        w.step(Event::OrderFilled {
+            filled_shares: 5.71,
+            cost: 0.875,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+
+        // Price reaches the capped target (0.99) — must fire take-profit.
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.01,
+            dn: 0.99,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        }));
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                Action::ClosePosition { reason: CloseReason::TakeProfit, limit_price: Some(p), .. }
+                    if (*p - MAX_SELL_PRICE).abs() < 1e-9
+            )),
+            "take-profit must fire once price reaches the capped target: {actions:?}"
+        );
+        assert!(matches!(w.state, WorkerState::Unwinding(_)));
+    }
+
     /// Reproduces the exact production shape the sibling test above skips:
     /// `enter_down_position` alone never sends `LimitSellPlaced`, so its
     /// `exit_arm` stays `PriceMonitor` — the real driver always sends that
@@ -3898,6 +4071,39 @@ mod tests {
 
         w.step(Event::ApiResult { won: true }); // Gamma confirms -> Watching
         assert!(!w.is_confirming());
+    }
+
+    /// Backs the driver's wall-clock re-check filter
+    /// (`bin/live.rs::should_reevaluate_holding`,
+    /// trader/doc/incident_eth_trade_2026-07-21.md #2) — must be true only
+    /// while genuinely `Holding`, not before entry, and not once an exit is
+    /// already in flight (`TimingOut`/etc. have their own close outstanding).
+    #[test]
+    fn is_holding_true_only_while_holding() {
+        let p = btc_params();
+        let mut w = Worker::new_reversal("BTC", &p);
+        assert!(!w.is_holding(), "fresh worker starts Watching");
+
+        enter_down_position(&mut w, 10.0);
+        assert!(w.is_holding());
+
+        // Timeout fires -> TimingOut (an exit attempt is now in flight).
+        let mut p2 = btc_params();
+        p2.unwind_time_rev = 5.0;
+        let mut w2 = Worker::new_reversal("BTC", &p2);
+        enter_down_position(&mut w2, 10.0);
+        assert!(w2.is_holding());
+        w2.step(Event::PolyTick(PolyTick {
+            ts: 1256.0, // 1250 + 6 > unwind_time_rev(5)
+            up: 0.40,
+            dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        }));
+        assert!(
+            !w2.is_holding(),
+            "TimingOut has its own close attempt in flight, not re-checked again"
+        );
     }
 
     #[test]

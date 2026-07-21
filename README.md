@@ -1184,18 +1184,21 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
-### ETH reversal trade: unreachable take-profit target + timeout never fired (2026-07-21, root-caused, not yet fixed)
+### ETH reversal trade: unreachable take-profit target + timeout never fired (2026-07-21, fixed)
 
-`tp_price = cost + unwind_pnl_rev` has no ceiling — any fill above `~0.84` (routine for reversal;
-this trade filled at `0.875`) produces a take-profit target above the real ~0.99 max tradeable
-price, structurally unreachable. Separately, the max-holding-time force-close only runs inside
-`on_poly`, which only fires on a real incoming `PolyTick`; `price_feed` only publishes on a
-genuine best-bid-ask/price-change event with no keepalive, so a quiet order book (plausibly
-exactly when a position has moved decisively, i.e. when a time-based exit matters most) means the
-timeout literally never gets evaluated and the position rides to natural cycle-close instead.
-Confirmed via log evidence and a new `worker.rs` test proving the state-machine logic itself is
-correct in isolation. Both fixes proposed, not yet implemented — pending review. Full writeup:
-`trader/doc/incident_eth_trade_2026-07-21.md`.
+`tp_price = cost + unwind_pnl_rev` had no ceiling — any fill above `~0.84` (routine for reversal;
+this trade filled at `0.875`) produced a take-profit target above the real ~0.99 max tradeable
+price, structurally unreachable. Fixed with `MAX_SELL_PRICE = 0.99` and a single `tp_price_for()`
+helper now used at all four call sites that compute a take-profit target (there turned out to be
+four, not one). Separately, the max-holding-time force-close only ran inside `on_poly`, which
+only fires on a real incoming `PolyTick`; `price_feed` only publishes on a genuine best-bid-ask/
+price-change event with no keepalive, so a quiet order book (plausibly exactly when a position
+has moved decisively, i.e. when a time-based exit matters most) meant the timeout could never get
+evaluated and the position rode to natural cycle-close instead. Fixed by re-evaluating every
+`Holding` position once a second on a wall-clock cadence (synthetic same-price tick), independent
+of real tick arrival. Confirmed via log evidence and 11 new tests, including an end-to-end
+reproduction of the real trade proving the capped target is both correct and genuinely reachable.
+Full writeup: `trader/doc/incident_eth_trade_2026-07-21.md`.
 
 ### Simulated ~800ms paper-trade order latency, non-blocking (2026-07-21, added)
 
