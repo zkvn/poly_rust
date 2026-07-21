@@ -1,6 +1,6 @@
 # meta
 ts = "2026-07-21T00:00:00+08:00"
-source = "Switch from maker-entry to aggressive-taker-entry reversal per trader/doc/plan_aggressive_taker_entry_2026-07-21.md, replacing strategy_20260720_24h.toml — that 24h maker-entry window fired 1 trade (DOGE) across all 6 assets, root-caused to the resting-quote fill mechanism itself (requires a trade-through past the bid before it gets pulled at T-15s/signal-invalidation), not to parameters. This file changes exactly two things from strategy_20260720_24h.toml, both mechanism/sizing, zero re-tuning of any reversal per-asset parameter (delta_pct_rev/reversal/reversal_low_threshold/unwind_pnl_rev/unwind_time_rev/sl_pnl_rev/sl_reversal all carried over verbatim): (1) maker_entry = false — reversal entries now submit a marketable taker buy priced at best_ask + order_slippage (capped at max_buy_price), not a resting GTC quote at the bid; order_slippage=0.05 was already present in every strategy_*.toml but never wired into the Rust code until this change (plan §2.1). (2) [trade_size_usdc] default 1.0 -> 5.0 — the taker path is USDC-denominated (shares = size_usdc/fill_price) and the take-profit exit still needs >=MIN_GTC_SHARES=5 shares to rest as a GTC sell; $5.00 comfortably clears 5 shares even at the worst-case entry price (price_high_rev=0.9 cap + aggressive premium up to max_buy_price=0.95, plan §2.2). Take-profit itself is unchanged — already prices off the actual executed fill (worker.rs finalize_entry_fill), not the signal price, for both entry mechanisms; this file doesn't touch that. New: signal-price-vs-executed-price slippage is now logged (entry_signal_price/entry_slippage CSV columns, Telegram 'signal=X -> executed=Y (slippage +/-Z)' line, plan §2.4). Every other setting (pup_edge_min_rev=0.0 fail-closed at PUP_GATE_MAX_AGE_SECS=2.0s, indicator_enabled, paper_trade=true, market_durations 5m-only, halt/gamma-poll settings, v_shape/high_prob inert blocks) carried over unchanged from strategy_20260720_24h.toml."
+source = "Switch from maker-entry to aggressive-taker-entry reversal per trader/doc/plan_aggressive_taker_entry_2026-07-21.md, replacing strategy_20260720_24h.toml — that 24h maker-entry window fired 1 trade (DOGE) across all 6 assets, root-caused to the resting-quote fill mechanism itself (requires a trade-through past the bid before it gets pulled at T-15s/signal-invalidation), not to parameters. This file changes exactly two things from strategy_20260720_24h.toml, both mechanism/sizing, zero re-tuning of any reversal per-asset parameter (delta_pct_rev/reversal/reversal_low_threshold/unwind_pnl_rev/unwind_time_rev/sl_pnl_rev/sl_reversal all carried over verbatim): (1) maker_entry = false — reversal entries now submit a marketable taker buy priced at best_ask + order_slippage (capped at max_buy_price), not a resting GTC quote at the bid; order_slippage=0.05 was already present in every strategy_*.toml but never wired into the Rust code until this change (plan §2.1). (2) [trade_size_usdc] default 1.0 -> 5.0 — the taker path is USDC-denominated (shares = size_usdc/fill_price) and the take-profit exit still needs >=MIN_GTC_SHARES=5 shares to rest as a GTC sell; $5.00 comfortably clears 5 shares even at the worst-case entry price (price_high_rev=0.9 cap + aggressive premium up to max_buy_price=0.95, plan §2.2). Take-profit itself is unchanged — already prices off the actual executed fill (worker.rs finalize_entry_fill), not the signal price, for both entry mechanisms; this file doesn't touch that. New: signal-price-vs-executed-price slippage is now logged (entry_signal_price/entry_slippage CSV columns, Telegram 'signal=X -> executed=Y (slippage +/-Z)' line, plan §2.4). Every other setting (pup_edge_min_rev=0.0 fail-closed at PUP_GATE_MAX_AGE_SECS=2.0s, indicator_enabled, paper_trade=true, market_durations 5m-only, halt/gamma-poll settings, v_shape/high_prob inert blocks) carried over unchanged from strategy_20260720_24h.toml.\n\nSAME-DAY UPDATE (2026-07-21, by explicit user request): sl_reversal (absolute stop-loss floor, all reversal assets) raised 0.0 -> 0.1 -- a held position now closes if its own side's price drops below 0.10, independent of unwind_time_rev (still the primary stop, unchanged, not replaced). Every other parameter in this file is untouched by this update."
 
 # Trade assets: all 6 — reversal only, see [strategies].
 assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
@@ -117,9 +117,15 @@ BNB  = 0.20
 XRP  = 0.30
 DOGE = 0.30
 
-# sl_reversal = 0.0 for every asset (plan 1.2, Scenario A).
+# Absolute stop-loss floor, all reversal assets (2026-07-21, user request):
+# a held position closes if its own side's price drops below 0.10, regardless
+# of entry price/pnl -- independent of, and in addition to, unwind_time_rev
+# (still the primary stop; this is a backstop, not a replacement of plan 1.2
+# Scenario A). Was 0.0 (disabled) since plan_unwind_5u_maker_2026-07-19.md
+# §1.2. Same "tick-driven, not wall-clock-driven" caveat as unwind_time_rev
+# applies here too -- see trader/doc/incident_eth_trade_2026-07-21.md #2.
 [sl_reversal]
-default = 0.0
+default = 0.1
 
 [unwind_pnl_rev]
 default = 0.15

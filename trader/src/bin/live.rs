@@ -36,8 +36,9 @@ use futures::StreamExt as _;
 use trader::balance::{BalanceGuard, GammaBalanceTracker, seconds_until_next_check};
 use trader::config::AssetParams;
 use trader::execution::{
-    ExecutionEngine, LiveConfig, LiveExecutionEngine, MIN_GTC_SHARES, PaperExecutor,
-    PaperOrderSide, SellStatus, SimExecutionEngine, local_signer_from_key, signature_type_from_env,
+    CloseResult, ExecutionEngine, LiveConfig, LiveExecutionEngine, MIN_GTC_SHARES, PaperExecutor,
+    PaperOrderSide, SellStatus, SimExecutionEngine, TradeResult, local_signer_from_key,
+    signature_type_from_env,
 };
 use trader::indicator_store::{IndicatorSnapshot, IndicatorStore};
 use trader::marketdata::{
@@ -824,10 +825,61 @@ fn load_persisted_slot(state_file: &str) -> Option<PersistedSlot> {
 /// with; exits (`ClosePosition`) are always Poly/CLOB-triggered (only
 /// `on_poly` ever produces one), so that arm ignores this and always reports
 /// `Clob`.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Feed {
     Clob,
     Binance,
+}
+
+/// Simulated real-world order round-trip latency for paper mode
+/// (trader/doc/incident_eth_trade_2026-07-21.md #1): `PaperExecutor`'s
+/// instant, synchronous fills reported ~1ms `process_latency_ms` — nowhere
+/// close to a real CLOB round trip. Paper fills (entry BUY, and every exit
+/// close) now resolve ~800ms after the triggering signal via a background
+/// task + channel (`paper_fill_tx`/`paper_fill_rx`, mirroring
+/// `spawn_resolution_watcher`'s existing pattern) instead of an inline
+/// `sleep().await` inside `execute()` — the latter would block the one
+/// shared driver loop for 800ms on every single fill, stalling all 6 assets'
+/// ticks, not just the one filling. The fill price is whatever
+/// `PaperExecutor` observes when the background task actually reads it —
+/// since real wall-clock time has genuinely elapsed by then, this honestly
+/// reflects "the price ~800ms after the signal," not a fabricated lookup.
+const PAPER_SIMULATED_LATENCY_SECS: f64 = 0.8;
+
+/// A paper-mode entry fill's result, resolved by a background task ~800ms
+/// after the triggering signal — see `PAPER_SIMULATED_LATENCY_SECS`.
+#[derive(Debug)]
+struct PaperEntryFill {
+    market: String,
+    strategy: &'static str,
+    side: Side,
+    price: f64,
+    signal_price: f64,
+    size_usdc: f64,
+    signal_ts: f64,
+    feed: Feed,
+    received_ts: f64,
+    confirmed_ts: f64,
+    result: TradeResult,
+}
+
+/// A paper-mode exit close's result, resolved the same way as
+/// `PaperEntryFill` above.
+#[derive(Debug)]
+struct PaperCloseFill {
+    market: String,
+    strategy: &'static str,
+    shares: f64,
+    reason: CloseReason,
+    signal_ts: f64,
+    received_ts: f64,
+    confirmed_ts: f64,
+    result: CloseResult,
+}
+
+enum PaperFillMsg {
+    Entry(PaperEntryFill),
+    Close(PaperCloseFill),
 }
 
 /// Format an exchange-latency reading for the console/Telegram order logs.
@@ -1075,12 +1127,19 @@ struct Driver<'a> {
     /// only for the non-trait extras: `fetch_balance` in `/status` and the
     /// periodic balance-guard sampling.
     live_engine: Option<&'a LiveExecutionEngine<Signer>>,
+    /// The concrete paper engine when one exists (`None` under real/dry-run) —
+    /// an owned `Arc` (not a trait-object borrow) so `execute()` can clone it
+    /// into a spawned, `'static` background task for the simulated-latency
+    /// deferred fill (`PAPER_SIMULATED_LATENCY_SECS`).
+    paper_engine: Option<Arc<PaperExecutor>>,
     /// Prefixes every Telegram message with `[DRY]`/`[PAPER]` so a simulated
     /// run can never be misread as production output.
     mode: RunMode,
     telegram: Option<Arc<TelegramBot>>,
     http: reqwest::Client,
     api_result_tx: mpsc::UnboundedSender<(String, &'static str, Option<bool>)>,
+    /// Paper-mode deferred-fill handoff — see `PAPER_SIMULATED_LATENCY_SECS`.
+    paper_fill_tx: mpsc::UnboundedSender<PaperFillMsg>,
 }
 
 impl Driver<'_> {
@@ -1333,6 +1392,192 @@ impl Driver<'_> {
         sections.join("\n\n")
     }
 
+    /// The shared tail of an entry `PlaceBuy`: everything from latency
+    /// computation through the console/Telegram notification and the
+    /// follow-up `Event`. Called synchronously (real/dry-run) right after
+    /// `engine.place()` resolves, or later from the paper-mode deferred-fill
+    /// select! arm once `PAPER_SIMULATED_LATENCY_SECS` has elapsed — either
+    /// way, `slot` is read fresh at whatever moment this actually runs, so
+    /// the notification reflects real state *at confirmation time*, not
+    /// stale state captured at signal time.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_entry_order(
+        &self,
+        slot: &mut AssetSlot,
+        side: Side,
+        price: f64,
+        signal_price: f64,
+        size_usdc: f64,
+        signal_ts: f64,
+        feed: Feed,
+        received_ts: f64,
+        confirmed_ts: f64,
+        result: TradeResult,
+        indicator_store: &IndicatorStore,
+        indicator_max_age_secs: f64,
+    ) -> Option<Event> {
+        let signal_latency_ms = latency_ms(signal_ts, received_ts);
+        let process_latency_ms = latency_ms(signal_ts, confirmed_ts);
+        // Real, per-tick exchange network latency for each feed's last known
+        // tick (see `exchange_latency_ms`) — always computed now (previously
+        // only the triggering feed's was, silently dropping the other one —
+        // see trader/doc/incident_missing_clob_latency_2026-07-06.md), and
+        // always the genuine one-hop delay regardless of how stale that tick
+        // now is. `feed` only decides which one gets the "(trigger)" tag vs.
+        // an "(Nms ago)" staleness note (relative to *now*, `received_ts` —
+        // not `signal_ts`, which is the triggering tick's own timestamp) for
+        // whichever feed's tick *didn't* fire this entry.
+        let clob_latency_ms = exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
+        let binance_latency_ms =
+            exchange_latency_ms(slot.last_binance_trade_ts, slot.last_binance_server_ts);
+        let clob_tag = match feed {
+            Feed::Clob => "trigger".to_string(),
+            Feed::Binance => fmt_ago(slot.last_poly_ts, received_ts),
+        };
+        let binance_tag = match feed {
+            Feed::Binance => "trigger".to_string(),
+            Feed::Clob => fmt_ago(slot.last_binance_ts, received_ts),
+        };
+        let clob_latency_str =
+            format!("clob_latency={} ({clob_tag})", fmt_latency(clob_latency_ms));
+        let binance_latency_str = format!(
+            "binance_latency={} ({binance_tag})",
+            fmt_latency(binance_latency_ms)
+        );
+        // Signal-to-execution slippage (plan_aggressive_taker_entry_2026-07-21
+        // §2.4): signal_price is the decision-time mid, result.cost is the
+        // actual fill — only meaningful once a fill happened (result.cost
+        // stays 0.0 on a rejection).
+        let slippage = result.cost - signal_price;
+        println!(
+            "[ORDER] {} BUY {side:?} @ {price:.4} (signal={signal_price:.4}) size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} slippage={slippage:+.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
+            slot.market_key(),
+            result.placed,
+            result.filled_shares,
+            result.cost,
+            result.error,
+            result.attempts
+        );
+
+        let dt = hkt_now().format("%H:%M:%S");
+        let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
+        let delta_pct = slot.worker.delta_pct() * 100.0;
+        let ind_str = fmt_indicator(
+            indicator_store,
+            &slot.worker.asset,
+            now_secs_f64(),
+            indicator_max_age_secs,
+            Some((slot.last_poly_up, slot.last_poly_dn)),
+            Some(side),
+        );
+        if result.placed && result.filled_shares > 0.0 {
+            self.notify(&format!(
+                "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nsignal={signal_price:.4} → executed={:.4} (slippage {slippage:+.4}) | delta={delta_pct:+.3}% | {ind_str} | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                slot.market_key(), arrow_side(side), slot.worker.strategy_name, result.cost, result.attempts
+            )).await;
+            Some(Event::OrderFilled {
+                filled_shares: result.filled_shares,
+                cost: result.cost,
+                signal_latency_ms,
+                process_latency_ms,
+            })
+        } else {
+            self.notify(&format!(
+                "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={signal_price:.4} (submit ceiling {price:.4}) | delta={delta_pct:+.3}% | n_attempts={} | error={}",
+                slot.market_key(), arrow_side(side), slot.worker.strategy_name,
+                result.attempts,
+                result.error.as_deref().unwrap_or("unknown")
+            )).await;
+            Some(Event::OrderRejected)
+        }
+    }
+
+    /// The shared tail of an exit `ClosePosition`: latency, console/Telegram
+    /// "order executed" notification, and the follow-up `Event`. Same
+    /// real/dry-run-immediate vs. paper-mode-deferred split as
+    /// `finish_entry_order` above — see its doc comment.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_close_order(
+        &self,
+        slot: &mut AssetSlot,
+        shares: f64,
+        reason: CloseReason,
+        signal_ts: f64,
+        received_ts: f64,
+        confirmed_ts: f64,
+        result: CloseResult,
+    ) -> Option<Event> {
+        let signal_latency_ms = latency_ms(signal_ts, received_ts);
+        let process_latency_ms = latency_ms(signal_ts, confirmed_ts);
+        // Exits are always Poly/CLOB-triggered (only `on_poly` ever
+        // produces a ClosePosition — see worker.rs), so this is always
+        // the CLOB exchange latency, unlike the entry side above — no
+        // "(trigger)"/"(Nms ago)" tag needed here, only one feed applies.
+        let clob_latency_ms = exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
+        let clob_latency_str = format!("clob_latency={}", fmt_latency(clob_latency_ms));
+        println!(
+            "[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
+            slot.market_key(),
+            result.status,
+            result.shares_sold,
+            result.filled_usdc,
+            result.error,
+            result.attempts
+        );
+        let sold = result.shares_sold;
+        let exit_price = if sold > 0.0 {
+            result.filled_usdc / sold
+        } else {
+            0.0
+        };
+        let matched = matches!(result.status, SellStatus::Matched);
+        if matched {
+            let dt = hkt_now().format("%H:%M:%S");
+            let label = match reason {
+                CloseReason::StopLoss => "STOP LOSS",
+                CloseReason::TakeProfit => "TAKE PROFIT",
+                CloseReason::Timeout => "TIME LIMIT",
+            };
+            self.notify(&format!(
+                "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | {clob_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
+                slot.market_key(), slot.worker.strategy_name, result.filled_usdc, result.attempts
+            )).await;
+        }
+        let event = match (matched, reason) {
+            (true, CloseReason::TakeProfit) => Event::UnwindFilled {
+                sold_shares: sold,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            },
+            (true, CloseReason::StopLoss) => Event::StopSellFilled {
+                sold_shares: sold,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            },
+            (true, CloseReason::Timeout) => Event::TimeoutSellFilled {
+                sold_shares: sold,
+                exit_price,
+                signal_latency_ms,
+                process_latency_ms,
+            },
+            (false, CloseReason::TakeProfit) => Event::UnwindFailed {
+                error: result.error,
+            },
+            (false, CloseReason::StopLoss) => Event::StopSellFailed {
+                error: result.error,
+            },
+            (false, CloseReason::Timeout) => Event::TimeoutSellFailed {
+                error: result.error,
+            },
+        };
+        if matched && sold >= shares {
+            slot.current_token_id = None;
+        }
+        Some(event)
+    }
+
     /// Execute one `Action` against the live engine; returns the follow-up
     /// `Event` (if any) to feed back into `worker.step`.
     async fn execute(
@@ -1357,87 +1602,65 @@ impl Driver<'_> {
                     slot.dn_id
                 };
                 slot.current_token_id = Some(token_id);
+
+                // Paper mode: defer the fill ~800ms via a background task
+                // instead of resolving it inline — see
+                // PAPER_SIMULATED_LATENCY_SECS's doc comment. Real/dry-run
+                // keep the original inline-and-immediate path below
+                // unchanged.
+                if self.mode == RunMode::Paper {
+                    let pe = self.paper_engine.clone()?;
+                    let tx = self.paper_fill_tx.clone();
+                    let (side, price, signal_price, size_usdc, signal_ts) =
+                        (*side, *price, *signal_price, *size_usdc, *signal_ts);
+                    let max_buy_price = slot.max_buy_price;
+                    let market = slot.market_key();
+                    let strategy = slot.worker.strategy_name;
+                    tokio::spawn(async move {
+                        let received_ts = now_secs_f64();
+                        let wait =
+                            (signal_ts + PAPER_SIMULATED_LATENCY_SECS - received_ts).max(0.0);
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(wait)).await;
+                        let result = pe.place(token_id, price, size_usdc, max_buy_price).await;
+                        let confirmed_ts = now_secs_f64();
+                        let _ = tx.send(PaperFillMsg::Entry(PaperEntryFill {
+                            market,
+                            strategy,
+                            side,
+                            price,
+                            signal_price,
+                            size_usdc,
+                            signal_ts,
+                            feed,
+                            received_ts,
+                            confirmed_ts,
+                            result,
+                        }));
+                    });
+                    return None;
+                }
+
                 let received_ts = now_secs_f64();
                 let result = self
                     .engine
                     .place(token_id, *price, *size_usdc, slot.max_buy_price)
                     .await;
                 let confirmed_ts = now_secs_f64();
-                let signal_latency_ms = latency_ms(*signal_ts, received_ts);
-                let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
-                // Real, per-tick exchange network latency for each feed's last known
-                // tick (see `exchange_latency_ms`) — always computed now (previously
-                // only the triggering feed's was, silently dropping the other one —
-                // see trader/doc/incident_missing_clob_latency_2026-07-06.md), and
-                // always the genuine one-hop delay regardless of how stale that tick
-                // now is. `feed` only decides which one gets the "(trigger)" tag vs.
-                // an "(Nms ago)" staleness note (relative to *now*, `received_ts` —
-                // not `signal_ts`, which is the triggering tick's own timestamp) for
-                // whichever feed's tick *didn't* fire this entry.
-                let clob_latency_ms =
-                    exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
-                let binance_latency_ms =
-                    exchange_latency_ms(slot.last_binance_trade_ts, slot.last_binance_server_ts);
-                let clob_tag = match feed {
-                    Feed::Clob => "trigger".to_string(),
-                    Feed::Binance => fmt_ago(slot.last_poly_ts, received_ts),
-                };
-                let binance_tag = match feed {
-                    Feed::Binance => "trigger".to_string(),
-                    Feed::Clob => fmt_ago(slot.last_binance_ts, received_ts),
-                };
-                let clob_latency_str =
-                    format!("clob_latency={} ({clob_tag})", fmt_latency(clob_latency_ms));
-                let binance_latency_str = format!(
-                    "binance_latency={} ({binance_tag})",
-                    fmt_latency(binance_latency_ms)
-                );
-                // Signal-to-execution slippage (plan_aggressive_taker_entry_2026-07-21
-                // §2.4): signal_price is the decision-time mid, result.cost is the
-                // actual fill — only meaningful once a fill happened (result.cost
-                // stays 0.0 on a rejection).
-                let slippage = result.cost - signal_price;
-                println!(
-                    "[ORDER] {} BUY {side:?} @ {price:.4} (signal={signal_price:.4}) size=${size_usdc:.2} -> placed={} shares={:.4} cost={:.4} slippage={slippage:+.4} err={:?} ({clob_latency_str} {binance_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
-                    slot.market_key(),
-                    result.placed,
-                    result.filled_shares,
-                    result.cost,
-                    result.error,
-                    result.attempts
-                );
-
-                let dt = hkt_now().format("%H:%M:%S");
-                let time_left = (slot.worker.cycle_end_ts() - now_secs_f64()).max(0.0) as i64;
-                let delta_pct = slot.worker.delta_pct() * 100.0;
-                let ind_str = fmt_indicator(
+                self.finish_entry_order(
+                    slot,
+                    *side,
+                    *price,
+                    *signal_price,
+                    *size_usdc,
+                    *signal_ts,
+                    feed,
+                    received_ts,
+                    confirmed_ts,
+                    result,
                     indicator_store,
-                    &slot.worker.asset,
-                    now_secs_f64(),
                     indicator_max_age_secs,
-                    Some((slot.last_poly_up, slot.last_poly_dn)),
-                    Some(*side),
-                );
-                if result.placed && result.filled_shares > 0.0 {
-                    self.notify(&format!(
-                        "📋 <b>{}</b> Order placed | {dt} | T-{time_left}s | {} | {}\nsignal={signal_price:.4} → executed={:.4} (slippage {slippage:+.4}) | delta={delta_pct:+.3}% | {ind_str} | {clob_latency_str} | {binance_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
-                        slot.market_key(), arrow_side(*side), slot.worker.strategy_name, result.cost, result.attempts
-                    )).await;
-                    Some(Event::OrderFilled {
-                        filled_shares: result.filled_shares,
-                        cost: result.cost,
-                        signal_latency_ms,
-                        process_latency_ms,
-                    })
-                } else {
-                    self.notify(&format!(
-                        "❗ <b>{}</b> Order REJECTED | {dt} | T-{time_left}s | {} | {}\nsignal price={signal_price:.4} (submit ceiling {price:.4}) | delta={delta_pct:+.3}% | n_attempts={} | error={}",
-                        slot.market_key(), arrow_side(*side), slot.worker.strategy_name,
-                        result.attempts,
-                        result.error.as_deref().unwrap_or("unknown")
-                    )).await;
-                    Some(Event::OrderRejected)
-                }
+                )
+                .await
             }
             Action::PlaceLimitSell {
                 shares,
@@ -1611,6 +1834,45 @@ impl Driver<'_> {
                         )).await;
                     }
                 }
+                // Paper mode: defer the close ~800ms via a background task —
+                // same rationale/mechanism as the entry side above (see
+                // PAPER_SIMULATED_LATENCY_SECS). The stop-loss/timeout
+                // "triggered" alerts above already fired immediately at
+                // signal time regardless of mode; only the fill/"order
+                // executed" side is deferred here.
+                if self.mode == RunMode::Paper {
+                    let pe = self.paper_engine.clone()?;
+                    let tx = self.paper_fill_tx.clone();
+                    let (shares, reason, limit_price, signal_ts) =
+                        (*shares, *reason, *limit_price, *signal_ts);
+                    let market = slot.market_key();
+                    let strategy = slot.worker.strategy_name;
+                    tokio::spawn(async move {
+                        let received_ts = now_secs_f64();
+                        let wait =
+                            (signal_ts + PAPER_SIMULATED_LATENCY_SECS - received_ts).max(0.0);
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(wait)).await;
+                        let result = match limit_price {
+                            Some(price) => {
+                                pe.close_position_at_price(token_id, shares, price).await
+                            }
+                            None => pe.close_position(token_id, shares).await,
+                        };
+                        let confirmed_ts = now_secs_f64();
+                        let _ = tx.send(PaperFillMsg::Close(PaperCloseFill {
+                            market,
+                            strategy,
+                            shares,
+                            reason,
+                            signal_ts,
+                            received_ts,
+                            confirmed_ts,
+                            result,
+                        }));
+                    });
+                    return None;
+                }
+
                 let received_ts = now_secs_f64();
                 // Take-profit closes are bounded at limit_price (== the position's
                 // own tp_price — no separate config, see
@@ -1643,76 +1905,16 @@ impl Driver<'_> {
                     result.filled_usdc = result.shares_sold * side_price;
                 }
                 let confirmed_ts = now_secs_f64();
-                let signal_latency_ms = latency_ms(*signal_ts, received_ts);
-                let process_latency_ms = latency_ms(*signal_ts, confirmed_ts);
-                // Exits are always Poly/CLOB-triggered (only `on_poly` ever
-                // produces a ClosePosition — see worker.rs), so this is always
-                // the CLOB exchange latency, unlike the entry side above — no
-                // "(trigger)"/"(Nms ago)" tag needed here, only one feed applies.
-                let clob_latency_ms =
-                    exchange_latency_ms(slot.last_poly_ts, slot.last_poly_server_ts);
-                let clob_latency_str = format!("clob_latency={}", fmt_latency(clob_latency_ms));
-                println!(
-                    "[ORDER] {} CLOSE {shares:.4} ({reason:?}) -> status={:?} sold={:.4} usdc={:.4} err={:?} ({clob_latency_str} process_ms={process_latency_ms:.0} n_attempts={})",
-                    slot.market_key(),
-                    result.status,
-                    result.shares_sold,
-                    result.filled_usdc,
-                    result.error,
-                    result.attempts
-                );
-                let sold = result.shares_sold;
-                let exit_price = if sold > 0.0 {
-                    result.filled_usdc / sold
-                } else {
-                    0.0
-                };
-                let matched = matches!(result.status, SellStatus::Matched);
-                if matched {
-                    let dt = hkt_now().format("%H:%M:%S");
-                    let label = match reason {
-                        CloseReason::StopLoss => "STOP LOSS",
-                        CloseReason::TakeProfit => "TAKE PROFIT",
-                        CloseReason::Timeout => "TIME LIMIT",
-                    };
-                    self.notify(&format!(
-                        "📤 <b>{}</b> {label} order executed | {dt} | {}\nsold={sold:.4} @ {exit_price:.4} = ${:.4} | {clob_latency_str} | process_latency={process_latency_ms:.0}ms | n_attempts={}",
-                        slot.market_key(), slot.worker.strategy_name, result.filled_usdc, result.attempts
-                    )).await;
-                }
-                let event = match (matched, reason) {
-                    (true, CloseReason::TakeProfit) => Event::UnwindFilled {
-                        sold_shares: sold,
-                        exit_price,
-                        signal_latency_ms,
-                        process_latency_ms,
-                    },
-                    (true, CloseReason::StopLoss) => Event::StopSellFilled {
-                        sold_shares: sold,
-                        exit_price,
-                        signal_latency_ms,
-                        process_latency_ms,
-                    },
-                    (true, CloseReason::Timeout) => Event::TimeoutSellFilled {
-                        sold_shares: sold,
-                        exit_price,
-                        signal_latency_ms,
-                        process_latency_ms,
-                    },
-                    (false, CloseReason::TakeProfit) => Event::UnwindFailed {
-                        error: result.error,
-                    },
-                    (false, CloseReason::StopLoss) => Event::StopSellFailed {
-                        error: result.error,
-                    },
-                    (false, CloseReason::Timeout) => Event::TimeoutSellFailed {
-                        error: result.error,
-                    },
-                };
-                if matched && sold >= *shares {
-                    slot.current_token_id = None;
-                }
-                Some(event)
+                self.finish_close_order(
+                    slot,
+                    *shares,
+                    *reason,
+                    *signal_ts,
+                    received_ts,
+                    confirmed_ts,
+                    result,
+                )
+                .await
             }
             Action::CancelLimitSell { order_id } => {
                 let ok = self.engine.cancel_resting_order(order_id).await;
@@ -2210,6 +2412,12 @@ async fn main() -> Result<()> {
     // single-threaded step() loop.
     let (api_result_tx, mut api_result_rx) =
         mpsc::unbounded_channel::<(String, &'static str, Option<bool>)>();
+    // Paper-mode deferred fills (entry BUY, exit close) — background tasks
+    // spawned from `execute()` send their result back here once
+    // PAPER_SIMULATED_LATENCY_SECS has elapsed, instead of blocking the
+    // shared select! loop with an inline sleep. See that constant's doc
+    // comment and trader/doc/incident_eth_trade_2026-07-21.md #1.
+    let (paper_fill_tx, mut paper_fill_rx) = mpsc::unbounded_channel::<PaperFillMsg>();
     // Indicator snapshots from the standalone indicator module (feature_vol_
     // 2026-07-18.md). Channel exists unconditionally so the select! arm below
     // always compiles; senders are only spawned when indicator_enabled.
@@ -2539,10 +2747,12 @@ async fn main() -> Result<()> {
     let driver = Driver {
         engine: exec_engine.as_ref(),
         live_engine: live_engine.as_deref(),
+        paper_engine: paper_engine.clone(),
         mode,
         telegram: telegram_send.clone(),
         http: http.clone(),
         api_result_tx: api_result_tx.clone(),
+        paper_fill_tx: paper_fill_tx.clone(),
     };
 
     // ── Weather markets (Phase B, feature_new_markets_2026-07-17.md §7) ──
@@ -3055,6 +3265,38 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Paper-mode deferred fills (entry BUY, exit close) — see
+            // PAPER_SIMULATED_LATENCY_SECS's doc comment. `execute()`'s
+            // Paper-mode branches spawn the actual (delayed) engine call and
+            // send the result here instead of resolving it inline, so the
+            // shared loop above never blocks on a fill.
+            Some(msg) = paper_fill_rx.recv() => {
+                match msg {
+                    PaperFillMsg::Entry(f) => {
+                        if let Some(slot) = assets.iter_mut().find(|s| s.market_key() == f.market && s.worker.strategy_name == f.strategy)
+                            && let Some(event) = driver.finish_entry_order(
+                                slot, f.side, f.price, f.signal_price, f.size_usdc, f.signal_ts,
+                                f.feed, f.received_ts, f.confirmed_ts, f.result,
+                                &indicator_store, PUP_GATE_MAX_AGE_SECS,
+                            ).await
+                        {
+                            let actions = slot.worker.step(event);
+                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
+                        }
+                    }
+                    PaperFillMsg::Close(f) => {
+                        if let Some(slot) = assets.iter_mut().find(|s| s.market_key() == f.market && s.worker.strategy_name == f.strategy)
+                            && let Some(event) = driver.finish_close_order(
+                                slot, f.shares, f.reason, f.signal_ts, f.received_ts, f.confirmed_ts, f.result,
+                            ).await
+                        {
+                            let actions = slot.worker.step(event);
+                            driver.process_actions(slot, actions, Feed::Clob, &indicator_store, PUP_GATE_MAX_AGE_SECS).await;
+                        }
+                    }
+                }
+            }
+
             _ = tokio::time::sleep_until(balance_deadline) => {
                 // Dry-run has no account: `bal` stays None, which both trackers
                 // treat as "unknown ⇒ don't act" (see balance.rs). Paper mode
@@ -3284,6 +3526,248 @@ mod paper_balance_tests {
             [-13.0].into_iter()
         ))));
         assert!(guard.is_halted());
+    }
+}
+
+#[cfg(test)]
+mod paper_deferred_fill_tests {
+    use super::*;
+    use trader::config::AssetParams;
+
+    fn test_params(asset: &str) -> AssetParams {
+        AssetParams {
+            asset: asset.to_string(),
+            strategies: vec!["reversal".to_string()],
+            enter_when_time_left: 20.0,
+            no_enter_when_time_left: 10.0,
+            reversal: 0.60,
+            reversal_low_threshold: 0.20,
+            reversal_start_time: 120.0,
+            gamma_poll_delay_secs: 60.0,
+            gamma_poll_interval_secs: 20.0,
+            gamma_poll_deadline_secs: 600.0,
+            price_high_rev: 0.90,
+            delta_pct_rev: 0.0008,
+            sl_reversal: 0.0,
+            unwind_pnl_rev: 0.03,
+            sl_pnl_rev: 0.20,
+            unwind_time_rev: 0.0,
+            price_low: 0.80,
+            price_high: 0.93,
+            delta_pct_hp: 0.0004,
+            sl_high_prob: 0.49,
+            unwind_pnl_hp: 0.05,
+            sl_pnl_hp: 0.25,
+            unwind_time_hp: 0.0,
+            v_high1: 0.70,
+            v_low: 0.30,
+            v_high2: 0.70,
+            delta_pct_v: 0.0,
+            sl_v_shape: 0.0,
+            sl_pnl_v: 0.30,
+            unwind_pnl_v: 0.15,
+            unwind_time_v: 25.0,
+            halt_rev: 2,
+            halt_prob: 2,
+            halt_v: 1,
+            halt_reset_hour_rev: 2,
+            halt_reset_hour_hp: 8,
+            halt_reset_hour_v: 2,
+            max_buy_price: 0.95,
+            order_slippage: 0.05,
+            spread_premium_limit: 1.05,
+            spread_discount_limit: 0.95,
+            max_price_age_secs: 300.0,
+            trade_size_usdc: 5.0,
+            maker_entry: false,
+            pup_edge_min_rev: None,
+        }
+    }
+
+    fn test_slot(asset: &str, up_id: U256, dn_id: U256) -> AssetSlot {
+        let params = test_params(asset);
+        AssetSlot {
+            worker: Worker::new_reversal(asset, &params),
+            params,
+            duration: MarketDuration::M5,
+            slot_val: 0,
+            up_id,
+            dn_id,
+            current_token_id: None,
+            max_buy_price: 0.95,
+            log_path: String::new(),
+            canceled_quote_log_path: String::new(),
+            pup_veto_log_path: String::new(),
+            control_log_path: String::new(),
+            state_file: String::new(),
+            cycle_trades: 0,
+            sl_notified: false,
+            timeout_notified: false,
+            pup_stale_notified: false,
+            wins: 0,
+            losses: 0,
+            stoplosses: 0,
+            unwinds: 0,
+            timeouts: 0,
+            total_pnl: 0.0,
+            last_trade: None,
+            current_slug: None,
+            last_binance: 0.0,
+            last_poly_up: 0.0,
+            last_poly_dn: 0.0,
+            poly_sub: None,
+            last_binance_server_ts: None,
+            last_poly_server_ts: None,
+            last_binance_ts: None,
+            last_poly_ts: None,
+            last_binance_trade_ts: None,
+        }
+    }
+
+    /// End-to-end proof of the mechanism trader/doc/plan_paper_latency_2026-07-21.md
+    /// describes: a paper-mode `Action::PlaceBuy` must not resolve inline
+    /// (`execute()` returns `None` immediately, never blocking the caller),
+    /// and the deferred fill must arrive on `paper_fill_rx` only after
+    /// `PAPER_SIMULATED_LATENCY_SECS` of (virtual) wall-clock time has
+    /// elapsed, priced at whatever `PaperExecutor` observes by then.
+    #[tokio::test(start_paused = true)]
+    async fn paper_entry_defers_and_resolves_after_simulated_latency() {
+        let paper_engine = Arc::new(PaperExecutor::new());
+        let dn_id = U256::from(2u64);
+        paper_engine.on_price(dn_id, 0.70);
+
+        let (paper_fill_tx, mut paper_fill_rx) = mpsc::unbounded_channel::<PaperFillMsg>();
+        let (api_result_tx, _api_result_rx) =
+            mpsc::unbounded_channel::<(String, &'static str, Option<bool>)>();
+
+        let driver = Driver {
+            engine: paper_engine.as_ref(),
+            live_engine: None,
+            paper_engine: Some(paper_engine.clone()),
+            mode: RunMode::Paper,
+            telegram: None,
+            http: reqwest::Client::new(),
+            api_result_tx,
+            paper_fill_tx,
+        };
+
+        let mut slot = test_slot("BTC", U256::from(1u64), dn_id);
+        let signal_ts = now_secs_f64();
+        let action = Action::PlaceBuy {
+            side: Side::Down,
+            price: 0.75,
+            signal_price: 0.70,
+            size_usdc: 5.0,
+            signal_ts,
+        };
+        let indicator_store = IndicatorStore::default();
+
+        let immediate = driver
+            .execute(&mut slot, &action, Feed::Clob, &indicator_store, 5.0)
+            .await;
+        assert!(
+            immediate.is_none(),
+            "paper mode must not resolve inline: {immediate:?}"
+        );
+        assert_eq!(slot.current_token_id, Some(dn_id));
+        assert!(
+            paper_fill_rx.try_recv().is_err(),
+            "must not have arrived yet — the background task is still \"sleeping\""
+        );
+
+        tokio::time::advance(std::time::Duration::from_millis(850)).await;
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), paper_fill_rx.recv())
+            .await
+            .expect("deferred fill must arrive once PAPER_SIMULATED_LATENCY_SECS elapses")
+            .expect("channel must not close");
+        // Note: `now_secs_f64()` wraps real `SystemTime`, not
+        // `tokio::time::Instant` — it doesn't advance under
+        // `tokio::time::pause()`/`advance()`, so `confirmed_ts - signal_ts`
+        // isn't a meaningful ~800ms assertion *in this virtual-time test*
+        // (it would be in a real run, where both are genuine wall-clock
+        // reads). What this test proves instead: the message provably
+        // cannot arrive before the simulated delay elapses (the `try_recv`
+        // check above, before `advance()`), and once it does, the fill
+        // content is correct.
+        match msg {
+            PaperFillMsg::Entry(f) => {
+                assert_eq!(f.market, "BTC");
+                assert_eq!(f.strategy, "reversal");
+                assert!(f.result.placed);
+                assert!(
+                    (f.result.cost - 0.70).abs() < 1e-9,
+                    "fills at the price PaperExecutor actually observes, not the signal/ceiling price: {f:?}"
+                );
+            }
+            PaperFillMsg::Close(_) => panic!("expected an Entry fill"),
+        }
+    }
+
+    /// Same proof as the entry test above, for the exit side
+    /// (`Action::ClosePosition`, e.g. a timeout force-close).
+    #[tokio::test(start_paused = true)]
+    async fn paper_close_defers_and_resolves_after_simulated_latency() {
+        let paper_engine = Arc::new(PaperExecutor::new());
+        let dn_id = U256::from(2u64);
+        paper_engine.on_price(dn_id, 0.80);
+
+        let (paper_fill_tx, mut paper_fill_rx) = mpsc::unbounded_channel::<PaperFillMsg>();
+        let (api_result_tx, _api_result_rx) =
+            mpsc::unbounded_channel::<(String, &'static str, Option<bool>)>();
+
+        let driver = Driver {
+            engine: paper_engine.as_ref(),
+            live_engine: None,
+            paper_engine: Some(paper_engine.clone()),
+            mode: RunMode::Paper,
+            telegram: None,
+            http: reqwest::Client::new(),
+            api_result_tx,
+            paper_fill_tx,
+        };
+
+        let mut slot = test_slot("BTC", U256::from(1u64), dn_id);
+        slot.current_token_id = Some(dn_id); // a position is already open
+        let signal_ts = now_secs_f64();
+        let action = Action::ClosePosition {
+            shares: 10.0,
+            reason: CloseReason::Timeout,
+            limit_price: None,
+            signal_ts,
+        };
+        let indicator_store = IndicatorStore::default();
+
+        let immediate = driver
+            .execute(&mut slot, &action, Feed::Clob, &indicator_store, 5.0)
+            .await;
+        assert!(
+            immediate.is_none(),
+            "paper mode must not resolve inline: {immediate:?}"
+        );
+        assert!(
+            paper_fill_rx.try_recv().is_err(),
+            "must not have arrived yet — the background task is still \"sleeping\""
+        );
+
+        tokio::time::advance(std::time::Duration::from_millis(850)).await;
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), paper_fill_rx.recv())
+            .await
+            .expect("deferred close must arrive once PAPER_SIMULATED_LATENCY_SECS elapses")
+            .expect("channel must not close");
+        match msg {
+            PaperFillMsg::Close(f) => {
+                assert_eq!(f.market, "BTC");
+                assert_eq!(f.strategy, "reversal");
+                assert_eq!(f.reason, CloseReason::Timeout);
+                assert!(
+                    (f.result.filled_usdc - 10.0 * 0.80).abs() < 1e-9,
+                    "closes at the price PaperExecutor actually observes: {f:?}"
+                );
+            }
+            PaperFillMsg::Entry(_) => panic!("expected a Close fill"),
+        }
     }
 }
 

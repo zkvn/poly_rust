@@ -420,9 +420,11 @@ mod tests {
         // bounded to [0.0003,0.0008] favoring win_rate — see that file's
         // meta.source for the full method and picked-row stats): BTC picked
         // delta=0.0008/reversal=0.55/low=0.20/unwind_pnl=0.15/unwind_time=30.0
-        // (168 trades, 85.1% win over the calibration window). sl_reversal/
-        // sl_pnl_rev stay 0.0 for every asset regardless (plan 1.2, Scenario A
-        // — unwind_time_rev IS the stop).
+        // (168 trades, 85.1% win over the calibration window). sl_pnl_rev
+        // stays 0.0 for every asset regardless (plan 1.2, Scenario A —
+        // unwind_time_rev IS the stop). sl_reversal (absolute floor) raised
+        // 0.0 -> 0.1 same-day, by explicit user request (2026-07-21) — a
+        // backstop alongside, not instead of, unwind_time_rev.
         assert!(
             (p.reversal - 0.55).abs() < 1e-9,
             "BTC reversal = 0.55 (24h re-pick, carried over unchanged)"
@@ -433,7 +435,10 @@ mod tests {
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);
         assert!((p.sl_pnl_rev - 0.0).abs() < 1e-9);
-        assert!((p.sl_reversal - 0.0).abs() < 1e-9);
+        assert!(
+            (p.sl_reversal - 0.1).abs() < 1e-9,
+            "sl_reversal = 0.1 (absolute floor, same-day update 2026-07-21)"
+        );
         // high_prob is inert in this config (not in [strategies]) — its
         // per-asset fields are carried over unchanged from strategy_20260717.toml.
         assert!((p.unwind_pnl_hp - 0.15).abs() < 1e-9);

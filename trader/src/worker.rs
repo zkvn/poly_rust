@@ -3486,6 +3486,83 @@ mod tests {
         assert!(matches!(w.state, WorkerState::StopExiting(_)));
     }
 
+    /// Absolute stop-loss floor (`sl_reversal`), independent of `sl_pnl_rev` —
+    /// matches the real production shape: `strategy_20260721_taker.toml` sets
+    /// `sl_reversal = 0.1` (2026-07-21, user request) with `sl_pnl_rev`
+    /// staying `0.0` (disabled), so *only* the absolute-floor branch of
+    /// `on_poly`'s `sl_hit` check is actually live. The existing
+    /// `stop_loss_fires_and_cancels_resting_gtc_first` test only ever
+    /// exercised the PnL-relative branch — this closes that gap.
+    #[test]
+    fn absolute_stop_loss_fires_independent_of_pnl_floor() {
+        let mut p = btc_params();
+        p.sl_pnl_rev = 0.0; // disabled, matches production
+        p.sl_reversal = 0.1; // absolute floor, matches production
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0); // DOWN entry at token_price 0.70
+        w.step(Event::LimitSellPlaced {
+            order_id: Some("order-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+
+        // dn at 0.09 < the 0.1 absolute floor -> fires, regardless of how far
+        // that is from entry(0.70) - sl_pnl(0.0 disabled).
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.91,
+            dn: 0.09,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        }));
+        assert_eq!(
+            actions,
+            vec![
+                Action::CancelLimitSell {
+                    order_id: "order-1".to_string()
+                },
+                Action::ClosePosition {
+                    shares: 10.0,
+                    reason: CloseReason::StopLoss,
+                    limit_price: None,
+                    signal_ts: 1260.0
+                },
+                Action::Persist,
+            ]
+        );
+        assert!(matches!(w.state, WorkerState::StopExiting(_)));
+    }
+
+    /// Exactly at the floor (not below it) must not fire — `<`, not `<=`.
+    #[test]
+    fn absolute_stop_loss_exact_floor_is_not_a_trigger() {
+        let mut p = btc_params();
+        p.sl_pnl_rev = 0.0;
+        p.sl_reversal = 0.1;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1260.0,
+            up: 0.90,
+            dn: 0.10,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        }));
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                Action::ClosePosition {
+                    reason: CloseReason::StopLoss,
+                    ..
+                }
+            )),
+            "dn == 0.1 exactly must not trigger the absolute floor: {actions:?}"
+        );
+    }
+
     #[test]
     fn failed_stop_sell_reclassifies_as_held() {
         let p = btc_params();
@@ -3539,6 +3616,64 @@ mod tests {
                 },
                 Action::Persist,
             ]
+        );
+        assert!(matches!(w.state, WorkerState::TimingOut(_)));
+    }
+
+    /// Reproduces the exact production shape the sibling test above skips:
+    /// `enter_down_position` alone never sends `LimitSellPlaced`, so its
+    /// `exit_arm` stays `PriceMonitor` — the real driver always sends that
+    /// event synchronously right after a >=MIN_GTC_SHARES fill (see
+    /// `finalize_entry_fill`'s doc comment), flipping `exit_arm` to
+    /// `GtcResting` before any later tick can arrive. This is the shape a
+    /// real taker-entry-then-resting-TP-sell position is actually in when
+    /// `unwind_time` elapses — trader/doc/incident_eth_trade_2026-07-21.md.
+    #[test]
+    fn timeout_force_closes_with_a_confirmed_gtc_resting_exit_arm() {
+        let mut p = btc_params();
+        p.unwind_time_rev = 30.0;
+        let mut w = Worker::new_reversal("BTC", &p);
+        enter_down_position(&mut w, 10.0);
+        w.step(Event::LimitSellPlaced {
+            order_id: Some("order-1".to_string()),
+            status: SellStatus::Live,
+            error: None,
+            signal_latency_ms: 0.0,
+            process_latency_ms: 0.0,
+        });
+        let WorkerState::Holding(h) = &w.state else {
+            panic!("expected Holding, got {:?}", w.state);
+        };
+        assert_eq!(
+            h.exit_arm,
+            ExitArm::GtcResting {
+                order_id: "order-1".to_string()
+            },
+            "sanity: exit_arm must actually be GtcResting for this test to mean anything"
+        );
+
+        let actions = w.step(Event::PolyTick(PolyTick {
+            ts: 1280.0,
+            up: 0.40,
+            dn: 0.60,
+            up_bid: 0.0,
+            up_ask: 0.0,
+        })); // 1250 + 30
+        assert_eq!(
+            actions,
+            vec![
+                Action::CancelLimitSell {
+                    order_id: "order-1".to_string()
+                },
+                Action::ClosePosition {
+                    shares: 10.0,
+                    reason: CloseReason::Timeout,
+                    limit_price: None,
+                    signal_ts: 1280.0
+                },
+                Action::Persist,
+            ],
+            "timeout must fire (with a cancel first) regardless of exit_arm: {actions:?}"
         );
         assert!(matches!(w.state, WorkerState::TimingOut(_)));
     }

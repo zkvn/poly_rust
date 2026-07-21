@@ -1184,6 +1184,40 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### ETH reversal trade: unreachable take-profit target + timeout never fired (2026-07-21, root-caused, not yet fixed)
+
+`tp_price = cost + unwind_pnl_rev` has no ceiling — any fill above `~0.84` (routine for reversal;
+this trade filled at `0.875`) produces a take-profit target above the real ~0.99 max tradeable
+price, structurally unreachable. Separately, the max-holding-time force-close only runs inside
+`on_poly`, which only fires on a real incoming `PolyTick`; `price_feed` only publishes on a
+genuine best-bid-ask/price-change event with no keepalive, so a quiet order book (plausibly
+exactly when a position has moved decisively, i.e. when a time-based exit matters most) means the
+timeout literally never gets evaluated and the position rides to natural cycle-close instead.
+Confirmed via log evidence and a new `worker.rs` test proving the state-machine logic itself is
+correct in isolation. Both fixes proposed, not yet implemented — pending review. Full writeup:
+`trader/doc/incident_eth_trade_2026-07-21.md`.
+
+### Simulated ~800ms paper-trade order latency, non-blocking (2026-07-21, added)
+
+Paper-trade `process_latency_ms` was ~1ms — `PaperExecutor`'s fills are instant, synchronous,
+in-process arithmetic, nowhere close to a real CLOB round trip (confirmed: not a measurement bug,
+a modeling gap). Entry BUY and every exit close now resolve ~800ms after the triggering signal
+via a background task + channel (mirrors the existing Gamma-resolution-watcher pattern), instead
+of an inline `sleep().await` that would stall the one shared driver loop across all 6 assets for
+800ms per fill (per explicit user choice between the two). The fill price is whatever
+`PaperExecutor` observes when the task actually reads it — since real wall-clock time has
+genuinely elapsed by then, this honestly reflects "the price ~800ms after the signal." Full
+writeup: `trader/doc/plan_paper_latency_2026-07-21.md`.
+
+### Absolute stop-loss floor enabled for all reversal assets (2026-07-21, added)
+
+`sl_reversal` (the absolute price-floor stop-loss, independent of `sl_pnl_rev`) raised `0.0` →
+`0.1` for every reversal asset, by explicit user request — a held position now closes if its own
+side's price drops below `0.10`, as a backstop alongside (not instead of) `unwind_time_rev`
+staying the primary stop (plan 1.2 Scenario A, unchanged). Same "tick-driven, not
+wall-clock-driven" caveat as the timeout above applies here too, since both checks live in the
+same `on_poly` function.
+
 ### Paper mode had no balance sample — the 25% "total pnl stop loss" was silently inert (2026-07-21, added)
 
 `BalanceGuard`'s account-level 25%-drawdown halt (distinct from each strategy's own per-trade
