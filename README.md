@@ -1184,6 +1184,22 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### Maker-entry reversal fired 1 trade in 24h across 6 assets — replaced with an aggressive taker entry (2026-07-21, fixed)
+
+Local-synced `paper_trades_*.csv` from the `strategy_20260720_24h.toml` maker-entry window
+showed 1 total trade (DOGE) after ~24h; every other asset had zero. Root cause: a resting GTC
+quote at the bid only fills on a trade-through (not touch), and gets cancelled at `T-15s` before
+cycle end or on signal invalidation — a narrow window that rarely produces a genuine
+trade-through, compounded by the 2026-07-20 fail-closed p(up) gate correctly blocking more
+entries than before. Fixed by switching reversal entries to a marketable taker buy priced at
+`best_ask + order_slippage` (capped at `max_buy_price`) — `order_slippage` had been present in
+every `strategy_*.toml` since inception but was never wired into the Rust code until now.
+`trade_size_usdc` raised $1→$5 so a taker fill reliably clears the 5-share GTC floor the
+take-profit exit needs (unchanged: it already prices off the actual executed fill). Also added:
+signal-price-vs-executed-price slippage logging (CSV + Telegram/console). The maker-entry code
+path itself is untouched, just off by default (`maker_entry = false`) — reachable again for a
+future maker-vs-taker comparison run. Full writeup: `trader/doc/plan_aggressive_taker_entry_2026-07-21.md`.
+
 ### p(up) gate fail-open on stale/missing data let a bad-edge DOGE entry through — fixed, gate now fails closed (2026-07-20, fixed)
 
 Oracle log forensics found 2 `SKIPPED_NO_DATA` occurrences in ~15h, both DOGE, each immediately
