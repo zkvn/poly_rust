@@ -430,7 +430,10 @@ mod tests {
             "BTC reversal = 0.55 (24h re-pick, carried over unchanged)"
         );
         assert!((p.reversal_low_threshold - 0.20).abs() < 1e-9);
-        assert!((p.delta_pct_rev - 0.0008).abs() < 1e-9);
+        // delta_pct_rev relaxed 0.0008 -> 0.0005 same-day, 2026-07-22, after
+        // BTC fired zero trades in the first ~24.5h window (trader/doc/
+        // recon_taker_entry_24h_2026-07-22.md).
+        assert!((p.delta_pct_rev - 0.0005).abs() < 1e-9);
         assert_eq!(p.halt_rev, 1);
         assert_eq!(p.halt_reset_hour_rev, 2);
         assert!((p.unwind_pnl_rev - 0.15).abs() < 1e-9);

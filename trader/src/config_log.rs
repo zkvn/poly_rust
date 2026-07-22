@@ -229,13 +229,15 @@ mod tests {
         // strategy_20260720_24h.toml (trader/doc/plan_stale_data_gate_2026-07-20.md
         // §3's 24h re-pick): every real trade asset has explicit per-asset
         // `reversal`/`delta_pct_rev` overrides, so both resolve to BTC's own
-        // override, not "default".
+        // override, not "default". delta_pct_rev relaxed 0.0008 -> 0.0005
+        // same-day, 2026-07-22 (BTC fired zero trades in the first ~24.5h
+        // window, trader/doc/recon_taker_entry_24h_2026-07-22.md).
         assert!((e.reversal.get("BTC").unwrap_or(&e.reversal["default"]) - 0.55).abs() < 1e-9);
         assert!(
             (e.delta_pct_rev
                 .get("BTC")
                 .unwrap_or(&e.delta_pct_rev["default"])
-                - 0.0008)
+                - 0.0005)
                 .abs()
                 < 1e-9
         );
