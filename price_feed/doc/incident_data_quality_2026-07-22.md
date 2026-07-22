@@ -142,13 +142,115 @@ case. Not a new bug, and not different in kind from the general "force-close use
 price" design already accepted for the timeout fix — noted here as context, not a proposed
 change.
 
-## Not proposing any change
+## No `price_feed`/`trader` code change — the underlying systems are working as designed
 
-`price_feed`'s staleness/reconciliation system is working as designed — phase 1 telemetry
-measuring true scale, phase 2 reconciliation catching and auto-recovering genuine mismatches at
-a small, real rate. This doc is investigative/connective, not a bug report: no `price_feed` or
-`trader` code changes are proposed as a result. If the reconciliation-restart rate (currently
-~4-6/day) climbs meaningfully, or if `[RECONCILE-STALE]` mismatches start showing up during an
-actual open trader position (not checked for in this pass — would need to cross-reference
-`paper_trades_*.csv` entry/exit timestamps against `RECONCILE-STALE` timestamps directly), that
-would be worth a dedicated follow-up.
+`price_feed`'s staleness/reconciliation system needed no fix — phase 1 telemetry measuring true
+scale, phase 2 reconciliation catching and auto-recovering genuine mismatches at a small, real
+rate. If the reconciliation-restart rate (currently ~4-6/day) climbs meaningfully, or if
+`[RECONCILE-STALE]` mismatches start showing up during an actual open trader position (not
+checked for in this pass — would need to cross-reference `paper_trades_*.csv` entry/exit
+timestamps against `RECONCILE-STALE` timestamps directly), that would be worth a dedicated
+follow-up.
+
+## Follow-up (same day): redesigned the digest message itself
+
+The investigation above surfaced a real problem with the *digest*, not the underlying system:
+leading with the raw 1263-event `OBSERVE-STALE` count as the headline "⚠️" number was itself
+misleading — >99% of that number is silence the reconciliation layer had already checked and
+found correct. By the user's own framing: those shouldn't be counted as issues, since the
+process already took care of them.
+
+`price_feed/scripts/data_quality_digest.sh` now leads with the number that's actually
+actionable — the `[RECONCILE-STALE]` confirmed-genuine count (e.g. "4 confirmed issue(s)"
+instead of "1263 event(s)") — and adds a **code-driven reconnects** section (WS-level
+`reconnecting…`/`retrying…` events per stream, plus reconciliation-triggered process restarts)
+so an unusual overnight spike in reconnection activity is visible even when no single mismatch
+was large enough to be the headline. Raw `OBSERVE-STALE` silence counts are kept as one
+compact, informational line per feed (total events, per-asset range, worst-gap range — e.g. "1340
+event(s) across 7 asset(s) (128–326 per asset), gaps of ≥60s-≥120s") rather than a per-asset
+alarm list.
+
+New message shape:
+
+```
+⚠️ Data quality digest (last 24h)
+
+Genuine issues (REST-verified against Polymarket's own /midpoint, not just silence)
+⚠️ 4 confirmed issue(s) (REST-verified, not just silence)
+  BNB: cached 0.7200 vs real 0.9550 (off by 0.2350)
+  HYPE: cached 0.0500 vs real 0.0050 (off by 0.0450)
+  SOL: cached 0.0550 vs real 0.0050 (off by 0.0500)
+  BNB: cached 0.4650 vs real 0.2950 (off by 0.1700)
+
+Code-driven reconnects (WS retries + reconciliation restarts — a spike here overnight is the real "check on this" signal)
+4 total
+  process restarts (reconciliation-confirmed): 4
+  Binance trade WS: 0
+  Binance bookTicker WS: 0
+  Polymarket book WS: 0
+  Polymarket bba/price WS: 0
+  Polymarket last-trade WS: 0
+
+Silence observed (informational — most is ordinary quiet markets already cross-checked above, not a separate alarm)
+CLOB (bba): 1340 event(s) across 7 asset(s) (128-326 per asset), gaps of ≥60s-≥120s
+Binance (bookTicker): 22 event(s) across 3 asset(s) (1-20 per asset), gaps of ≥10s
+
+Genuine issues + reconnects: real signal, code already recovers automatically.
+CLOB: price_feed/doc/plan_bba_feed_staleness_fix_2026-07-10.md
+Binance: price_feed/doc/plan_binance_ws_quality_2026-07-20.md §4
+Digest design: price_feed/doc/incident_data_quality_2026-07-22.md
+```
+
+(This is a real dry-run capture against Oracle's actual 24h window — not a mockup.)
+
+### Implementation
+
+- Single `journalctl -u poly-collector --since "$WINDOW" -g "$PATTERN" -o cat` call — journald's
+  own server-side regex filter (PCRE2, confirmed supported on Oracle), not a client-side pipe
+  through an external `grep` over the full unfiltered journal. Every section (`genuine_issues_section`,
+  `reconnects_section`, `silence_summary_line`) works off this one already-small result set —
+  minimizes both the number of journalctl invocations (1, not up to 7) and how much unfiltered
+  data ever crosses a process boundary, per the explicit "minimum resources on Oracle" ask.
+  Measured: the `-g`-filtered query itself runs in ~0.16s for a 10-minute window; the full 24h
+  window takes ~110s wall time (mostly `sys` — journald has to scan/decompress the full day's
+  journal regardless of where the regex is applied, since `poly-collector`'s 200ms/250ms sampler
+  loops produce a genuinely high volume of routine log lines). This is an inherent cost of the
+  24h window against this service's logging volume, not specific to the old vs. new script —
+  the old version's client-side-grep approach paid the same underlying journal-scan cost. Not
+  addressed here (would mean reducing `poly-collector`'s own routine logging verbosity, a
+  separate, larger change); noted transparently rather than silently claimed away. The digest
+  itself is a `Type=oneshot` job that runs once daily, so ~110s once a day is a bounded,
+  non-continuous cost, not resource *contention* with the live collector/trader processes.
+- `[RECONCILE-STALE]` episodes log twice per event (`collect.rs`'s detection `eprintln!`, then
+  `run()`'s shutdown-select-arm re-print with `" — flushing writers…"` appended) — the genuine-
+  issues parser filters out the second line so each episode counts once, not twice.
+- Found and fixed a real `set -o pipefail` bug in the process: `grep -c PATTERN | awk '...' ||
+  echo 0` silently **double-prints** when `grep -c` finds zero matches (grep still emits a "0"
+  line but exits 1; under `pipefail` the *pipeline's* exit status is 1 even though `awk` ran and
+  produced correct output, so the `|| echo 0` fallback fires *in addition to* the real result,
+  corrupting the captured value into two lines and breaking downstream arithmetic). Caught by
+  this change's own local test suite (a "clean day, nothing to report" fixture), not guessed —
+  fixed with a small `count_matches()` helper that scopes `|| true` to a subshell around `grep`
+  alone, so a multi-stage pipeline downstream of it can never contaminate the fallback.
+
+### Tests
+
+`price_feed/scripts/test_data_quality_digest.sh` — sources `data_quality_digest.sh` (only runs
+`main()` when executed directly, not when sourced) and exercises `genuine_issues_section()`,
+`reconnects_section()`, `silence_summary_line()`, and `build_digest_text()` directly against two
+fixed sample-line fixtures (a realistic noisy day covering every reconnect-pattern type and
+several `OBSERVE-STALE` buckets across assets, and an empty "clean day") — no `journalctl`, no
+network, no Oracle. 25 assertions, all passing. Also verified:
+- `bash -n` on both scripts (syntax only).
+- The full `main()` path locally with a mocked `journalctl` on `$PATH` and a scratch `.env`
+  file, covering both the "found data" and "missing env file" branches.
+- One real dry-run (`DIGEST_DRY_RUN=1`) against Oracle's actual 24h journal (the message shown
+  above) — confirmed the `-g` regex is accepted by Oracle's real `journalctl`/systemd build and
+  the output matches this investigation's own manual findings (4 confirmed issues) exactly.
+
+### Deploy
+
+`price_feed/scripts/data_quality_digest.sh` rsynced directly to Oracle
+(`/home/ubuntu/apps/poly_rust/price_feed/scripts/`) — this is a standalone `Type=oneshot` script
+triggered by `data-quality-digest.timer` (daily, 09:00 HKT), not a long-running service, so
+"deploying" it is a file copy with no service restart needed.

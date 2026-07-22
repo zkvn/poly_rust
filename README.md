@@ -1184,6 +1184,22 @@ until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
 
+### Data quality digest led with a mostly-noise number — redesigned (2026-07-22, fixed)
+
+The daily Telegram "Data quality digest" led with raw `[OBSERVE-STALE]` silence-duration counts
+(e.g. "1263 event(s)") as its headline "⚠️" number — but that's pure silence telemetry with no
+correctness judgment; a quiet-but-healthy market crosses the same buckets a genuinely broken feed
+would. The real judgment already happens automatically every 5s via `reconcile.rs`'s REST
+`/midpoint` cross-check, and checking Oracle's actual logs found only **4 confirmed genuine
+mismatches** in the same 24h window — the rest was silence the system had already checked and
+cleared itself. `data_quality_digest.sh` now leads with the confirmed-genuine (`[RECONCILE-STALE]`)
+count instead, adds a new "code-driven reconnects" section (WS-level retries + reconciliation
+restarts — the actual "check on this" signal for an unattended overnight window), and keeps raw
+silence counts as one informational summary line per feed. Also fixed a real `set -o pipefail`
+bug found by the change's own new local test suite (a multi-stage `grep -c | awk | echo 0`
+fallback pattern that double-printed on zero matches). Full writeup, including the exact new
+message shape and root-cause detail: `price_feed/doc/incident_data_quality_2026-07-22.md`.
+
 ### ETH reversal trade: unreachable take-profit target + timeout never fired (2026-07-21, fixed)
 
 `tp_price = cost + unwind_pnl_rev` had no ceiling — any fill above `~0.84` (routine for reversal;
