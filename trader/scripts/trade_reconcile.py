@@ -103,6 +103,11 @@ CSV_COLUMNS = [
     "exit_price", "outcome", "pnl", "exit_attempts", "exit_last_error",
     "entry_signal_latency_ms", "entry_process_latency_ms",
     "exit_signal_latency_ms", "exit_process_latency_ms",
+    # Added 2026-07-21 (plan_aggressive_taker_entry_2026-07-21.md §2.4) —
+    # absent on rows predating the change; row.get() returns None for those,
+    # which is still hashable in the dedup-key tuple below, so this is a
+    # backward-compatible addition, not a breaking schema change.
+    "entry_signal_price", "entry_slippage",
 ]
 
 SLUG_ASSET_PREFIX = {
@@ -194,8 +199,8 @@ def _fetch_gamma_outcome_from_api(slug: str) -> Optional[str]:
 # Load + filter trade logs
 # ---------------------------------------------------------------------------
 
-def find_trade_logs(log_dir: Path) -> list:
-    return sorted(log_dir.glob("live_trades_*.csv"))
+def find_trade_logs(log_dir: Path, pattern: str = "live_trades_*.csv") -> list:
+    return sorted(log_dir.glob(pattern))
 
 
 def load_and_filter(paths: list, from_ts: float, to_ts: float) -> list:
@@ -1677,6 +1682,7 @@ def write_markdown_summary(
     summary: dict, perf_stats: dict, window_start: datetime, window_end: datetime,
     out_dir: Path, bt_result: Optional[tuple] = None,
     data_quality_result: Optional[dict] = None,
+    source_pattern: str = "live_trades_*.csv",
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1705,7 +1711,7 @@ def write_markdown_summary(
         f"# Trade Reconciliation — {title_period}",
         "",
         f"**Run:** {now_hkt}",
-        f"**Source:** `trader/live_logs/live_trades_*.csv`",
+        f"**Source:** `trader/live_logs/{source_pattern}`",
         "",
     ]
 

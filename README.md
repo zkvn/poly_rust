@@ -297,6 +297,14 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **Per-trade p(up)/edge isn't persisted anywhere queryable — noted 2026-07-22.** The indicator
+  reading an entry gate actually used is only ever printed to console/Telegram
+  (`fmt_indicator`'s rendering); `IndicatorStore` keeps just the latest in-memory snapshot per
+  asset, and no CSV/DB column captures it per trade. Building `trader/doc/recon_taker_entry_24h_2026-07-22.md`'s
+  p(side)/edge table required grepping `live.log` for the nearest ~30s heartbeat line around each
+  trade's timestamp — an approximation, not the exact reading the gate checked. Worth adding an
+  `entry_p_side`/`exit_p_side` CSV column (mirroring `entry_signal_price`'s precedent) if this kind
+  of analysis becomes routine.
 - **`polymarket_client_sdk_v2`'s CLOB WS heartbeat has a reconnect gap in the fully-silent case —
   found 2026-07-20, not fixed (third-party dependency, not our code).** Its `ConnectionManager`
   sends an app-level `"PING"` every 5s and expects `"PONG"` within 15s
