@@ -174,3 +174,95 @@ being read for the first time.
    the new slippage line, fresh CSVs accruing rows with `entry_signal_price` populated.
 7. Let it run; a follow-up evaluation doc (same shape as the 48h plan's §2.7) is out of scope for
    this plan and will be written once enough trades have accrued to say something meaningful.
+
+## 6. Evaluation — first ~20h (2026-07-21 15:44 → 2026-07-22 08:50 HKT)
+
+**Headline result: the fix worked.** The prior maker-entry window managed **1 trade in 24h**
+across all 6 assets. This window: **11 trades in ~20h** (first entry at 15:43:58, ~2h47m after
+the 12:56 deploy — the entry window/gates took a while to line up, not a stall) — more than a
+10x improvement in fill rate, the whole point of `plan_aggressive_taker_entry_2026-07-21.md`.
+Numbers below are paper-mode only; sample size is small (n=11) — read directionally, not as a
+final verdict on the parameters themselves (which weren't retuned by this plan).
+
+### Trade log (all 11, chronological)
+
+| Asset | Side | Entry (HKT) | Entry px | Exit px | Outcome | pnl | Duration | Entry process_latency |
+|---|---|---|---|---|---|---|---|---|
+| ETH | DOWN | 07-21 15:43:58 | 0.875 | 1.000 | WIN | +0.670 | 62.1s | 1.0ms *(pre-latency-fix)* |
+| ETH | UP | 07-21 16:18:51 | 0.755 | 0.905 | UNWIND | +0.867 | 7.2s | 1.0ms *(pre-latency-fix)* |
+| BNB | UP | 07-21 16:14:31 | 0.695 | 0.845 | UNWIND | +0.906 | 1.0s | 0.4ms *(pre-latency-fix)* |
+| DOGE | UP | 07-21 16:24:17 | 0.900 | 0.465 | TIMEOUT | **−2.551** | 30.5s | 0.8ms *(pre-latency-fix)* |
+| XRP | DOWN | 07-21 21:39:22 | 0.865 | 0.970 | TIMEOUT | +0.548 | 27.1s | 801.0ms |
+| BNB | UP | 07-22 02:34:33 | 0.695 | 0.845 | UNWIND | +0.906 | 2.2s | 801.0ms |
+| DOGE | DOWN | 07-22 05:44:45 | 0.925 | 1.000 | WIN | +0.380 | 15.5s | 800.4ms |
+| BNB | UP | 07-22 08:14:30 | 0.950 | 1.000 | WIN | +0.246 | 30.1s | 801.3ms |
+| DOGE | UP | 07-22 08:34:21 | 0.925 | 0.995 | TIMEOUT | +0.351 | 31.1s | 801.0ms |
+| BNB | UP | 07-22 08:34:30 | 0.690 | 0.840 | UNWIND | +0.911 | 5.3s | 801.1ms |
+| XRP | UP | 07-22 08:49:44 | 0.840 | 1.000 | WIN | +0.896 | 16.7s | 801.2ms |
+
+**Totals**: 4 UNWIND (take-profit), 4 WIN (natural resolution), 3 TIMEOUT — 0 STOPLOSS. Net pnl
+**+$4.13**. 10/11 trades landed positive (91%); the one loss (DOGE, −2.55) was a clean, correctly-
+fired 30.5s timeout on a reversal call that was simply wrong (price kept falling), not a
+mechanism failure — happened *before* any of the same-day fixes below, for what that's worth,
+but nothing about it looks like a bug either way. **BTC and SOL fired zero trades** — worth
+another day of observation before concluding whether that's `delta_pct_rev`/`reversal` threshold
+tuning or genuinely quiet price action for those two specifically (see also the data-quality
+doc below — SOL had a confirmed price-feed mismatch/restart in this same window, a plausible
+partial explanation worth keeping in mind, not confirmed as causal).
+
+### Confirming each same-day fix against real data
+
+- **Aggressive taker entry** (this plan): confirmed by the headline trade-count jump alone.
+- **`trade_size_usdc` = $5** (this plan, §2.2): confirmed indirectly — every UNWIND outcome
+  required the take-profit leg to rest as a real GTC sell, which is only legal at
+  `>= MIN_GTC_SHARES` (5 shares); it worked every time.
+- **~800ms simulated latency** (`plan_paper_latency_2026-07-21.md`): confirmed directly —
+  every entry after the deploy shows `entry_process_latency_ms` ≈ 800–801ms, vs ~1ms before.
+  Real, sometimes-large slippage shows up as a genuine consequence (range −0.205 to +0.255 per
+  trade, net **+$0.29 adverse** across the 7 post-fix fills, ~$0.04/trade average) — expected:
+  reversal entries fire exactly when price is moving fast, so a real 800ms gap can land on a
+  materially different price either direction. Small relative to the 0.15 take-profit target
+  size, but real.
+- **Absolute stop-loss = 0.1** (this session): never triggered — no held position dropped below
+  0.10 this window. Inert so far, as expected for a tail backstop, not a routine trigger.
+- **Paper $50 balance / 25% drawdown guard**: never triggered — total pnl stayed positive,
+  nowhere near a 25% (−$12.50) drawdown from baseline. Correctly inert in a winning window;
+  still unverified against an actual losing streak (would need one to happen, or a synthetic
+  test — already covered by `paper_balance_tests` in the unit suite).
+- **`tp_price` cap at `MAX_SELL_PRICE = 0.99`** (`incident_eth_trade_2026-07-21.md` #1): the
+  08:14:30 BNB entry filled at 0.95 — uncapped that's a 1.10 target (would have reproduced the
+  exact ETH bug); capped, it's 0.99. That trade resolved via natural `WIN` before either the
+  take-profit or the timeout closed it (see the race note below), so the capped target wasn't
+  itself touched this window — but it's confirmed active and sane, and `capped_take_profit_target_is_reachable_and_fires`
+  already proves reachability directly in the unit suite regardless.
+- **Wall-clock timeout re-check** (`incident_eth_trade_2026-07-21.md` #2): the two post-fix
+  `TIMEOUT` closes (XRP 21:39:22, DOGE 08:34:21) both closed within **~1.1s** of their
+  configured `unwind_time_rev` (26.0s and 30.0s respectively) — exactly the precision expected
+  from a 1-second wall-clock re-check loop. Direct, positive evidence the fix is firing in
+  production, not just passing in tests.
+
+### One observed edge case — confirmed harmless, matches the documented caveat
+
+The 08:14:30 BNB trade (entry 0.95, `unwind_time_rev = 30s`) closed after **exactly 30.1s** as a
+`WIN`, not a `TIMEOUT` — even though duration lines up almost exactly with the timeout deadline.
+Read together with `plan_paper_latency_2026-07-21.md`'s already-documented accepted edge case
+("an entry/close signal firing within the last ~800ms of a cycle could have its deferred
+confirmation arrive after `CycleClose` already ran... the worker safely no-ops it"): the
+wall-clock timeout most likely fired and spawned a deferred paper close, and the cycle's own
+natural close landed in the same window, winning the race via `on_cycle_close`'s pre-existing
+"hold to maturity" handling for an in-flight `TimingOut` position — settling via full ($1.00)
+resolution instead of the timeout's market-price close. `on_timeout_sell_filled`'s existing
+`WorkerState::TimingOut` guard means the late-arriving deferred close is a safe no-op once that
+happens (verified by reading the guard, matches the doc's prediction). Net effect: a
+**labeling** difference (`Win` vs `Timeout`) and a few cents of pnl (full settlement vs the
+market price at close), not a functional bug, not a double-count, not data corruption — the
+first real-world observation of a scenario the latency-fix doc predicted in advance.
+
+### Open items for the next window
+
+- BTC/SOL at zero trades — keep watching before touching `delta_pct_rev`/`reversal` for either.
+- Slippage from the 800ms delay is real and asymmetric per-trade (up to ±25¢ observed) — worth
+  tracking as the sample grows to see whether it nets out near zero over more trades or is
+  systematically adverse (entries chase a moving price, so some adverse bias is plausible).
+- Absolute SL (0.1) and the balance drawdown guard remain unverified against real losing data —
+  nothing to do proactively, just noting neither has been exercised outside the unit suite yet.
