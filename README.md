@@ -187,8 +187,12 @@ broken feed).
   no TCP error) case; see the `## TODO` entry for details. Normal disconnects reconnect fine via
   its own exponential backoff.
 
-**Assets recorded:** BNB, BTC, DOGE, ETH, HYPE, SOL, XRP (HYPE has no Binance market — its
-`_binance_` files are legitimately absent, not a bug).
+**Assets recorded:** BNB, BTC, DOGE, ETH, SOL, XRP. **HYPE was dropped 2026-07-23** — it had no
+Binance market (its `_binance_` files were legitimately empty, not a bug) and its Polymarket WS
+book went stale for long stretches on the thin/illiquid market, making it the majority source of
+`RECONCILE-STALE` collector restarts, which briefly interrupt every asset's feed, not just its
+own. See `price_feed/doc/incident_collector_restart_2026-07-23.md`. Historical `HYPE_*.parquet`
+files predating the drop remain on disk and are unaffected.
 
 ### Parquet file integrity — hourly seal
 
@@ -297,6 +301,12 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
+- **`poly-collector` `RECONCILE-STALE` restarts on traded assets (SOL, BTC) not investigated —
+  noted 2026-07-23.** The HYPE-removal fix (`price_feed/doc/incident_collector_restart_2026-07-23.md`)
+  only addressed HYPE's 5-of-8 majority share of restarts in the checked window; the other 3 (2
+  SOL, 1 BTC) are on assets the trader actively trades and were left alone — out of scope for that
+  fix, and a 3-in-23h rate wasn't judged alarming enough to chase immediately. Worth revisiting
+  once there's a clean post-HYPE-removal baseline to compare against.
 - **Per-trade p(up)/edge isn't persisted anywhere queryable — noted 2026-07-22.** The indicator
   reading an entry gate actually used is only ever printed to console/Telegram
   (`fmt_indicator`'s rendering); `IndicatorStore` keeps just the latest in-memory snapshot per
@@ -1191,6 +1201,19 @@ market resolutions and seeding/recording them into the local SQLite db
 until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
+
+### `poly-collector` restarts mostly caused by an untraded asset — HYPE dropped (2026-07-23, fixed, deploy pending)
+
+Checking in on the BTC/SOL `delta_pct_rev` relax 24h paper window found `poly-collector.service`
+at 15 restarts vs 0 for `trader-live`/`poly-indicator`. 5 of the 8 restarts in that window (62.5%)
+were HYPE: it has no Binance market and a thin enough Polymarket book that its WS best-bid-ask
+cache goes stale for stretches while the REST midpoint keeps moving, tripping
+`reconcile.rs`'s staleness confirm — and HYPE was never one of the 6 traded assets, so this bought
+nothing. Every restart briefly interrupts every asset's feed (shared NATS publish path), not just
+HYPE's own. Fixed by filtering HYPE out of `price_feed::collect::run()`'s asset list; verified via
+`cargo build`/`fmt`/`clippy`/`test` (all clean) plus the 126-test `trade_reconcile.py` suite.
+Not yet deployed to Oracle — pending explicit go-ahead since it restarts a live service
+`trader-live` depends on. Full writeup: `price_feed/doc/incident_collector_restart_2026-07-23.md`.
 
 ### Data quality digest led with a mostly-noise number — redesigned (2026-07-22, fixed)
 

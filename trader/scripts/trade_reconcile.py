@@ -112,7 +112,7 @@ CSV_COLUMNS = [
 
 SLUG_ASSET_PREFIX = {
     "btc": "BTC", "eth": "ETH", "sol": "SOL",
-    "doge": "DOGE", "xrp": "XRP", "bnb": "BNB", "hype": "HYPE",
+    "doge": "DOGE", "xrp": "XRP", "bnb": "BNB",
 }
 
 

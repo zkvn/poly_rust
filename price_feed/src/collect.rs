@@ -1576,6 +1576,13 @@ pub async fn run(
     } else {
         assets.iter().map(|a| a.to_uppercase()).collect()
     };
+    // HYPE has no Binance market (its `up_bid`/`up_ask` WS book goes stale for long stretches
+    // on Polymarket's thin/illiquid market instead), which made it the majority source of
+    // spawn_reconcile_task's RECONCILE-STALE restarts — 5 of 8 in the 2026-07-22/23 24h
+    // window, each one briefly interrupting every other asset's feed too, not just HYPE's own.
+    // It was never one of the six traded assets (BTC/ETH/SOL/BNB/XRP/DOGE), so dropping it here
+    // costs nothing trading-relevant. See price_feed/doc/incident_collector_restart_2026-07-23.md.
+    let assets: Vec<String> = assets.into_iter().filter(|a| a != "HYPE").collect();
     let n = assets.len();
 
     eprintln!(
@@ -1726,8 +1733,10 @@ pub async fn run(
     // as bba above (price_feed/doc/plan_binance_ws_quality_2026-07-20.md §4). Tracks
     // `price_received_at_ms` (the @bookTicker-sourced field, not @trade's server_ts/trade_ts,
     // which is a separate concern entirely — see `BinanceState`'s doc comment). An asset with
-    // no Binance market at all (HYPE) never has `price > 0.0`, so it's naturally excluded —
-    // see the `sample.price <= 0.0` skip below.
+    // no Binance market at all never has `price > 0.0`, so it's naturally excluded — see the
+    // `sample.price <= 0.0` skip below. (HYPE was this codebase's example until it was
+    // dropped from collection — see the HYPE filter in `run()` and
+    // price_feed/doc/incident_collector_restart_2026-07-23.md.)
     let mut binance_last_seen_ms: Vec<i64> = vec![0; n];
     let mut binance_logged_bucket: Vec<usize> = vec![0; n];
 
@@ -1778,9 +1787,10 @@ pub async fn run(
 
                 let samples: Vec<BinanceState> = binance_state.lock().unwrap().clone();
                 let slugs: Vec<String> = state_5m.lock().unwrap().iter().map(|s| s.slug.clone()).collect();
-                // Same ordering fix as above: HYPE has no Binance market, so sample.price is
+                // Same ordering fix as above: an asset with no Binance market has sample.price
                 // always 0 and would otherwise skip seal_if_hour_changed forever, leaving its
-                // binance .tmp file un-sealed by the normal hourly rotation.
+                // binance .tmp file un-sealed by the normal hourly rotation. (HYPE was this
+                // codebase's example until it was dropped from collection — see above.)
                 for (i, sample) in samples.into_iter().enumerate() {
                     if let Err(e) = binance_writers[i].seal_if_hour_changed() { eprintln!("[{}] binance seal: {e:#}", assets[i]); }
                     if sample.price <= 0.0 { continue; }
