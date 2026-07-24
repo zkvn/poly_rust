@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 target/
+
+# siglab's detailed per-hour/per-day reports (2026-07-24) — written locally every 15 min
+# for debugging, deliberately not pushed to git anymore; only digest_*.md is (see
+# siglab/scripts/push_report.sh and siglab/doc/plan_better_signal_2026-07-24.md). Only
+# applies to new days going forward — already-tracked historical files are untouched.
+siglab/doc/report/*/summary_*.md
+siglab/doc/report/*/trades_*.md

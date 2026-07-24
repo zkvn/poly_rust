@@ -5,13 +5,15 @@
 //! ticks, plus one self-contained `v_shape::VShapeEngine` per (crypto market, grid variant)
 //! pair, and logs paper trade-record outcomes to JSONL. Also drives one
 //! `bucket_reversal::BucketReversalEngine` **and** one `v_shape::VShapeEngine` per
-//! (weather/World Cup bucket, grid variant) pair — separate, self-contained
-//! pure-price-action engines, not `Machine` — see `bucket_reversal.rs`'s doc comment for why,
-//! and `doc/feature_v_2026-07-17.md` for how `VShapeEngine` (originally crypto-only) was
+//! (weather bucket, grid variant) pair — separate, self-contained pure-price-action
+//! engines, not `Machine` — see `bucket_reversal.rs`'s doc comment for why, and
+//! `doc/feature_v_2026-07-17.md` for how `VShapeEngine` (originally crypto-only) was
 //! extended to buckets without any change to its own code (never given a cycle). **No real
 //! orders, no parquet/raw tick recording.** Config, logs, and process are entirely
 //! standalone from `trader`/`price_feed` — see `siglab/config.rs`'s doc comment and
-//! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`.
+//! `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md`. **World Cup support was removed
+//! 2026-07-24** (the tournament is over) — see `doc/plan_better_signal_2026-07-24.md`;
+//! `MarketKind::Worldcup` stays in `record.rs` as historical-only, deserializing old data.
 //!
 //! Every hour (HKT), writes/updates `{report_dir}/{date}/summary_{date}.md` (day-level
 //! config + PnL rollup + hour index) and `{report_dir}/{date}/trades_{date}_{HH}.md` (that
@@ -32,7 +34,6 @@ mod snapshot;
 mod staleness;
 mod v_shape;
 mod weather;
-mod worldcup;
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -62,10 +63,6 @@ struct Args {
     #[arg(long, default_value = "config/weather_cities.toml")]
     weather_config: PathBuf,
 
-    /// Path to siglab's own standalone FIFA World Cup event-list config.
-    #[arg(long, default_value = "config/worldcup_events.toml")]
-    worldcup_config: PathBuf,
-
     /// JSONL trade-record output path.
     #[arg(long, default_value = "siglab_trades.jsonl")]
     log: PathBuf,
@@ -84,11 +81,6 @@ struct Args {
     /// over and any bucket-set changes).
     #[arg(long, default_value_t = 3600)]
     weather_refresh_secs: u64,
-
-    /// How often (seconds) to re-run World Cup event discovery (handles a market's bucket
-    /// set changing, e.g. a new stage-of-elimination outcome).
-    #[arg(long, default_value_t = 3600)]
-    worldcup_refresh_secs: u64,
 
     /// Fraction (0.0-1.0) of currently-tracked feeds that must be past their first
     /// silence bucket simultaneously before logging a "possible connection-level outage"
@@ -160,18 +152,14 @@ async fn main() -> Result<()> {
     // render an always-current config table without cloning the whole config on every write.
     let cfg = std::sync::Arc::new(config::load(&args.config)?);
     let weather_cfg = config::load_weather(&args.weather_config)?;
-    let worldcup_cfg = config::load_worldcup(&args.worldcup_config)?;
 
     eprintln!(
-        "[siglab] loaded {} market(s), {} variant(s) from {:?}; {} weather cities from {:?}; \
-         {} World Cup events from {:?}",
+        "[siglab] loaded {} market(s), {} variant(s) from {:?}; {} weather cities from {:?}",
         cfg.markets.len(),
         cfg.variants.len(),
         args.config,
         weather_cfg.cities.len(),
         args.weather_config,
-        worldcup_cfg.events.len(),
-        args.worldcup_config
     );
 
     if args.refresh_trade_tables_only {
@@ -198,7 +186,6 @@ async fn main() -> Result<()> {
                 &args.report_dir,
                 &cfg,
                 &weather_cfg.cities,
-                &worldcup_cfg.events,
                 since_date,
             )?
         } else {
@@ -207,7 +194,6 @@ async fn main() -> Result<()> {
                 &args.report_dir,
                 &cfg,
                 &weather_cfg.cities,
-                &worldcup_cfg.events,
                 since_date,
             )?
         };
@@ -321,16 +307,6 @@ async fn main() -> Result<()> {
         ));
     }
 
-    // ── spawn one discovery+monitoring supervisor per World Cup event ──
-    for slug in &worldcup_cfg.events {
-        tokio::spawn(worldcup::run_event_supervisor_for(
-            slug.clone(),
-            clients.clone(),
-            event_sinks.clone(),
-            args.worldcup_refresh_secs,
-        ));
-    }
-
     drop(trade_tx);
     drop(stale_tx);
 
@@ -419,7 +395,6 @@ async fn main() -> Result<()> {
     let report_task = {
         let cfg = cfg.clone();
         let weather_cities = weather_cfg.cities.clone();
-        let worldcup_events = worldcup_cfg.events.clone();
         let snapshots = snapshots.clone();
         let stale_log = stale_log.clone();
         let trade_log_path = args.log.clone();
@@ -444,7 +419,6 @@ async fn main() -> Result<()> {
                     &report_dir,
                     &cfg,
                     &weather_cities,
-                    &worldcup_events,
                     &snapshots,
                     &trade_log_path,
                     &stale_log,
@@ -463,10 +437,9 @@ async fn main() -> Result<()> {
     };
 
     eprintln!(
-        "[siglab] running {} crypto market task(s), {} weather city task(s), {} World Cup event task(s); trade log {:?}, reports every {}s in {:?}",
+        "[siglab] running {} crypto market task(s), {} weather city task(s); trade log {:?}, reports every {}s in {:?}",
         handles.len(),
         weather_cfg.cities.len(),
-        worldcup_cfg.events.len(),
         args.log,
         args.report_interval_secs,
         args.report_dir

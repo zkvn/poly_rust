@@ -11,11 +11,14 @@ use trader::types::TradeRecord;
 #[serde(rename_all = "snake_case")]
 pub enum MarketKind {
     Crypto,
-    /// Weather/World Cup bucket trades produced by `bucket_reversal.rs` — a fresh,
-    /// self-contained decision core (not `trader::machine::Machine`), never resolved
-    /// against a real outcome (see `doc/plan_weather_worldcup_trading_2026-07-13.md`) —
-    /// every trade closes via stop-loss/take-profit/30s timeout, price-and-time only.
+    /// Weather bucket trades produced by `bucket_reversal.rs` — a fresh, self-contained
+    /// decision core (not `trader::machine::Machine`), never resolved against a real
+    /// outcome (see `doc/plan_weather_worldcup_trading_2026-07-13.md`) — every trade closes
+    /// via stop-loss/take-profit/30s timeout, price-and-time only.
     Weather,
+    /// Historical only — World Cup support was removed 2026-07-24 (tournament over, see
+    /// `doc/plan_better_signal_2026-07-24.md`). Kept so old JSONL trade-log rows and
+    /// already-written report days still deserialize; no new trade is ever tagged this way.
     Worldcup,
 }
 

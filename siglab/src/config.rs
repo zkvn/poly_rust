@@ -175,6 +175,14 @@ impl VariantCfg {
             unwind_pnl_rev,
             sl_pnl_rev,
             unwind_time_rev,
+            // `maker_entry`/`order_slippage`/`pup_edge_min_rev` are consumed only by
+            // `worker.rs`'s live order routing (confirmed by grep — `Machine` never reads
+            // them), which siglab never runs — same "inert, unread field" precedent as
+            // halt_*/gamma_poll_* above. `pup_edge_min_rev: None` disables that gate
+            // entirely rather than picking a fake threshold.
+            maker_entry: false,
+            order_slippage: 0.0,
+            pup_edge_min_rev: None,
             price_low,
             price_high,
             delta_pct_hp: self.delta_pct_hp,
@@ -223,23 +231,6 @@ pub fn load_weather(path: &Path) -> Result<WeatherConfig> {
     let cfg: WeatherConfig = toml::from_str(&raw).with_context(|| format!("parse {path:?}"))?;
     if cfg.cities.is_empty() {
         bail!("{path:?}: no cities configured");
-    }
-    Ok(cfg)
-}
-
-/// FIFA World Cup event slug list — same standalone-file rationale as `WeatherConfig`.
-/// Unlike weather, these are static slugs (not date-derived) — see
-/// `config/worldcup_events.toml`'s header comment for how the list was gathered.
-#[derive(Debug, Deserialize)]
-pub struct WorldcupConfig {
-    pub events: Vec<String>,
-}
-
-pub fn load_worldcup(path: &Path) -> Result<WorldcupConfig> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))?;
-    let cfg: WorldcupConfig = toml::from_str(&raw).with_context(|| format!("parse {path:?}"))?;
-    if cfg.events.is_empty() {
-        bail!("{path:?}: no events configured");
     }
     Ok(cfg)
 }

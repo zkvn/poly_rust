@@ -1,18 +1,17 @@
 //! Shared discovery + monitoring core for any Gamma "negRisk or single-market event" —
-//! deliberately **not wired through `trader::machine::Machine`**. `weather.rs` and
-//! `worldcup.rs` are both thin wrappers around this module; the only thing that differs
-//! between them is how a slug is produced (weather: derived from today's date per city;
-//! World Cup: a fixed slug per event, no date involved) — everything about fetching an
-//! event's Yes-token buckets, batch-subscribing, demuxing ticks, and driving one
-//! `bucket_reversal::BucketReversalEngine` **and** one `v_shape::VShapeEngine` per (bucket,
-//! grid variant) is identical, so it lives here once instead of twice.
+//! deliberately **not wired through `trader::machine::Machine`**. `weather.rs` is a thin
+//! wrapper around this module (a former `worldcup.rs` sibling wrapper was removed
+//! 2026-07-24, tournament over — see `doc/plan_better_signal_2026-07-24.md` — this module's
+//! shared core is otherwise unchanged and would take a second wrapper again unmodified) —
+//! everything about fetching an event's Yes-token buckets, batch-subscribing, demuxing
+//! ticks, and driving one `bucket_reversal::BucketReversalEngine` **and** one
+//! `v_shape::VShapeEngine` per (bucket, grid variant) lives here once.
 //!
 //! **Why not `Machine`:** `Machine::cycle_close()` resolves a held position by comparing
 //! `last_binance` against `cycle_open_binance` — correct for crypto (that comparison *is*
 //! the market's real resolution rule), but wrong here: weather resolves against a station
-//! reading, World Cup markets resolve against real match/award outcomes — neither has
-//! anything to do with price momentum, and there's no equivalent reference feed anyway.
-//! Rather than fabricate one, every bucket instead runs `bucket_reversal.rs`'s and
+//! reading, with nothing to do with price momentum, and there's no equivalent reference
+//! feed anyway. Rather than fabricate one, every bucket instead runs `bucket_reversal.rs`'s and
 //! `v_shape.rs`'s self-contained engines, neither of which ever holds to real resolution at
 //! all — every position closes via observed price action or a fixed timeout (see those
 //! files' doc comments). `v_shape::VShapeEngine` additionally supports a real cycle-end
@@ -49,9 +48,8 @@ use crate::v_shape::{VShapeEngine, v_shape_grid};
 
 /// Static identity for one monitored event — bundled to keep `run_event_feed`/
 /// `run_event_supervisor` under clippy's argument-count limit. `log_key`/`snapshot_prefix`
-/// let the same code serve both callers: weather keys snapshots
-/// `"weather:{city}:{bucket}"` with `kind="weather"`; worldcup keys them
-/// `"worldcup:{slug}:{bucket}"` with `kind="worldcup"`. `market_kind` is the analogous
+/// let the same code serve any event-source caller: weather keys snapshots
+/// `"weather:{city}:{bucket}"` with `kind="weather"`. `market_kind` is the analogous
 /// `crate::record::MarketKind` tag for trade records produced by `bucket_reversal.rs`.
 #[derive(Debug, Clone)]
 pub struct EventIdentity {
@@ -309,11 +307,10 @@ async fn run_event_feed(
     }
 }
 
-/// Entry point both `weather.rs` and `worldcup.rs` spawn one of per event: (re)discovers
-/// buckets on `refresh_interval_secs` via `slug_fn` (called fresh each refresh — for weather
-/// this recomputes today's date-based slug; for worldcup it just returns the same static
-/// slug every time, so refresh only re-checks for a changed bucket set), and
-/// replaces the single batched `run_event_feed` task each time buckets change. Runs
+/// Entry point `weather.rs` spawns one of per event: (re)discovers buckets on
+/// `refresh_interval_secs` via `slug_fn` (called fresh each refresh — weather recomputes
+/// today's date-based slug each time, so refresh re-checks for a changed bucket set too),
+/// and replaces the single batched `run_event_feed` task each time buckets change. Runs
 /// forever; errors are logged, not propagated, since one event's transient failure
 /// shouldn't take down every other event's monitoring.
 pub async fn run_event_supervisor(

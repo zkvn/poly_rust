@@ -1,5 +1,5 @@
 [Unit]
-Description=Push siglab's signal report every 15 min (report writer isn't clock-aligned, so this just re-pushes whatever's newest on disk each firing)
+Description=Check every 15 min for a new siglab daily digest to push (2026-07-24: detailed hourly reports stay local-only, see push_report.sh)
 
 [Timer]
 OnCalendar=*-*-* *:00/15:00

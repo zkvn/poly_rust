@@ -1,5 +1,5 @@
 [Unit]
-Description=Push siglab's hourly signal report to git (see siglab/scripts/push_report.sh)
+Description=Push siglab's daily signal digest to git, if one changed (see siglab/scripts/push_report.sh)
 
 [Service]
 Type=oneshot

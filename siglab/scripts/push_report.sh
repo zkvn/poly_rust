@@ -1,11 +1,18 @@
 #!/bin/bash
-# Commits and pushes siglab's per-day signal report(s) to git. Run hourly by a systemd
+# Commits and pushes siglab's daily signal digest(s) to git. Run every 15 min by a systemd
 # --user timer (siglab-report-push.timer, installed by siglab/scripts/install_timer.sh) —
 # NOT by the siglab process itself, and NOT requiring any git/SSH credentials inside the
 # Docker container. The container only writes report files to a bind-mounted repo path
 # (siglab/doc/report/); this script, running on the host as the normal user, is the only
-# thing that touches git. This split is what makes the hourly push continue working
-# without any AI/session driving it — it's a plain cron-style host job.
+# thing that touches git. This split is what makes the push continue working without any
+# AI/session driving it — it's a plain cron-style host job.
+#
+# Scoped to `digest_*.md` only (2026-07-24, see doc/plan_better_signal_2026-07-24.md) — the
+# detailed hourly `summary_{date}.md`/`trades_{date}_{HH}.md` reports are still written
+# locally every 15 min (useful for local debugging) but are deliberately NOT pushed to git
+# anymore; only the once-a-day digest is. Since the digest generator hasn't landed yet
+# (Phase 2 of that plan), this currently finds nothing to push on every firing — that's
+# expected, not a bug, until `digest_{date}.md` starts being written.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -15,28 +22,29 @@ cd "$REPO_ROOT"
 # silent no-op — distinct from "matched files but nothing changed" below. Caught in
 # production: the very first two hourly timer firings both failed this way because no
 # report had been written yet (siglab writes its first report one full interval after
-# container start, so a freshly (re)started container has a report-free window).
-#
-# Matches both `{date}/summary_{date}.md` and `{date}/trades_{date}_{HH}.md` (2026-07-15
-# per-day-folder layout, replacing the flat `signal_report_*.md` files).
+# container start, so a freshly (re)started container has a report-free window). The same
+# guard now also covers the ordinary case of no digest existing yet.
 shopt -s nullglob
-report_files=(siglab/doc/report/*/*.md)
+report_files=(siglab/doc/report/*/digest_*.md)
+if [ -f siglab/doc/report/candidate_ledger.csv ]; then
+  report_files+=(siglab/doc/report/candidate_ledger.csv)
+fi
 if [ ${#report_files[@]} -eq 0 ]; then
-  echo "[push_report] no report files exist yet — nothing to push"
+  echo "[push_report] no digest files exist yet — nothing to push"
   exit 0
 fi
 
 git add "${report_files[@]}"
 
 if git diff --cached --quiet; then
-  echo "[push_report] no report changes since last run — nothing to push"
+  echo "[push_report] no digest changes since last run — nothing to push"
   exit 0
 fi
 
-git commit -m "siglab: hourly signal report update ($(date -u +%Y-%m-%dT%H:%MZ))
+git commit -m "siglab: daily signal digest update ($(date -u +%Y-%m-%dT%H:%MZ))
 
 Auto-committed by siglab/scripts/push_report.sh via siglab-report-push.timer — not a
-Claude/manual commit. See siglab/doc/report/ for the report(s) and
+Claude/manual commit. See siglab/doc/report/ for the digest(s) and
 siglab/scripts/install_timer.sh for how this is scheduled." -- "${report_files[@]}"
 
 git push

@@ -2,13 +2,15 @@
 
 Live-tests many `reversal`/`high_prob`/`v_shape` strategy parameter variants against real
 Polymarket ticks across a large, rotating set of markets — crypto (5m/15m/4h/hourly-ET, all
-durations across BTC/ETH/SOL/BNB/XRP/DOGE), weather (51 cities' daily temperature-bucket
-events), and
-FIFA World Cup markets (62 events: outright winner, award winners, player props) — without
-placing real orders and without recording raw tick data. Paper trade outcomes are logged to
-JSONL; a Markdown report — written every `--report-interval-secs` (900s/15 min in
-production, see `docker-compose.yml`) — summarizes signal activity, market state, and
-resource usage.
+durations across BTC/ETH/SOL/BNB/XRP/DOGE) and weather (51 cities' daily temperature-bucket
+events) — without placing real orders and without recording raw tick data. **FIFA World Cup
+support was removed 2026-07-24** (the tournament is over) — see
+`doc/plan_better_signal_2026-07-24.md`. Paper trade outcomes are logged to JSONL; a Markdown
+report — written every `--report-interval-secs` (900s/15 min in production, see
+`docker-compose.yml`) — summarizes signal activity, market state, and resource usage.
+**As of 2026-07-24 these detailed reports are local-only** (still written every 15 min for
+debugging, no longer pushed to git); a once-daily `digest_{date}.md` is the pushed
+artifact once that lands (see the same plan doc and "Autonomous report + push" below).
 
 **Fully standalone from `../trader` and `../price_feed`.** Own config, own Dockerfile, own
 `docker-compose.yml`, own systemd units, own `.gitignore`. It depends on `../trader` as a
@@ -23,15 +25,16 @@ core), but never reads or writes anything under `../trader/config`, `../trader/l
   the `reversal`/`high_prob` grids, plus a self-contained `v_shape::VShapeEngine` per
   `(market, variant)` pair for the 16-variant V-shape grid (pure CLOB price action, no
   Binance/gates — see `src/v_shape.rs`'s doc comment).
-- **Weather and World Cup markets**: tradeable too, but never through `Machine` —
-  `Machine::cycle_close()` resolves via Binance-price-momentum, which would fabricate
-  win/loss labels against these markets' real (station-reading / match-outcome) resolution.
-  Instead, every bucket runs its own self-contained `bucket_reversal::BucketReversalEngine`
-  (18-variant reversal grid) **and**, since 2026-07-17, its own `v_shape::VShapeEngine`
-  (the same 16-variant V-shape grid crypto uses) — both close purely via observed price
-  action (stop-loss/take-profit/timeout), never a real Yes/No outcome. See
-  `src/event_monitor.rs`'s doc comment, `doc/plan_weather_worldcup_trading_2026-07-13.md`
-  (original reversal-only design), and `doc/feature_v_2026-07-17.md` (V-shape extension).
+- **Weather markets**: tradeable too, but never through `Machine` — `Machine::cycle_close()`
+  resolves via Binance-price-momentum, which would fabricate win/loss labels against a
+  station-reading resolution. Instead, every bucket runs its own self-contained
+  `bucket_reversal::BucketReversalEngine` (18-variant reversal grid) **and**, since
+  2026-07-17, its own `v_shape::VShapeEngine` (the same 16-variant V-shape grid crypto
+  uses) — both close purely via observed price action (stop-loss/take-profit/timeout),
+  never a real Yes/No outcome. See `src/event_monitor.rs`'s doc comment,
+  `doc/plan_weather_worldcup_trading_2026-07-13.md` (original reversal-only design, also
+  covers the now-removed World Cup support), and `doc/feature_v_2026-07-17.md` (V-shape
+  extension).
 - No real orders, ever. No parquet/raw tick recording — `price_feed` already owns that.
 
 <details>
@@ -44,7 +47,6 @@ cargo build --release
 cargo run --release -- \
   --config config/markets.toml \
   --weather-config config/weather_cities.toml \
-  --worldcup-config config/worldcup_events.toml \
   --log siglab_trades.jsonl \
   --report-dir reports \
   --report-interval-secs 3600
@@ -82,10 +84,8 @@ VPN routes (same reasoning as `../trader`'s compose entry) — siglab never touc
   the ET-calendar-hour markets) + strategy `[[variant]]`s. Deliberately its own minimal
   schema, not `trader::config::StrategyToml` — see `src/config.rs`'s doc comment for why.
 - `config/weather_cities.toml` — the city list for weather monitoring.
-- `config/worldcup_events.toml` — the FIFA World Cup event slug list (static, not
-  date-rotating like weather).
 
-Editing any of these has zero effect on `../trader`'s live config, and vice versa.
+Editing this has zero effect on `../trader`'s live config, and vice versa.
 
 </details>
 
@@ -94,25 +94,33 @@ Editing any of these has zero effect on `../trader`'s live config, and vice vers
 
 ## Autonomous report + push
 
-The container writes one folder per real HKT day, `doc/report/{YYYY-MM-DD}/` (added
-2026-07-15, replacing the AM/PM-split flat files — those had already grown unwieldy again
-after the 2026-07-14 split): a `summary_{date}.md` with the strategy config table, a
-whole-day PnL rollup (recomputed fresh from the trade log on every write), and an index
-linking every hour's own file; and one `trades_{date}_{HH}.md` per real HKT hour, holding
-that hour's merged trade tables (market/strategy PnL summary plus one collapsible table per
-market, regenerated fresh on every write rather than split per report-writer run) followed
-by each run that landed within it (production writes every 15 min — `--report-interval-secs
-900`, see `docker-compose.yml`), newest run first, carrying crypto+weather+worldcup market
+**As of 2026-07-24, detailed reports are local-only; only the daily digest gets pushed to
+git.** See `doc/plan_better_signal_2026-07-24.md` for the full rationale (a 15-minute-
+cadence report with the full variant/city grid dumped every hour was too much to read daily,
+and nobody needed the git history of every 15-min tick — only the once-a-day digest and its
+statistical findings matter enough to track).
+
+The container still writes one folder per real HKT day, `doc/report/{YYYY-MM-DD}/`, exactly
+as before: a `summary_{date}.md` with the strategy config table, a whole-day PnL rollup
+(recomputed fresh from the trade log on every write), and an index linking every hour's own
+file; and one `trades_{date}_{HH}.md` per real HKT hour, holding that hour's merged trade
+tables (market/strategy PnL summary plus one collapsible table per market, regenerated fresh
+on every write) followed by each run that landed within it (production writes every 15 min —
+`--report-interval-secs 900`, see `docker-compose.yml`), newest run first, carrying market
 state, staleness health, and CPU/memory for that run's own window. Run boundaries within an
 hour's file are tracked with a plain HTML comment marker (`<!-- siglab-run -->` — see
-`src/report.rs`'s module doc comment). Pre-2026-07-15 reports stay in their old flat
-`signal_report_*.md` form (not retroactively migrated); `--regenerate-reports-only`
-(optionally scoped with `--regenerate-since YYYY-MM-DD`) backfills a date range into the new
-per-day-folder layout from the trade log's ground truth — see `src/report.rs`'s
-`regenerate_from_trade_log` doc comment.
+`src/report.rs`'s module doc comment). These files are useful for local debugging and are
+kept on disk (`.gitignore`'d for any new day going forward — see repo-root `.gitignore`);
+they are **no longer committed or pushed**. `--regenerate-reports-only` (optionally scoped
+with `--regenerate-since YYYY-MM-DD`) still backfills them from the trade log's ground truth
+— see `src/report.rs`'s `regenerate_from_trade_log` doc comment.
+
+The **pushed** artifact is a once-daily `digest_{date}.md` (plus a running
+`candidate_ledger.csv`) — not yet built (Phase 2 of `doc/plan_better_signal_2026-07-24.md`);
+until it lands there is simply nothing to push.
 
 A **separate host-side** systemd `--user` timer — not the container itself, which never
-gets git/SSH credentials — commits and pushes those files every 15 minutes:
+gets git/SSH credentials — checks every 15 minutes for a new/changed digest and pushes it:
 
 ```bash
 bash siglab/scripts/install_timer.sh   # one-time setup: installs + enables the timer
@@ -121,10 +129,11 @@ journalctl --user -u siglab-report-push.service   # check recent runs
 ```
 
 `install_timer.sh` also enables user lingering (`loginctl enable-linger`) so the timer keeps
-firing even when you're logged out. Report writing (in-container, every 15 min) and report
-pushing (host-side, every 15 min, `OnCalendar=*-*-* *:00/15:00`) are independent — the push
-script only acts if a report file actually exists and has unstaged changes; see
-`scripts/push_report.sh`.
+firing even when you're logged out. The push script (`scripts/push_report.sh`) only acts if
+`doc/report/*/digest_*.md` (or `candidate_ledger.csv`) actually exists and has unstaged
+changes — reusing this same already-debugged timer for the digest once it exists, rather
+than standing up a separate one, per that plan doc's simplification over its own earlier
+draft.
 
 **If pushes silently stop working, see "SSH agent subtleties" below before anything else** —
 that's the failure mode this has already hit once.
@@ -345,7 +354,7 @@ siglab/
   Cargo.toml / Cargo.lock   # path-depends on ../trader (source only)
   Dockerfile                # context must be repo root — see comment inside
   docker-compose.yml        # standalone, not part of ../docker-compose.yml
-  config/                   # markets.toml, weather_cities.toml, worldcup_events.toml
+  config/                   # markets.toml, weather_cities.toml
   scripts/                  # push_report.sh, install_timer.sh, regenerate_reports.py (one-off
                              #   migration of old flat reports to the nested hour/run format)
   systemd/                  # siglab-report-push.{service,timer}
@@ -353,12 +362,13 @@ siglab/
     main.rs                 # CLI + task orchestration
     config.rs                # standalone TOML schema
     market.rs / rotation.rs  # crypto market rotation + Machine + v_shape wiring
-    bucket_reversal.rs        # self-contained reversal engine for weather/World Cup buckets
+    bucket_reversal.rs        # self-contained reversal engine for weather buckets
     v_shape.rs                # self-contained V-shape engine, crypto + (since 2026-07-17)
-                               #   weather/World Cup buckets too
+                               #   weather buckets too
     event_monitor.rs          # shared discovery/monitoring core; drives bucket_reversal +
-                               #   v_shape per weather/World Cup bucket (not just monitoring)
-    weather.rs / worldcup.rs  # thin wrappers over event_monitor for each event source
+                               #   v_shape per weather bucket (not just monitoring)
+    weather.rs                # thin wrapper over event_monitor (former worldcup.rs sibling
+                               #   wrapper removed 2026-07-24, tournament over)
     staleness.rs              # observe-only staleness telemetry (per-class correlated check)
     snapshot.rs / report.rs / cgroup.rs   # shared state, per-day MD report, resource sampling
     record.rs                 # paper trade-record output type
@@ -366,8 +376,11 @@ siglab/
     local_resource_test_2026-07-13.md         # Docker resource baseline + fix history
     incident_ws_2026-07-13.md                  # full incident writeups (summarized above)
     plan_weather_worldcup_trading_2026-07-13.md  # bucket_reversal design (implemented)
-    feature_v_2026-07-17.md                      # V-shape extended to weather/World Cup
-    report/                                    # {date}/summary_{date}.md + trades_{date}_{HH}.md (git-tracked)
+    feature_v_2026-07-17.md                      # V-shape extended to weather/World Cup buckets
+    plan_better_signal_2026-07-24.md             # daily QC + digest plan; World Cup removed
+    report/                                    # {date}/summary_{date}.md + trades_{date}_{HH}.md
+                                                #   (local-only since 2026-07-24) + digest_{date}.md
+                                                #   (git-tracked, once built)
 ```
 
 </details>

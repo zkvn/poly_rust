@@ -1,6 +1,33 @@
 # Overhauling siglab: daily backtest-QC filtering + a 9am signal digest
 
-**Status: plan for review — nothing implemented yet.** Date: 2026-07-24.
+**Status: Phase 0 done, git-push behavior fixed; Phases 1-3 (the digest itself) still
+plan-only.** Date: 2026-07-24, updated same day.
+
+**Done today:**
+- Phase 0 — World Cup removed (`worldcup.rs`, its config, all wiring/report sections/README
+  mentions); `MarketKind::Worldcup` kept historical-only so old JSONL/report data still
+  deserializes. `cargo build`/`fmt`/`clippy -D warnings`/`test` all clean (64 tests), plus a
+  manual `--regenerate-reports-only` run over a synthetic old-format (worldcup-tagged) trade
+  log confirmed it still regenerates correctly.
+- **Interim reports stop pushing to git, immediately** — not deferred to Phase 3 as originally
+  scoped below. `scripts/push_report.sh`'s glob narrowed from `doc/report/*/*.md` to
+  `doc/report/*/digest_*.md` (+ `candidate_ledger.csv` once it exists); verified live via
+  `systemctl --user start siglab-report-push.service` — correctly logs "no digest files exist
+  yet — nothing to push" instead of committing the hourly files. `summary_{date}.md`/
+  `trades_{date}_{HH}.md` are still written locally every 15 min (useful for debugging) but no
+  longer touch git; repo-root `.gitignore` covers new dated folders going forward. This reuses
+  the *existing*, already-SSH-agent-debugged `siglab-report-push.timer` rather than standing up
+  a new one — simpler than §4.8's original draft below, which proposed a second timer just for
+  pushing.
+- Repo-root `README.md` TODO gained two entries: the live Docker container still needs a
+  rebuild/redeploy to pick up the Phase 0 binary change (not restarted automatically — same
+  "don't restart a live process without explicit go-ahead" precedent as `gamma_recorder`), and
+  the digest generator itself (Phases 1-3 below) is still unbuilt.
+
+**Not done yet**: the actual QC pipeline (§4.2-4.6) and the digest generator that produces
+`digest_{date}.md` — that's still real, unstarted work. §4.7 below now also specs a
+markets-monitored table + brief 24h stats, added per explicit request when this plan was
+approved.
 
 ## 0. Summary
 
@@ -229,7 +256,7 @@ data, not meant for git, same reasoning the named volume originally had.
 ### 4.7 The 9am digest itself
 
 New file per day: `siglab/doc/report/{date}/digest_{date}.md`. Bottom-up, exactly as
-asked, three sections:
+asked, four sections:
 
 1. **Bottom line** — 2-4 plain-English sentences: how many combos are at
    PROMOTE-CANDIDATE today (and their streak length), any that flipped to REJECT,
@@ -241,7 +268,18 @@ asked, three sections:
    rows even at full grid size (18+16 variants × 6 assets × 51 cities is thousands
    of combos, but almost all of them will be REJECT/insufficient-sample on any given
    day — that's the filtering doing its job).
-3. **Supporting detail**, collapsed `<details>` sections (mirrors `report.rs`'s
+3. **Markets monitored** — added per explicit request when this plan was approved,
+   2026-07-24: one small table, one row per market actually rotating that day (every
+   crypto `(asset, duration)` pair from `config/markets.toml`/`hourly_market`, every
+   active weather city-bucket), with brief trailing-24h stats per row — trade count,
+   win rate, total PnL, last-tick age (staleness). This is descriptive coverage/health,
+   not a verdict (that's section 2's job) — it answers "is everything actually still
+   running and ticking," which the verdict tables alone don't show for a market that's
+   gone quiet with zero trades. Sits between the recommendations and the collapsed
+   detail — short enough to stay visible (under 60 rows: ~18 crypto markets + weather
+   cities that had bucket activity, not the full static 51-city list), long enough that
+   it earns its own `<details>` if it grows past a screenful.
+4. **Supporting detail**, collapsed `<details>` sections (mirrors `report.rs`'s
    existing collapsible convention) — full per-group DSR/PBO numbers, RF
    permutation-importance ranking (which of `reversal_low_threshold`/`reversal`, or
    `high2`/`sl_pnl`/`unwind_pnl` for v_shape, actually drives PnL), sample-size and
@@ -249,25 +287,34 @@ asked, three sections:
 
 The existing `summary_{date}.md`/`trades_{date}_{HH}.md` files keep being written
 exactly as today — they're the raw activity/audit trail the digest is computed
-*from*, not replaced by it. The digest is a new, additional artifact; nothing about
-the 15-minute in-container report-writing cadence changes in this phase.
+*from*, not replaced by it, and (as of 2026-07-24, done — see the status block up top)
+they're local-only now, not pushed. The digest is a new, additional artifact; nothing
+about the 15-minute in-container report-writing cadence changes in this phase.
 
 ### 4.8 Scheduling
 
-New systemd `--user` timer, `siglab-daily-digest.timer`:
+Two separate concerns, not one:
 
-```ini
-[Timer]
-OnCalendar=*-*-* 08:45:00
-Persistent=true
-```
+- **Generating** the digest needs a new systemd `--user` timer,
+  `siglab-daily-digest.timer`:
 
-08:45 HKT gives a 15-minute buffer before 9am for the run (PBO's `C(S, S/2)` split
-enumeration is the slow part; trivial at `S=8`, worth re-timing once raised to `S=16`).
-Mirror `install_timer.sh`'s existing `SSH_AUTH_SOCK`-injection fix (same "systemd
-`--user` services don't inherit your shell's SSH agent" gotcha documented in siglab's
-own README applies identically here) and `push_report.sh`'s commit pattern (nullglob
-guard, single commit covering `digest_{date}.md` + the updated `candidate_ledger.csv`).
+  ```ini
+  [Timer]
+  OnCalendar=*-*-* 08:45:00
+  Persistent=true
+  ```
+
+  08:45 HKT gives a 15-minute buffer before 9am for the run (PBO's `C(S, S/2)` split
+  enumeration is the slow part; trivial at `S=8`, worth re-timing once raised to
+  `S=16`). This still needs building — not done today.
+
+- **Pushing** the digest once it exists needs no new timer — **already done today**
+  (see the status block up top): `push_report.sh`'s glob was narrowed to
+  `digest_*.md`/`candidate_ledger.csv` and verified live via a manual
+  `systemctl --user start siglab-report-push.service` run. The existing
+  `siglab-report-push.timer` (every 15 min, already carrying `install_timer.sh`'s
+  `SSH_AUTH_SOCK`-injection fix) picks up a new digest within 15 minutes of it being
+  written — no second SSH-agent gotcha to debug again.
 
 ## 5. What this plan is not proposing
 
@@ -291,17 +338,23 @@ guard, single commit covering `digest_{date}.md` + the updated `candidate_ledger
 
 ## 6. Phased implementation
 
-- **Phase 0** (this doc, next): remove World Cup — `worldcup.rs`, config, wiring,
-  report sections, README, `MarketKind::Worldcup` kept historical-only.
-- **Phase 1**: `analysis/siglab_backtest_stats.py` — ported toolkit + unit tests
-  against a small synthetic JSONL fixture (mirrors `backtest_stats_poc.py`'s own
-  sanity-check-against-known-ground-truth approach).
-- **Phase 2**: `analysis/siglab_daily_digest.py` — reads the trade log, builds
-  per-`(market, strategy)` panels, computes verdicts, appends `candidate_ledger.csv`,
-  writes `digest_{date}.md`.
-- **Phase 3**: `docker-compose.yml` bind-mount fix, `siglab-daily-digest.timer` +
-  install-script update, first real unattended 9am run, spot-check the output by
-  hand before trusting it unattended.
+- **Phase 0 — done, 2026-07-24.** World Cup removed (`worldcup.rs`, config, wiring,
+  report sections, README), `MarketKind::Worldcup` kept historical-only, all checks
+  clean. Live container not yet redeployed (see repo-root README TODO).
+- **Phase 0.5 — done, 2026-07-24** (pulled forward from Phase 3, see status block up
+  top): interim reports stopped pushing to git; `push_report.sh` + `.gitignore`
+  updated; verified live.
+- **Phase 1** (not started): `analysis/siglab_backtest_stats.py` — ported toolkit +
+  unit tests against a small synthetic JSONL fixture (mirrors `backtest_stats_poc.py`'s
+  own sanity-check-against-known-ground-truth approach).
+- **Phase 2** (not started): `analysis/siglab_daily_digest.py` — reads the trade log,
+  builds per-`(market, strategy)` panels, computes verdicts, appends
+  `candidate_ledger.csv`, writes `digest_{date}.md` (bottom line, recommendations,
+  markets-monitored table, collapsed detail — §4.7).
+- **Phase 3** (not started): `docker-compose.yml` bind-mount fix for the trade-log
+  volume, `siglab-daily-digest.timer` (generation only — pushing is already wired,
+  §4.8) + install-script update, first real unattended 9am run, spot-check the output
+  by hand before trusting it unattended.
 - **Phase 4** (later, once ≥20 days of history exist): raise CSCV `S` from 8→16;
   revisit whether the hourly report's cadence/detail should shrink now that the
   digest exists.

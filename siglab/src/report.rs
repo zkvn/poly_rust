@@ -458,7 +458,8 @@ fn render_hour_trades_section(trades: &[SiglabTradeRecord]) -> String {
 /// `": "` in their label (e.g. `"hong-kong: 33°C"` groups under `"hong-kong"`), showing one
 /// row per group with its current highest-probability outcome — the most informative single
 /// number per group without dumping every bucket of every group into the report every run.
-/// Shared by the weather and World Cup sections, which are otherwise identical in shape.
+/// Currently only called for `kind="weather"` — a second event class (formerly World Cup,
+/// removed 2026-07-24) would reuse this unchanged.
 fn render_grouped_snapshot_section(
     snaps: &[crate::snapshot::MarketSnapshot],
     kind: &str,
@@ -545,10 +546,9 @@ fn render_run_section(
 
     let mut out = String::new();
     let summary = format!(
-        "{run_label} HKT — {} crypto market(s), {} weather bucket(s), {} World Cup bucket(s), {new_trade_count} new trade(s), {} stale event(s)",
+        "{run_label} HKT — {} crypto market(s), {} weather bucket(s), {new_trade_count} new trade(s), {} stale event(s)",
         snaps.iter().filter(|s| s.kind == "crypto").count(),
         snaps.iter().filter(|s| s.kind == "weather").count(),
-        snaps.iter().filter(|s| s.kind == "worldcup").count(),
         stale_events.len(),
     );
     out.push_str(&format!("<details>\n<summary>{summary}</summary>\n\n"));
@@ -575,17 +575,6 @@ fn render_run_section(
         "weather",
         "Weather market state snapshot",
         "city",
-        now_ms,
-    ));
-
-    // ── World Cup market state — same grouping pattern, one row per event showing its
-    //    current highest-probability outcome (e.g. "World Cup Winner" -> whichever team is
-    //    currently favored). ──
-    out.push_str(&render_grouped_snapshot_section(
-        &snaps,
-        "worldcup",
-        "World Cup market state snapshot",
-        "event",
         now_ms,
     ));
 
@@ -641,11 +630,7 @@ fn fmt_opt(x: Option<f64>) -> String {
 /// markets/durations table — `config/markets.toml`'s `[[market]]`/`[[hourly_market]]` list
 /// changes rarely and is already documented in `siglab/README.md`; this section is about the
 /// *strategy* parameters that actually explain trade behavior.
-fn render_config_section(
-    cfg: &SiglabConfig,
-    weather_cities: &[String],
-    worldcup_events: &[String],
-) -> String {
+fn render_config_section(cfg: &SiglabConfig, weather_cities: &[String]) -> String {
     let mut out = format!("{CONFIG_MARKER_START}### Strategy config\n\n");
 
     out.push_str("<details>\n<summary>Crypto reversal variants</summary>\n\n");
@@ -679,7 +664,7 @@ fn render_config_section(
     }
     out.push_str("\n</details>\n\n");
 
-    out.push_str("<details>\n<summary>V-shape variants (crypto + weather/World Cup)</summary>\n\n");
+    out.push_str("<details>\n<summary>V-shape variants (crypto + weather)</summary>\n\n");
     out.push_str(
         "| variant | high1 | low | high2 | sl_pnl | unwind_pnl | unwind_time (s) | \
          trade_size ($) |\n\
@@ -708,32 +693,24 @@ fn render_config_section(
     }
     out.push_str("\n</details>\n\n");
 
-    out.push_str(&format!(
-        "<details>\n<summary>World Cup events ({})</summary>\n\n| event |\n|---|\n",
-        worldcup_events.len()
-    ));
-    for event in worldcup_events {
-        out.push_str(&format!("| {event} |\n"));
-    }
-    out.push_str("\n</details>\n\n");
-
     out.push_str(
-        "Weather/World Cup buckets trade the same `reversal_{low}_{high}` 18-combo grid via \
+        "Weather buckets trade the same `reversal_{low}_{high}` 18-combo grid via \
          `bucket_reversal.rs::reversal_grid()` (fixed `sl_pnl=0.3`/`unwind_pnl=0.15`/\
          `max_hold=25s`), not `config/markets.toml` — see that module's doc comment. Crypto \
          reversal variants additionally force-close (labeled `UNWIND`) within 10s of the \
-         market's own cycle-end regardless of holding time — weather/World Cup buckets have \
-         no cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s \
-         doc comment). All markets — crypto *and*, since 2026-07-17, weather/World Cup \
-         buckets too — additionally run the 16-variant V-shape grid above via \
-         `v_shape.rs::VShapeEngine` — a self-contained engine like `bucket_reversal.rs` (no \
-         `gates.rs`, no delta_pct/Binance-direction requirement). On crypto it tracks real \
-         cycle boundaries and reuses the same force-unwind-within-10s-of-cycle-end rule the \
-         reversal grid gets from `trader::machine::Machine`; on weather/World Cup buckets it \
-         is simply never given a cycle, which permanently disables that branch, leaving \
-         stop-loss/take-profit/timeout as its only exits — the same exit model \
-         `bucket_reversal.rs` uses (see `v_shape.rs`'s doc comment and \
-         `doc/feature_v_2026-07-17.md`).\n\n",
+         market's own cycle-end regardless of holding time — weather buckets have no \
+         cycle-end concept, so that rule doesn't apply to them (see `bucket_reversal.rs`'s \
+         doc comment). All markets — crypto *and*, since 2026-07-17, weather buckets too — \
+         additionally run the 16-variant V-shape grid above via `v_shape.rs::VShapeEngine` — \
+         a self-contained engine like `bucket_reversal.rs` (no `gates.rs`, no delta_pct/\
+         Binance-direction requirement). On crypto it tracks real cycle boundaries and \
+         reuses the same force-unwind-within-10s-of-cycle-end rule the reversal grid gets \
+         from `trader::machine::Machine`; on weather buckets it is simply never given a \
+         cycle, which permanently disables that branch, leaving stop-loss/take-profit/\
+         timeout as its only exits — the same exit model `bucket_reversal.rs` uses (see \
+         `v_shape.rs`'s doc comment and `doc/feature_v_2026-07-17.md`). World Cup support \
+         (and its own reversal/V-shape trades on those buckets) was removed 2026-07-24 — see \
+         `doc/plan_better_signal_2026-07-24.md`.\n\n",
     );
 
     out.push_str(CONFIG_MARKER_END);
@@ -770,11 +747,12 @@ fn summary_header(date: &str) -> String {
          staleness/CPU snapshots) live below. See\n\
          `siglab/doc/local_resource_test_2026-07-13.md` for the Docker resource baseline and\n\
          `siglab/doc/plan_weather_worldcup_trading_2026-07-13.md` for what this harness does\n\
-         and does not claim. Weather and World Cup markets trade via self-contained\n\
-         `bucket_reversal.rs` reversal (18 variants/bucket) and `v_shape.rs` V-shape\n\
-         (16 variants/bucket) engines, no delta/Gamma/resolve (see those files' doc\n\
-         comments and `doc/feature_v_2026-07-17.md`) — separate from crypto's\n\
-         `trader::machine::Machine` (reversal grid).\n\n"
+         and does not claim. Weather markets trade via self-contained `bucket_reversal.rs`\n\
+         reversal (18 variants/bucket) and `v_shape.rs` V-shape (16 variants/bucket) engines,\n\
+         no delta/Gamma/resolve (see those files' doc comments and\n\
+         `doc/feature_v_2026-07-17.md`) — separate from crypto's `trader::machine::Machine`\n\
+         (reversal grid). World Cup support was removed 2026-07-24 (tournament over) — see\n\
+         `doc/plan_better_signal_2026-07-24.md`.\n\n"
     )
 }
 
@@ -805,11 +783,10 @@ fn render_summary_body(
     dir: &Path,
     cfg: &SiglabConfig,
     weather_cities: &[String],
-    worldcup_events: &[String],
     day_trades: &[SiglabTradeRecord],
 ) -> String {
     let mut s = summary_header(date);
-    s.push_str(&render_config_section(cfg, weather_cities, worldcup_events));
+    s.push_str(&render_config_section(cfg, weather_cities));
     s.push_str(&render_top_strategies_section(day_trades));
     s.push_str("## Day summary\n\n");
     s.push_str(&collapsible_day_summary(&render_trade_summary(day_trades)));
@@ -898,7 +875,6 @@ pub fn regenerate_from_trade_log(
     report_dir: &Path,
     cfg: &SiglabConfig,
     weather_cities: &[String],
-    worldcup_events: &[String],
     since_date: Option<NaiveDate>,
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(report_dir).context("create report dir")?;
@@ -961,14 +937,7 @@ pub fn regenerate_from_trade_log(
         }
 
         let s_path = summary_path(report_dir, date);
-        let s_body = render_summary_body(
-            date,
-            &dir,
-            cfg,
-            weather_cities,
-            worldcup_events,
-            &day_trades,
-        );
+        let s_body = render_summary_body(date, &dir, cfg, weather_cities, &day_trades);
         std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
         written.push(s_path);
     }
@@ -989,7 +958,6 @@ pub fn regenerate_summaries_from_trade_log(
     report_dir: &Path,
     cfg: &SiglabConfig,
     weather_cities: &[String],
-    worldcup_events: &[String],
     since_date: Option<NaiveDate>,
 ) -> Result<Vec<PathBuf>> {
     let all_trades = recent_trades(trade_log_path, 0.0);
@@ -1016,7 +984,7 @@ pub fn regenerate_summaries_from_trade_log(
     for (date, trades) in day_trades.iter().rev() {
         let dir = day_dir(report_dir, date);
         let s_path = summary_path(report_dir, date);
-        let s_body = render_summary_body(date, &dir, cfg, weather_cities, worldcup_events, trades);
+        let s_body = render_summary_body(date, &dir, cfg, weather_cities, trades);
         std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
         written.push(s_path);
     }
@@ -1122,7 +1090,6 @@ pub fn write_hourly_report(
     report_dir: &Path,
     cfg: &SiglabConfig,
     weather_cities: &[String],
-    worldcup_events: &[String],
     snapshots: &SharedSnapshots,
     trade_log_path: &Path,
     stale_log: &SharedStaleLog,
@@ -1190,14 +1157,7 @@ pub fn write_hourly_report(
         .with_nanosecond(0)
         .unwrap();
     let day_trades = recent_trades(trade_log_path, start_of_day.timestamp() as f64);
-    let s_body = render_summary_body(
-        &date,
-        &dir,
-        cfg,
-        weather_cities,
-        worldcup_events,
-        &day_trades,
-    );
+    let s_body = render_summary_body(&date, &dir, cfg, weather_cities, &day_trades);
     std::fs::write(&s_path, s_body).with_context(|| format!("write {s_path:?}"))?;
 
     Ok((s_path, t_path))
@@ -1476,7 +1436,7 @@ mod tests {
             hourly_markets: vec![],
             variants: vec![],
         };
-        let body = render_summary_body("2026-07-16", dir.path(), &cfg, &[], &[], &trades);
+        let body = render_summary_body("2026-07-16", dir.path(), &cfg, &[], &trades);
 
         assert!(body.contains("### Top performing strategies"));
         assert!(body.contains("**Top 5 by total pnl**"));
@@ -1551,16 +1511,14 @@ mod tests {
     }
 
     #[test]
-    fn config_section_lists_variant_grid_and_weather_worldcup() {
+    fn config_section_lists_variant_grid_and_weather() {
         let weather = vec!["hong-kong".to_string()];
-        let worldcup = vec!["world-cup-winner".to_string()];
-        let section = render_config_section(&sample_cfg(), &weather, &worldcup);
+        let section = render_config_section(&sample_cfg(), &weather);
         assert!(section.starts_with(CONFIG_MARKER_START));
         assert!(section.trim_end().ends_with(CONFIG_MARKER_END.trim_end()));
         assert!(section.contains("reversal_0.2_0.55"));
         assert!(section.contains("0.55"));
         assert!(section.contains("hong-kong"));
-        assert!(section.contains("world-cup-winner"));
         assert!(
             !section.contains("duration"),
             "the markets/durations table was dropped 2026-07-14, must not reappear"
@@ -1586,7 +1544,6 @@ mod tests {
             report_dir,
             &cfg,
             &[],
-            &[],
             &snapshots,
             &trade_log,
             &stale_log,
@@ -1598,7 +1555,6 @@ mod tests {
         write_hourly_report(
             report_dir,
             &cfg,
-            &[],
             &[],
             &snapshots,
             &trade_log,
@@ -1639,7 +1595,6 @@ mod tests {
             report_dir,
             &cfg,
             &[],
-            &[],
             &snapshots,
             &trade_log,
             &stale_log,
@@ -1654,7 +1609,6 @@ mod tests {
         let (_, trades_path2) = write_hourly_report(
             report_dir,
             &cfg,
-            &[],
             &[],
             &snapshots,
             &trade_log,
@@ -1702,7 +1656,6 @@ mod tests {
             report_dir,
             &cfg,
             &[],
-            &[],
             &snapshots,
             &trade_log,
             &stale_log,
@@ -1729,7 +1682,6 @@ mod tests {
         let (_, trades_path2) = write_hourly_report(
             report_dir,
             &cfg,
-            &[],
             &[],
             &snapshots,
             &trade_log,
@@ -1789,7 +1741,6 @@ mod tests {
         let (_, trades_path) = write_hourly_report(
             report_dir,
             &cfg,
-            &[],
             &[],
             &snapshots,
             &trade_log,
@@ -1873,8 +1824,7 @@ mod tests {
         };
 
         // No filter: both days produced.
-        let written =
-            regenerate_from_trade_log(&trade_log, report_dir, &cfg, &[], &[], None).unwrap();
+        let written = regenerate_from_trade_log(&trade_log, report_dir, &cfg, &[], None).unwrap();
         assert!(day_dir(report_dir, &day1).is_dir());
         assert!(day_dir(report_dir, &day2).is_dir());
         assert!(written.contains(&summary_path(report_dir, &day1)));
@@ -1889,8 +1839,7 @@ mod tests {
         std::fs::remove_dir_all(report_dir).unwrap();
         let day2_date = NaiveDate::parse_from_str(&day2, "%Y-%m-%d").unwrap();
         let written2 =
-            regenerate_from_trade_log(&trade_log, report_dir, &cfg, &[], &[], Some(day2_date))
-                .unwrap();
+            regenerate_from_trade_log(&trade_log, report_dir, &cfg, &[], Some(day2_date)).unwrap();
         assert!(!day_dir(report_dir, &day1).exists());
         assert!(day_dir(report_dir, &day2).is_dir());
         assert!(!written2.contains(&summary_path(report_dir, &day1)));
@@ -1940,8 +1889,7 @@ mod tests {
         std::fs::write(&t_path, "REAL SNAPSHOT DATA, NOT REGENERATED\n").unwrap();
 
         let written =
-            regenerate_summaries_from_trade_log(&trade_log, report_dir, &cfg, &[], &[], None)
-                .unwrap();
+            regenerate_summaries_from_trade_log(&trade_log, report_dir, &cfg, &[], None).unwrap();
         assert_eq!(written, vec![summary_path(report_dir, &date)]);
 
         let summary = std::fs::read_to_string(summary_path(report_dir, &date)).unwrap();
