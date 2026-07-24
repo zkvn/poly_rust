@@ -1,0 +1,9 @@
+[Unit]
+Description=Generate siglab's daily signal digest at 08:45 HKT, 15 min before the 9am read time (system TZ is already Asia/Hong_Kong, same as siglab-report-push.timer's convention — no explicit TZ suffix needed)
+
+[Timer]
+OnCalendar=*-*-* 08:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

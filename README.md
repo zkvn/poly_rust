@@ -301,17 +301,6 @@ on the remote before the nightly sync runs.
 
 ## TODO
 
-- **siglab's live Docker container hasn't been rebuilt/redeployed after the 2026-07-24 World
-  Cup removal.** `docker-compose.yml`'s `--worldcup-config` flag was dropped and the binary no
-  longer accepts it, but the running `siglab-siglab-1` container (up since before this change)
-  is still the old binary — deliberately not restarted automatically, same "don't restart a
-  live unattended process without explicit go-ahead" precedent as `gamma_recorder`'s entry
-  above. Run `docker compose -f siglab/docker-compose.yml up --build -d` from repo root
-  whenever a restart is convenient.
-- **siglab's daily PBO/DSR digest generator isn't built yet — plan only, 2026-07-24.** Phase 0
-  (World Cup removal) and the git-push-daily-only infra change are done; Phases 1-3 (the
-  ported statistics toolkit, `analysis/siglab_daily_digest.py`, the markets-monitored table,
-  and the 9am scheduling) are not started. See `siglab/doc/plan_better_signal_2026-07-24.md`.
 - **`poly-collector` `RECONCILE-STALE` restarts on traded assets (SOL, BTC) not investigated —
   noted 2026-07-23.** The HYPE-removal fix (`price_feed/doc/incident_collector_restart_2026-07-23.md`)
   only addressed HYPE's 5-of-8 majority share of restarts in the checked window; the other 3 (2
@@ -1212,6 +1201,20 @@ market resolutions and seeding/recording them into the local SQLite db
 until manually restarted with `run_local.sh`.
 
 ## Trading engine — known incidents
+
+### siglab overhauled: World Cup removed, daily PBO/binomial-test signal digest added (2026-07-24, done)
+
+World Cup support removed entirely (tournament over). Added a daily statistical
+pass over siglab's own live paper-trading log — an exact binomial win-rate test
+(BH-FDR corrected globally) as the primary per-variant signal, with PBO/Deflated
+Sharpe demoted to group-level, warm-up-gated, informational diagnostics after a
+DeepSeek review flagged the original per-variant PBO/DSR design as applying more
+statistical precision than 11-24 days of history actually supports. Interim
+15-min reports stopped pushing to git (local-only now); only the new
+`digest_{date}.md` + `candidate_ledger.csv` are pushed, via a daily 08:45 HKT
+timer. Along the way, found and fixed a real bug: the Docker container ran as
+root, so bind-mounted report/log files came out unwritable by the host user.
+Full writeup: `siglab/doc/plan_better_signal_2026-07-24.md`.
 
 ### `poly-collector` restarts mostly caused by an untraded asset — HYPE dropped (2026-07-23, fixed, deploy pending)
 

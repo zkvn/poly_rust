@@ -8,3 +8,8 @@ target/
 # applies to new days going forward — already-tracked historical files are untouched.
 siglab/doc/report/*/summary_*.md
 siglab/doc/report/*/trades_*.md
+
+# siglab's live trade-log JSONL, bind-mounted to the host (2026-07-24, replacing a Docker
+# named volume) so analysis/siglab_daily_digest.py can read it directly — operational data,
+# not meant for git.
+siglab/logs/

@@ -11,13 +11,22 @@ services:
       dockerfile: siglab/Dockerfile
     network_mode: host # CLOB/Gamma/Binance access via the host's existing VPN routes —
     # same reason as ../trader's network_mode: host; siglab never touches VPN config itself.
+    user: "1000:1000" # matches the host `kev` user (2026-07-24) — without this, the
+    # container defaults to root, so every file it creates under the bind-mounted
+    # ./doc/report and ./logs comes out root-owned and unwritable/unreadable by the host
+    # user or analysis/siglab_daily_digest.py. Found when the digest script first tried to
+    # write into an existing root-owned day folder and got a plain PermissionError.
     volumes:
       - ./config:/app/config:ro
-      - siglab_logs:/app/logs
-      # Reports are bind-mounted straight into the git working tree (not a named volume
-      # like siglab_logs above) — the host-side push_report.sh script (run by a systemd
-      # --user timer, see siglab/scripts/) needs them to land at a real repo path it can
-      # `git add`. Trade logs stay in a named volume: operational data, not meant for git.
+      # Bind-mounted straight to a host path (2026-07-24, replacing the old siglab_logs
+      # named volume) so analysis/siglab_daily_digest.py can read siglab_trades.jsonl
+      # directly off disk, no `docker exec`/`docker cp` needed — see
+      # doc/plan_better_signal_2026-07-24.md §4.6. `.gitignore`'d (operational data, not
+      # meant for git, same reasoning the named volume originally had).
+      - ./logs:/app/logs
+      # Reports are bind-mounted straight into the git working tree too — the host-side
+      # push_report.sh script (run by a systemd --user timer, see siglab/scripts/) needs
+      # them to land at a real repo path it can `git add`.
       - ./doc/report:/app/reports
     command: [
         "--config",
@@ -34,6 +43,3 @@ services:
     restart: unless-stopped
     # Resource accounting for the local Oracle-sizing test (plan_weather_bot.md §7/§11) —
     # no hard limits imposed here, `docker stats` reads actual usage regardless.
-
-volumes:
-  siglab_logs:

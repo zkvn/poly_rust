@@ -1,0 +1,10 @@
+[Unit]
+Description=Generate siglab's daily signal digest (see analysis/siglab_daily_digest.py)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/apps/poly_rust
+ExecStart=/usr/bin/python3 %h/apps/poly_rust/analysis/siglab_daily_digest.py --log %h/apps/poly_rust/siglab/logs/siglab_trades.jsonl --config %h/apps/poly_rust/siglab/config/markets.toml --report-dir %h/apps/poly_rust/siglab/doc/report
+# No SSH_AUTH_SOCK needed here (unlike siglab-report-push.service) — this only reads the
+# trade log and writes local files, no git operations. siglab-report-push.timer (already
+# running every 15 min) picks up and pushes the resulting digest_*.md separately.

@@ -1,33 +1,100 @@
 # Overhauling siglab: daily backtest-QC filtering + a 9am signal digest
 
-**Status: Phase 0 done, git-push behavior fixed; Phases 1-3 (the digest itself) still
-plan-only.** Date: 2026-07-24, updated same day.
+**Status: fully live as of 2026-07-24** — Phase 0, the git-push behavior change, and Phases
+1-3 (the actual digest pipeline) are all done and running unattended. Date: 2026-07-24,
+updated same day.
 
 **Done today:**
-- Phase 0 — World Cup removed (`worldcup.rs`, its config, all wiring/report sections/README
-  mentions); `MarketKind::Worldcup` kept historical-only so old JSONL/report data still
-  deserializes. `cargo build`/`fmt`/`clippy -D warnings`/`test` all clean (64 tests), plus a
-  manual `--regenerate-reports-only` run over a synthetic old-format (worldcup-tagged) trade
-  log confirmed it still regenerates correctly.
-- **Interim reports stop pushing to git, immediately** — not deferred to Phase 3 as originally
-  scoped below. `scripts/push_report.sh`'s glob narrowed from `doc/report/*/*.md` to
-  `doc/report/*/digest_*.md` (+ `candidate_ledger.csv` once it exists); verified live via
-  `systemctl --user start siglab-report-push.service` — correctly logs "no digest files exist
-  yet — nothing to push" instead of committing the hourly files. `summary_{date}.md`/
-  `trades_{date}_{HH}.md` are still written locally every 15 min (useful for debugging) but no
-  longer touch git; repo-root `.gitignore` covers new dated folders going forward. This reuses
-  the *existing*, already-SSH-agent-debugged `siglab-report-push.timer` rather than standing up
-  a new one — simpler than §4.8's original draft below, which proposed a second timer just for
-  pushing.
-- Repo-root `README.md` TODO gained two entries: the live Docker container still needs a
-  rebuild/redeploy to pick up the Phase 0 binary change (not restarted automatically — same
-  "don't restart a live process without explicit go-ahead" precedent as `gamma_recorder`), and
-  the digest generator itself (Phases 1-3 below) is still unbuilt.
+- **Phase 0** — World Cup removed (`worldcup.rs`, its config, all wiring/report
+  sections/README mentions); `MarketKind::Worldcup` kept historical-only so old JSONL/report
+  data still deserializes. `cargo build`/`fmt`/`clippy -D warnings`/`test` all clean (64
+  tests). Live Docker container rebuilt and redeployed (`docker compose up --build -d`);
+  confirmed no World Cup references, no errors, 24 crypto + 51 weather tasks running.
+- **Interim reports stop pushing to git** — `scripts/push_report.sh`'s glob narrowed to
+  `doc/report/*/digest_*.md` + `candidate_ledger.csv`, reusing the existing
+  `siglab-report-push.timer` rather than a new one (simpler than §4.8's original draft).
+  `summary_{date}.md`/`trades_{date}_{HH}.md` still write locally every 15 min but no longer
+  touch git.
+- **Phase 1** — `analysis/siglab_backtest_stats.py` (ported/adapted toolkit) +
+  `analysis/tests/test_siglab_backtest_stats.py` (21 tests, including a known-ground-truth
+  PBO sanity check). **Revised from the original design below after a DeepSeek plan
+  review** — see "Revision after DeepSeek review" right after this status block for what
+  changed and why; §4 below is left as the original first-draft text for history, not
+  updated to match.
+- **Phase 2** — `analysis/siglab_daily_digest.py` (the digest generator) +
+  `analysis/tests/test_siglab_daily_digest.py` (31 tests). Run against the real 88k-row
+  trade log; output hand-inspected (25KB, well-formed, internally consistent numbers, sized
+  down from an initial 494KB draft that dumped every one of ~4,000 combos — fixed by scoping
+  detail tables to only combos/groups that have cleared a real sample-size or warm-up bar).
+- **Phase 3** — `docker-compose.yml`'s trade-log volume switched from a Docker-managed named
+  volume to a host bind-mount (`./logs:/app/logs`), plus `user: "1000:1000"` (found and fixed
+  a real bug along the way: the container ran as root, so bind-mounted report/log files came
+  out unwritable by the host user or this script — fixed via a one-time `docker exec chown`
+  plus the compose change so it doesn't recur). New `siglab-daily-digest.{service,timer}`
+  (08:45 HKT) installed and enabled via `install_timer.sh`; verified end-to-end via
+  `systemctl --user start` for both the generation and push timers, and confirmed the digest
+  + ledger actually landed in git via the real push cycle.
+- **Phase 4** (raising CSCV history requirements, revisiting hourly-report cadence) — still
+  future work, unchanged from the original plan below.
+- **Code review**: DeepSeek's *plan* review (before implementation, see below) worked and
+  drove the design changes documented in this section. Its *code* review (after
+  implementation, requested separately) did not return usable output — five attempts (the
+  combined ~1,060-line source, a retry at a larger token budget, two smaller per-file
+  splits, and a flash-model fallback) all returned empty responses, not a review with
+  nothing to flag. Treating "the API call technically succeeded with empty content" as
+  equivalent to "reviewed, no findings" would be dishonest — it wasn't reviewed by DeepSeek.
+  What actually caught a real bug instead: a self-review pass while waiting on the failed
+  calls found that `compute_group_diagnostics`'s `status="ok"` branch (≥8 weeks of history)
+  had never been exercised against real data (siglab is only ~2 weeks old) or by any unit
+  test, and `pandas.Series.idxmax()` raises on an all-NaN input — exactly what happens when
+  every variant in a group has zero-variance weekly PnL. Fixed (guarded + graceful
+  degradation) and covered by 3 new tests (`ComputeGroupDiagnosticsTests`) before this was
+  shipped, but this was found by re-reading the code carefully, not by an external review
+  that actually ran.
 
-**Not done yet**: the actual QC pipeline (§4.2-4.6) and the digest generator that produces
-`digest_{date}.md` — that's still real, unstarted work. §4.7 below now also specs a
-markets-monitored table + brief 24h stats, added per explicit request when this plan was
-approved.
+## Revision after DeepSeek review (2026-07-24)
+
+Before implementing, the plan below was sent to DeepSeek for a critical review. It correctly
+flagged that the original per-combo PBO/DSR-gated verdict rubric (§4.5 below) was applying
+heavy statistical machinery to 11-24 days of history in a way that would dress noise as
+rigor — several specific, valid problems: PBO is a property of a *selection process* across
+a whole grid, not a per-variant threshold; a Deflated Sharpe Ratio estimated from ~20 daily
+PnL observations is nearly pure noise; `S=8` *daily* CSCV blocks are far too noisy to trust;
+a "3-consecutive-day streak" computed from an *expanding* sample is serially correlated, not
+independent confirmation; hundreds of simultaneously-evaluated combos need a *global*
+multiple-testing correction, not per-group DSR deflation alone; random-forest importance
+over 16-18 correlated combos is unreliable; and the null-hypothesis assignment needed to
+correctly exclude TIMEOUT-outcome trades (no clean null applies to them).
+
+What actually got built, as a result — **this supersedes §4.2-4.8 below, which is left
+unedited as the original first draft**:
+
+- **Primary per-combo signal**: an exact binomial test (trade-level win/loss, `pnl > 0`)
+  against a blended barrier/market-implied null, computed on the **cumulative** trade
+  history through the target date (not one day's trades), Benjamini-Hochberg corrected
+  **globally** across every combo evaluated in one run — not DSR, not per-combo PBO.
+- **PBO/DSR** are computed once per `(market, strategy)` **group** (one 16-or-18-variant
+  grid), using **weekly** (not daily) PnL blocks, gated behind 8 weeks of history — purely
+  informational, never a per-variant gate. With siglab at ~2 weeks of history as of this
+  writing, every group correctly shows "insufficient history" today.
+- **`rf_param_importance` was dropped entirely**, not built.
+- **Verdict bar raised**: ≥50 tested (non-TIMEOUT) trades, not ≥20; BH-corrected q<0.05, not
+  raw DSR p<0.05.
+- **Streak** is still tracked (consecutive days a combo has held PROMOTE-CANDIDATE) but its
+  docstring/digest text now says plainly what it is — a stability/recency indicator on an
+  expanding sample, not independent daily evidence; the real bar is the trade-count +
+  BH-q on the *current* cumulative sample.
+- **TIMEOUT-outcome trades are excluded** from every binomial test (no clean null applies to
+  them) and reported separately as a caveat.
+- A prominent **idealized-PnL caveat** (no spread/fee/slippage modeled) was added to every
+  digest, applying to every number in it.
+- **Not addressed** (DeepSeek's point, left as an open, documented limitation): trades within
+  the same day are correlated (shared market moves), so binomial-test p-values are somewhat
+  optimistic — noted in `binomial_test_win_rate`'s docstring, not corrected for.
+
+See `analysis/siglab_backtest_stats.py` and `analysis/siglab_daily_digest.py`'s own module
+docstrings for the full reasoning — they're the actual source of truth on current behavior,
+this doc's §4 is historical context for how the design evolved.
 
 ## 0. Summary
 
@@ -338,29 +405,23 @@ Two separate concerns, not one:
 
 ## 6. Phased implementation
 
-- **Phase 0 — done, 2026-07-24.** World Cup removed (`worldcup.rs`, config, wiring,
-  report sections, README), `MarketKind::Worldcup` kept historical-only, all checks
-  clean. Live container not yet redeployed (see repo-root README TODO).
-- **Phase 0.5 — done, 2026-07-24** (pulled forward from Phase 3, see status block up
-  top): interim reports stopped pushing to git; `push_report.sh` + `.gitignore`
-  updated; verified live.
-- **Phase 1** (not started): `analysis/siglab_backtest_stats.py` — ported toolkit +
-  unit tests against a small synthetic JSONL fixture (mirrors `backtest_stats_poc.py`'s
-  own sanity-check-against-known-ground-truth approach).
-- **Phase 2** (not started): `analysis/siglab_daily_digest.py` — reads the trade log,
-  builds per-`(market, strategy)` panels, computes verdicts, appends
-  `candidate_ledger.csv`, writes `digest_{date}.md` (bottom line, recommendations,
-  markets-monitored table, collapsed detail — §4.7).
-- **Phase 3** (not started): `docker-compose.yml` bind-mount fix for the trade-log
-  volume, `siglab-daily-digest.timer` (generation only — pushing is already wired,
-  §4.8) + install-script update, first real unattended 9am run, spot-check the output
-  by hand before trusting it unattended.
-- **Phase 4** (later, once ≥20 days of history exist): raise CSCV `S` from 8→16;
-  revisit whether the hourly report's cadence/detail should shrink now that the
-  digest exists.
-
-Phases 1-4 are not started and won't begin without confirmation — this doc is the
-review artifact, same convention `best_practice_backtest_2026-07-21.md` used.
+- **Phase 0 — done, 2026-07-24.** World Cup removed, live container rebuilt and
+  redeployed, confirmed healthy.
+- **Phase 0.5 — done, 2026-07-24.** Interim reports stopped pushing to git.
+- **Phase 1 — done, 2026-07-24** (design revised — see "Revision after DeepSeek
+  review" above): `analysis/siglab_backtest_stats.py` + 21 unit tests.
+- **Phase 2 — done, 2026-07-24** (design revised): `analysis/siglab_daily_digest.py`
+  + 31 unit tests. Verified against the real 88k-row trade log, output hand-inspected.
+- **Phase 3 — done, 2026-07-24.** `docker-compose.yml` bind-mount + `user: "1000:1000"`
+  fix (a real permissions bug found and fixed along the way), both timers installed and
+  enabled, verified end-to-end via manual `systemctl --user start` runs of both the
+  generation and push services — the digest and ledger are confirmed to actually land in
+  git through the real automated path, not just when run by hand.
+- **Phase 4** (later, once ≥8 weeks of history exist for group-level PBO/DSR, or ≥20 days
+  for reconsidering other thresholds): revisit whether the hourly report's cadence/detail
+  should shrink now that the digest exists; consider whether the same-day trade
+  correlation caveat (binomial test p-values are somewhat optimistic) needs an actual fix
+  rather than just a documented limitation.
 
 ## Sources
 
