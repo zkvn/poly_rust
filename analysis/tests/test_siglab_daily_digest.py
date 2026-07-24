@@ -83,6 +83,23 @@ class ReadTradesTests(unittest.TestCase):
         finally:
             path.unlink()
 
+    def test_skips_valid_json_missing_a_required_field(self):
+        # Found in a DeepSeek code review: valid JSON missing entry_ts would otherwise
+        # reach build_dataframe and crash on .apply(hkt_day) with a NaN input, taking down
+        # the whole run.
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            good = _trade()
+            missing_entry_ts = _trade()
+            del missing_entry_ts["entry_ts"]
+            f.write(json.dumps(good) + "\n")
+            f.write(json.dumps(missing_entry_ts) + "\n")
+            path = Path(f.name)
+        try:
+            trades = read_trades(path)
+            self.assertEqual(len(trades), 1)
+        finally:
+            path.unlink()
+
 
 class HkTDayTests(unittest.TestCase):
     def test_hkt_offset_applied_correctly(self):
@@ -94,6 +111,17 @@ class HkTDayTests(unittest.TestCase):
 class BuildDataframeTests(unittest.TestCase):
     def test_drops_rows_with_empty_market(self):
         trades = [_trade(), _trade(market="")]
+        df = build_dataframe(trades)
+        self.assertEqual(len(df), 1)
+
+    def test_drops_rows_with_market_key_entirely_absent(self):
+        # Found in a DeepSeek code review: a dict missing the `market` key entirely (as
+        # opposed to present-but-empty) becomes NaN in the DataFrame, and depending on
+        # pandas' dtype backend, `.astype(bool)` alone can evaluate NaN as truthy on a
+        # string column — `.fillna("")` first is what actually makes this filter correct.
+        missing_market = _trade()
+        del missing_market["market"]
+        trades = [_trade(), missing_market]
         df = build_dataframe(trades)
         self.assertEqual(len(df), 1)
 

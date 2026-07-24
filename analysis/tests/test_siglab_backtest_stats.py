@@ -84,6 +84,22 @@ class BinomialTestWinRateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             binomial_test_win_rate(1, 10, 1.0)
 
+    def test_rejects_wins_out_of_range(self):
+        # Found in a DeepSeek code review: scipy.stats.binomtest raises an opaque error
+        # on a bad `wins` count — fail loudly here instead with a clear message.
+        with self.assertRaises(ValueError):
+            binomial_test_win_rate(-1, 10, 0.5)
+        with self.assertRaises(ValueError):
+            binomial_test_win_rate(11, 10, 0.5)
+
+    def test_accepts_whole_number_float_wins(self):
+        result = binomial_test_win_rate(5.0, 10, 0.5)
+        self.assertAlmostEqual(result["realized_win_rate"], 0.5)
+
+    def test_rejects_fractional_wins(self):
+        with self.assertRaises(ValueError):
+            binomial_test_win_rate(5.5, 10, 0.5)
+
 
 class BenjaminiHochbergTests(unittest.TestCase):
     def test_empty_input(self):
@@ -112,6 +128,20 @@ class BenjaminiHochbergTests(unittest.TestCase):
         order = np.argsort(pvals)
         q_sorted = result["q_values"][order]
         self.assertTrue(np.all(np.diff(q_sorted) >= -1e-12))
+
+    def test_rejects_nan_pvalue(self):
+        # Found in a DeepSeek code review: np.minimum.accumulate is NaN-sensitive, so
+        # without this guard a single NaN would have silently poisoned every q-value to
+        # NaN instead of raising — verdicts would have all quietly fallen out of
+        # PROMOTE-CANDIDATE/REJECT with no error anywhere.
+        with self.assertRaises(ValueError):
+            benjamini_hochberg([0.01, float("nan"), 0.5])
+
+    def test_rejects_out_of_range_pvalue(self):
+        with self.assertRaises(ValueError):
+            benjamini_hochberg([0.01, 1.5])
+        with self.assertRaises(ValueError):
+            benjamini_hochberg([-0.1, 0.5])
 
 
 class DailyPnlPanelTests(unittest.TestCase):

@@ -36,21 +36,61 @@ updated same day.
   + ledger actually landed in git via the real push cycle.
 - **Phase 4** (raising CSCV history requirements, revisiting hourly-report cadence) — still
   future work, unchanged from the original plan below.
-- **Code review**: DeepSeek's *plan* review (before implementation, see below) worked and
-  drove the design changes documented in this section. Its *code* review (after
-  implementation, requested separately) did not return usable output — five attempts (the
-  combined ~1,060-line source, a retry at a larger token budget, two smaller per-file
-  splits, and a flash-model fallback) all returned empty responses, not a review with
-  nothing to flag. Treating "the API call technically succeeded with empty content" as
-  equivalent to "reviewed, no findings" would be dishonest — it wasn't reviewed by DeepSeek.
-  What actually caught a real bug instead: a self-review pass while waiting on the failed
-  calls found that `compute_group_diagnostics`'s `status="ok"` branch (≥8 weeks of history)
-  had never been exercised against real data (siglab is only ~2 weeks old) or by any unit
-  test, and `pandas.Series.idxmax()` raises on an all-NaN input — exactly what happens when
-  every variant in a group has zero-variance weekly PnL. Fixed (guarded + graceful
-  degradation) and covered by 3 new tests (`ComputeGroupDiagnosticsTests`) before this was
-  shipped, but this was found by re-reading the code carefully, not by an external review
-  that actually ran.
+- **Code review, round 1** (same session, right after the above): five attempts at a
+  DeepSeek code review — the combined ~1,060-line source, a retry at a larger token
+  budget, two smaller per-file splits, and a flash-model fallback — all returned empty
+  responses. A self-review while waiting found and fixed a real bug instead:
+  `compute_group_diagnostics`'s `status="ok"` branch (≥8 weeks of history, never
+  exercised against real data since siglab is only ~2 weeks old) crashes via
+  `pandas.Series.idxmax()` on an all-NaN input whenever every variant in a group has
+  zero-variance weekly PnL — guarded, with 3 new regression tests.
+- **Code review, round 2** (requested again next turn): splitting into much smaller
+  chunks (6 pieces, ~70-300 lines each, one function-group at a time instead of one
+  file at a time) worked for 5 of 6 — real, substantive findings came back. Applied:
+  - **Real bugs, fixed**: `build_dataframe`'s market-filter used `.astype(bool)`
+    without `.fillna("")` first — a row missing the `market` key entirely (not just
+    empty-string) could evaluate truthy on this pandas version and slip through
+    instead of being dropped. `read_trades` accepted any valid JSON without checking
+    required fields exist — a line missing `entry_ts` would reach
+    `build_dataframe.apply(hkt_day)` and crash the whole run; now validated and
+    skipped (counted separately from unparseable lines). The digest markdown write
+    wasn't atomic (the ledger CSV always was) — now temp-file-and-rename like the
+    ledger.
+  - **Real robustness gaps, hardened**: `benjamini_hochberg` now raises loudly on
+    NaN/out-of-range input instead of silently poisoning every q-value to NaN (found:
+    `np.minimum.accumulate` is NaN-sensitive). `binomial_test_win_rate` validates
+    `wins` is an integer in `[0, n]` before handing it to `scipy`. The ledger upsert
+    now reindexes to the current `LEDGER_COLUMNS` on read, protecting against schema
+    drift silently bloating the file if a future version ever adds/renames columns.
+    Documented (not built): the ledger read-modify-write assumes a single writer —
+    fine for one `Type=oneshot` timer, would need real locking otherwise.
+  - **Verified correct, not changed** (reviewer flagged, investigation showed no bug):
+    BH q-values are genuinely mapped back to original input order, not sorted order
+    (confirmed with a targeted test) — the reviewer's concern about "ordering
+    dependence" doesn't apply. `deflated_sharpe_ratio`'s `trial_sharpe_var` being the
+    *cross-sectional* variance of Sharpes across the trial pool is the DSR paper's
+    actual definition (Bailey & López de Prado 2014's `V`), not a bug — a suggested
+    "fix" here would have broken a faithfully-ported, ground-truth-tested
+    implementation. `compute_streaks` iterating calendar days (not "trading days") is
+    correct for this domain — crypto/weather markets never close and the digest runs
+    every calendar day with no skips, so there's no trading-day-gap concept to
+    misinterpret. The out-of-bounds-blended-null guard in `compute_combo_stats` is a
+    deliberate safety net (verified `null_win_rate_barrier`/`_market_implied` never
+    actually produce a boundary value in practice), not a latent bug dropping valid
+    combos.
+  - **Documented as a known limitation, not fixed**: pooling barrier- and
+    resolution-type trades into one binomial test with a blended null technically
+    assumes a single Bernoulli(p) when it's really a mixture of two — mildly
+    anti-conservative p-values for a genuinely mixed combo. Low real-world impact
+    today since resolution (WIN/LOSS) trades are a vanishing fraction of eligible
+    trades across siglab's actual data (crypto `reversal` rarely reaches real
+    cycle-end resolution before TIMEOUT/UNWIND/STOPLOSS fires) — noted in
+    `blended_null_and_eligible_trades`'s docstring rather than built out into a
+    stratified test for a case that barely occurs.
+  - One chunk (the core `read_trades`→`assign_verdict` logic, ~300 lines) failed
+    three times even after splitting in half once — the two halves (150ish lines
+    each) then succeeded. Lesson banked in memory: this DeepSeek skill needs much
+    smaller chunks for code review than for a design/plan review of similar length.
 
 ## Revision after DeepSeek review (2026-07-24)
 

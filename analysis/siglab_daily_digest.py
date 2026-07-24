@@ -76,23 +76,45 @@ GROUP_DIAGNOSTIC_N_SPLITS = 8  # C(8,4)=70 splits over weekly (not daily) blocks
 # ---------------------------------------------------------------------------
 
 
+REQUIRED_TRADE_FIELDS = ("entry_ts", "market", "strategy", "variant_id", "outcome", "pnl")
+
+
 def read_trades(log_path: Path) -> list[dict]:
     """Reads the JSONL trade log, tolerating malformed lines — the log is actively
     appended to by a live process, so the very last line can be a partial write (caught
-    mid-flush). A bad line is skipped, not fatal; see the module docstring."""
+    mid-flush). A bad line is skipped, not fatal; see the module docstring.
+
+    Also skips (and counts separately) a line that parses as valid JSON but is missing a
+    field every downstream function assumes exists (`entry_ts` in particular — without it,
+    `build_dataframe`'s `.apply(hkt_day)` raises `TypeError` on the resulting NaN and takes
+    down the whole run) — found in review. `record.rs`'s `SiglabTradeRecord` guarantees
+    these fields on any record the live siglab process actually writes; this guards against
+    a genuinely different/corrupted source instead of trusting that guarantee blindly.
+    """
     trades = []
-    skipped = 0
+    skipped_unparseable = 0
+    skipped_missing_fields = 0
     with open(log_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                trades.append(json.loads(line))
+                trade = json.loads(line)
             except json.JSONDecodeError:
-                skipped += 1
-    if skipped:
-        print(f"[digest] skipped {skipped} malformed/incomplete JSONL line(s)", file=sys.stderr)
+                skipped_unparseable += 1
+                continue
+            if not all(field in trade and trade[field] is not None for field in REQUIRED_TRADE_FIELDS):
+                skipped_missing_fields += 1
+                continue
+            trades.append(trade)
+    if skipped_unparseable:
+        print(f"[digest] skipped {skipped_unparseable} malformed/incomplete JSONL line(s)", file=sys.stderr)
+    if skipped_missing_fields:
+        print(
+            f"[digest] skipped {skipped_missing_fields} JSONL line(s) missing a required field",
+            file=sys.stderr,
+        )
     return trades
 
 
@@ -127,7 +149,12 @@ def build_dataframe(trades: list[dict]) -> pd.DataFrame:
             ]
         )
     df = pd.DataFrame(trades)
-    df = df[df["market"].astype(bool)].copy()
+    # `.fillna("")` before `.astype(bool)` — found in review: without it, a row that's
+    # missing the `market` key entirely (as opposed to present-but-empty) becomes NaN,
+    # and depending on pandas' dtype backend NaN can evaluate truthy under `.astype(bool)`
+    # on a string column, silently letting an ungroupable row through instead of being
+    # filtered like an empty-string `market` is.
+    df = df[df["market"].fillna("").astype(bool)].copy()
     df["day"] = df["entry_ts"].apply(hkt_day)
     df["week"] = df["entry_ts"].apply(hkt_iso_week)
     return df
@@ -182,11 +209,25 @@ def blended_null_and_eligible_trades(
 ) -> tuple[pd.DataFrame, float | None]:
     """Splits a combo's trades into the ones an outcome-appropriate null hypothesis
     actually applies to (STOPLOSS/UNWIND -> barrier null, WIN/LOSS -> market-implied null),
-    excludes TIMEOUT (no clean null — see `siglab_backtest_stats`'s module docstring),
-    and returns `(eligible_trades, blended_null_win_rate)`. When a combo has both barrier-
-    and resolution-type trades, the blended null is their counts-weighted average — the
-    same "blend by trade-type mix" approach `../btc_5mins`'s source module recommends for
-    a mixed sweep combo.
+    excludes TIMEOUT **and any other outcome not in `BARRIER_OUTCOMES`/`RESOLUTION_OUTCOMES`**
+    (no clean null applies — see `siglab_backtest_stats`'s module docstring), and returns
+    `(eligible_trades, blended_null_win_rate)`. When a combo has both barrier- and
+    resolution-type trades, the blended null is their counts-weighted average — the same
+    "blend by trade-type mix" approach `../btc_5mins`'s source module recommends for a
+    mixed sweep combo.
+
+    **Known, documented limitation (found in review, not fixed)**: the downstream binomial
+    test in `compute_combo_stats` treats every eligible trade as drawn from one Bernoulli(p)
+    with `p` = this blended rate — but a genuinely mixed combo (barrier trades at one true
+    null, resolution trades at another) is actually a *mixture* of two different Bernoulli
+    distributions, which has higher variance than a single Bernoulli(blended) the binomial
+    test assumes. That makes the p-value mildly anti-conservative for mixed combos. In
+    practice this barely matters for siglab's current grids — resolution (WIN/LOSS) trades
+    are a vanishing fraction of eligible trades overall (crypto `reversal`'s
+    `Machine::cycle_close` rarely completes before TIMEOUT/UNWIND/STOPLOSS fires first —
+    see `record.rs`), so `blended` is close to `barrier_null` for nearly every real combo
+    today. Would need a stratified test (e.g. separate tests per trade-type + Fisher's
+    method to combine) if that stops being true.
     """
     barrier_trades = combo_trades[combo_trades["outcome"].isin(BARRIER_OUTCOMES)]
     resolution_trades = combo_trades[combo_trades["outcome"].isin(RESOLUTION_OUTCOMES)]
@@ -208,9 +249,13 @@ def blended_null_and_eligible_trades(
         [barrier_trades if barrier_null is not None else barrier_trades.iloc[0:0],
          resolution_trades if resolution_null is not None else resolution_trades.iloc[0:0]]
     )
-    blended = (
-        (barrier_null or 0.0) * n_barrier + (resolution_null or 0.0) * n_resolution
-    ) / total
+    # `if x is not None else 0.0`, not `x or 0.0` — found in review: `or` would silently
+    # (mis)treat a legitimate `0.0` null rate the same as "missing", which happens not to
+    # occur today (both null functions return a value strictly inside (0, 1) or None,
+    # never exactly 0.0) but is worth being explicit about rather than relying on that.
+    barrier_contribution = barrier_null if barrier_null is not None else 0.0
+    resolution_contribution = resolution_null if resolution_null is not None else 0.0
+    blended = (barrier_contribution * n_barrier + resolution_contribution * n_resolution) / total
     return eligible, blended
 
 
@@ -249,6 +294,13 @@ def compute_combo_stats(
         p_value = None
         realized_wr = None
         edge = None
+        # The `0.0 < null_wr < 1.0` bound is a deliberate safety net, not just a formality
+        # — `binomial_test_win_rate` itself raises on a boundary null_p, so this guard is
+        # what turns "an extreme blended null" into a quiet INSUFFICIENT-SAMPLE for that
+        # one combo instead of a crash that takes down the whole run. Neither
+        # `null_win_rate_barrier` nor `null_win_rate_market_implied` returns exactly 0/1
+        # for any real siglab data seen so far, so this branch is defense-in-depth, not a
+        # currently-active code path.
         if n_eligible > 0 and null_wr is not None and 0.0 < null_wr < 1.0:
             realized_wr = wins / n_eligible
             edge = realized_wr - null_wr
@@ -322,13 +374,25 @@ def merge_ledger_rows(ledger_path: Path, date: str, combo_df: pd.DataFrame) -> p
     date are replaced, not duplicated. Does **not** write to disk — see `write_ledger`,
     called separately (and deliberately last, after the digest markdown — see `main`) so a
     push racing the two file writes grabs a self-consistent "digest without today's very
-    latest ledger row" rather than the other way around."""
+    latest ledger row" rather than the other way around.
+
+    Single-writer assumed: this is a read-modify-write over the whole ledger file, not
+    safe against two processes racing on *different* dates concurrently (e.g. a manual
+    backfill run overlapping the daily timer). Fine for this script's actual usage — one
+    systemd `Type=oneshot` timer, no concurrent triggers by design — but would need real
+    locking if that ever changes.
+    """
     new_rows = combo_df.copy()
     new_rows.insert(0, "date", date)
     new_rows = new_rows[LEDGER_COLUMNS]
 
     if ledger_path.exists():
         existing = pd.read_csv(ledger_path, dtype={"date": str})
+        # Reindexed to exactly today's LEDGER_COLUMNS before concatenating — protects
+        # against schema drift silently bloating the file forever if a past version of
+        # this script ever wrote extra/renamed columns (found in review; not something
+        # that's happened yet, just cheap insurance).
+        existing = existing.reindex(columns=LEDGER_COLUMNS)
         existing = existing[existing["date"] != date]
         merged = pd.concat([existing, new_rows], ignore_index=True)
     else:
@@ -366,6 +430,13 @@ def compute_streaks(ledger_df: pd.DataFrame, as_of_date: str) -> dict[tuple, int
     flipped back as more data arrived." The real statistical bar is `MIN_TRADES_FOR_VERDICT`
     + BH-corrected significance on the *current* cumulative sample, not streak length —
     the streak is a stability/recency indicator layered on top, not independent evidence.
+
+    Walks backwards one **calendar** day at a time, not "trading days" — reviewed
+    deliberately, not an oversight: siglab trades crypto and weather, both continuous
+    (no market close), and `siglab-daily-digest.timer` fires every calendar day with no
+    weekend/holiday skip, so there is no non-trading-day gap concept for this streak to
+    misinterpret. Would need revisiting if siglab ever adds a market with real trading-day
+    gaps.
     """
     if ledger_df.empty:
         return {}
@@ -527,7 +598,13 @@ def render_digest_md(
         )
     else:
         top = promote.sort_values("q_value").iloc[0]
-        streak = streaks.get((top["market"], top["strategy"], top["variant_id"]), 1)
+        # Default 0 (not 1) for consistency with the recommendations table's lookup below
+        # — in practice always overridden by a real >=1 entry here regardless, since `top`
+        # is by construction a PROMOTE-CANDIDATE combo whose today's-date ledger row
+        # `compute_streaks` already reads (see that function's docstring); the default is
+        # dead code for this specific row, kept only so both lookups agree if that ever
+        # changes.
+        streak = streaks.get((top["market"], top["strategy"], top["variant_id"]), 0)
         lines.append(
             f"**{len(promote)} combo(s) at PROMOTE-CANDIDATE** after {history_days} day(s) of "
             f"history. Top: `{top['variant_id']}` on `{top['market']}` ({top['strategy']}) — "
@@ -703,8 +780,12 @@ def main() -> None:
     day_dir.mkdir(parents=True, exist_ok=True)
     digest_path = day_dir / f"digest_{target_date}.md"
     # Digest written before the ledger, deliberately — see merge_ledger_rows's docstring:
-    # this makes the rarer of the two possible push-race outcomes the harmless one.
-    digest_path.write_text(digest_md, encoding="utf-8")
+    # this makes the rarer of the two possible push-race outcomes the harmless one. Written
+    # atomically (temp file + rename), matching write_ledger's own pattern — a crash or kill
+    # mid-write must never leave a truncated digest_*.md for push_report.sh to pick up.
+    tmp_digest_path = digest_path.with_suffix(".md.tmp")
+    tmp_digest_path.write_text(digest_md, encoding="utf-8")
+    tmp_digest_path.replace(digest_path)
     write_ledger(ledger_path, ledger_df)
 
     print(f"[digest] wrote {digest_path}", file=sys.stderr)

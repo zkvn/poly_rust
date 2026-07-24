@@ -103,11 +103,17 @@ def binomial_test_win_rate(wins: int, n: int, null_p: float) -> dict:
     size is somewhat smaller than raw ``n`` — treat the p-value as optimistic, not exact.
 
     Returns ``{"p_value", "realized_win_rate", "null_win_rate", "edge", "n"}``. Raises
-    ValueError if ``n <= 0`` or ``null_p`` isn't in (0, 1) — callers should check
-    applicability (e.g. via the null-rate functions above returning ``None``) before calling.
+    ValueError if ``n <= 0``, ``wins`` isn't an integer count in ``[0, n]``, or ``null_p``
+    isn't in (0, 1) — callers should check applicability (e.g. via the null-rate functions
+    above returning ``None``) before calling. The explicit `wins` check (found in review)
+    exists so a caller passing a bad count fails loudly here rather than getting an opaque
+    error out of ``scipy.stats.binomtest``.
     """
     if n <= 0:
         raise ValueError("n must be positive")
+    if wins != int(wins) or not 0 <= wins <= n:
+        raise ValueError(f"wins must be an integer count in [0, {n}], got {wins!r}")
+    wins = int(wins)
     if not 0.0 < null_p < 1.0:
         raise ValueError("null_p must be in (0, 1)")
     result = stats.binomtest(wins, n, null_p, alternative="two-sided")
@@ -133,11 +139,20 @@ def benjamini_hochberg(pvalues: list[float], alpha: float = 0.05) -> dict:
 
     Returns ``{"q_values": array aligned to input order, "reject": bool array aligned to
     input order}``. Empty input returns empty arrays, not an error.
+
+    Raises ``ValueError`` on any NaN or out-of-[0,1] input — found in review:
+    ``np.minimum.accumulate`` is NaN-sensitive, so a single NaN p-value would otherwise
+    silently poison every combo's q-value to NaN (all falling out of the
+    PROMOTE-CANDIDATE/REJECT verdict tiers into INSUFFICIENT-SAMPLE with no error raised
+    anywhere). Callers (``siglab_daily_digest.py``'s ``apply_bh_correction``) are expected
+    to filter untestable combos out *before* calling this, not rely on it to cope with NaN.
     """
     p = np.asarray(pvalues, dtype=float)
     m = p.size
     if m == 0:
         return {"q_values": np.array([]), "reject": np.array([], dtype=bool)}
+    if np.isnan(p).any() or np.any((p < 0.0) | (p > 1.0)):
+        raise ValueError("benjamini_hochberg: all p-values must be finite and in [0, 1]")
 
     order = np.argsort(p)
     ranked = p[order]
