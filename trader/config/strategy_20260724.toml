@@ -1,0 +1,280 @@
+# meta
+ts = "2026-07-24T00:00:00+08:00"
+source = "Re-pick of delta_pct_rev/reversal/reversal_low_threshold/unwind_pnl_rev/sl_pnl_rev/unwind_time_rev for ETH, BNB, XRP, DOGE only, sourced from ../btc_5mins/studies/reversal_binance's synthetic HAR-Student-t/Binance-only backtest (no real CLOB data in that backtest) — specifically the 5 assets whose best-PnL combo cleared the Deflated Sharpe Ratio's 95% significance bar after deflating for the 2,592-combo trial count (BTC did NOT clear it, p=0.9148, and is explicitly excluded from this repick; SOL is also excluded here even though it cleared DSR, since SOL does not currently trade reversal live — see [strategies] below, unchanged). Per-asset picked values: ETH (delta=0.0003, reversal=0.5, low=0.3, unwind_pnl=0.15, sl_pnl=0.3, unwind_time=15s), BNB (delta=0.0003, reversal=0.5, low=0.4, unwind_pnl=0.10, sl_pnl=0.5, unwind_time=15s), XRP (delta=0.0003, reversal=0.5, low=0.4, unwind_pnl=0.20, sl_pnl=0.4, unwind_time=15s), DOGE (delta=0.0005, reversal=0.5, low=0.4, unwind_pnl=0.10, sl_pnl=0.4, unwind_time=15s). BTC and SOL are carried over verbatim from strategy_20260721_taker.toml, untouched. IMPORTANT CAVEAT carried over from the source study (studies/reversal_binance/summary.md \"Analysis summary\"): the synthetic backtest that produced these values traded against a market literally defined by the same HAR+Student-t probability model as the entry signal, not real CLOB microstructure — the study's own QC toolkit found the apparent edge is substantially mechanical (market-implied null exceeds realized win rate on cycle-end-resolved trades; the winning `reversal` threshold saturates at the grid's minimum on every asset) rather than confirmed evidence of a genuine CLOB-independent timing edge. Deployed anyway per explicit user request as a live paper-trade test, not a validated live-adoption decision. This also flips sl_pnl_rev from disabled (0.0, `unwind_time_rev` was the sole stop under plan 1.2 Scenario A) to a real non-zero stop for these 4 assets specifically -- both unwind_time_rev (now 15s, down from 26-30s) and sl_pnl_rev now act as independent, simultaneously-active exit conditions for ETH/BNB/XRP/DOGE, exactly as swept jointly in the source study's grid. Every other setting (order_slippage, maker_entry=false/taker entry, trade_size_usdc=5.0, sl_reversal=0.1 floor, pup_edge_min_rev=0.0, indicator_enabled, paper_trade=true, market_durations 5m-only, halt/gamma-poll settings, v_shape/high_prob inert blocks, har_beta/har_nu) carried over unchanged from strategy_20260721_taker.toml. Fleet-wide paper balance reset to a fresh $50 start alongside this deploy (all 6 assets' persisted paper_state_*.json archived on Oracle immediately before restart, not just the 4 touched here) -- see live_logs/archive_20260724_fresh50/ on Oracle."
+
+# Trade assets: all 6 — reversal only, see [strategies].
+assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+trade_assets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+
+# Max buy price
+max_buy_price = 0.95
+
+# FAK order slippage — covers normal 1-tick bid-ask spread without sweeping wide asks.
+order_slippage = 0.05
+
+# Retries
+stop_loss_max_retries = 5
+order_max_retries = 5
+cycle_open_close_rest_max_retries = 3
+cycle_start_price_retry_interval_s = 2
+cycle_start_price_retry_deadline_s = 150
+
+# Timing settings
+no_enter_when_time_left = 10
+min_cycle_remaining_at_load = 60
+
+# Sanity check
+spread_premium_limit = 1.05
+spread_discount_limit = 0.95
+max_price_age_secs = 2.0
+
+# HAR P(up)/SNR mode
+har_pup_enabled = false
+
+# Recording — set false when poly_rust covers the same feed
+record_book = false
+record_clob = false
+
+# Indicator module (trader/doc/feature_vol_2026-07-18.md) — on for this run:
+# poly-indicator.service has live snapshots for pup_edge_min_rev below to gate
+# on. Freshness threshold is now PUP_GATE_MAX_AGE_SECS=2.0s (worker.rs), fail
+# CLOSED on stale/missing data (trader/doc/plan_stale_data_gate_2026-07-20.md
+# §1) — no separate display-only setting exists anymore.
+indicator_enabled = true
+
+# Paper-trade mode — real-money trading stays paused for this window too.
+paper_trade = true
+
+# Maker entries (plan_unwind_5u_maker_2026-07-19 §2.2) — OFF for this run.
+# Reversal entries now submit an aggressive marketable taker buy instead
+# (plan_aggressive_taker_entry_2026-07-21.md §2.1): best_ask + order_slippage
+# above, capped at max_buy_price. The maker code path itself is unchanged and
+# still reachable (flip this back to true for a future maker-vs-taker
+# comparison run) — just off by default here.
+maker_entry = false
+
+# Trade size — taker entries are USDC-denominated (shares = size_usdc /
+# fill_price); $5.00 clears MIN_GTC_SHARES=5 even at the worst-case entry
+# price (price_high_rev=0.9 cap + aggressive premium up to max_buy_price=0.95)
+# so the take-profit exit can always rest as a GTC sell (plan §2.2). Was 1.0
+# under maker_entry, where sizing was fixed at 5 shares directly instead.
+[trade_size_usdc]
+default = 5.0
+
+# Every asset is 5m only for this run (unchanged scope).
+[market_durations]
+default = ["5m"]
+
+# Reversal only — high_prob removed for this run.
+[strategies]
+default = ["reversal"]
+
+# --- Halt --- (unchanged from prior config, not part of this re-pick)
+[halt_rev]
+default = 1
+
+[halt_prob]
+default = 1
+
+# Halt counter reset hour (HKT)
+[halt_reset_hour_rev]
+default = 2
+
+[halt_reset_hour_hp]
+default = 8
+
+# --- Reversal strategy — ETH/BNB/XRP/DOGE re-picked 2026-07-24 from
+# ../btc_5mins/studies/reversal_binance's synthetic-feed DSR-passing combos
+# (see meta.source for the full caveat). BTC and SOL untouched from
+# strategy_20260721_taker.toml (BTC failed DSR; SOL doesn't trade reversal
+# live). reversal_start_time, halt_rev, halt_reset_hour_rev, price_high_rev
+# held unchanged (not part of this re-pick).
+[delta_pct_rev]
+default = 0.0008
+BTC  = 0.0005
+ETH  = 0.0003
+SOL  = 0.0005
+BNB  = 0.0003
+XRP  = 0.0003
+DOGE = 0.0005
+
+[reversal]
+default = 0.55
+BTC  = 0.55
+ETH  = 0.50
+SOL  = 0.70
+BNB  = 0.50
+XRP  = 0.50
+DOGE = 0.50
+
+[reversal_low_threshold]
+default = 0.20
+BTC  = 0.20
+ETH  = 0.30
+SOL  = 0.20
+BNB  = 0.40
+XRP  = 0.40
+DOGE = 0.40
+
+# Absolute stop-loss floor, all reversal assets (2026-07-21, user request):
+# a held position closes if its own side's price drops below 0.10, regardless
+# of entry price/pnl -- independent of, and in addition to, unwind_time_rev
+# and (for ETH/BNB/XRP/DOGE as of 2026-07-24) sl_pnl_rev below. Unchanged by
+# this repick.
+[sl_reversal]
+default = 0.1
+
+[unwind_pnl_rev]
+default = 0.15
+BTC  = 0.15
+ETH  = 0.15
+SOL  = 0.15
+BNB  = 0.10
+XRP  = 0.20
+DOGE = 0.10
+
+# sl_pnl_rev: was 0.0 (disabled) for every asset under plan 1.2 Scenario A
+# (unwind_time_rev alone was the stop). As of 2026-07-24, ETH/BNB/XRP/DOGE
+# get a real non-zero PnL-based stop from the reversal_binance re-pick,
+# active simultaneously with unwind_time_rev below (both were swept jointly
+# in the source study). BTC/SOL remain at default=0.0 (disabled), unchanged.
+[sl_pnl_rev]
+default = 0.0
+ETH  = 0.3
+BNB  = 0.5
+XRP  = 0.4
+DOGE = 0.4
+
+# Max holding time (seconds) — force-close at market if still open this long
+# after entry, regardless of price. Primary stop for BTC/SOL (unchanged); one
+# of two simultaneous exit conditions for ETH/BNB/XRP/DOGE as of 2026-07-24
+# (shortened 26-30s -> 15s for those four, alongside sl_pnl_rev above).
+[unwind_time_rev]
+default = 26.0
+BTC  = 30.0
+ETH  = 15.0
+SOL  = 30.0
+BNB  = 15.0
+XRP  = 15.0
+DOGE = 15.0
+
+[price_high_rev]
+default = 0.9
+
+[reversal_start_time]
+default = 120
+
+# p(up) negative-edge gate (plan_unwind_5u_maker_2026-07-19 §2.3) — 0.0 = the
+# parameter-free X=0 veto: never pay more than the model probability. Now
+# fail-CLOSED on stale/missing data at PUP_GATE_MAX_AGE_SECS=2.0s (worker.rs) —
+# trader/doc/plan_stale_data_gate_2026-07-20.md §1.
+[pup_edge_min_rev]
+default = 0.0
+
+# Gamma resolution watcher cadence (2026-07-09) — unchanged.
+[gamma_poll_delay_secs]
+default = 60
+
+[gamma_poll_interval_secs]
+default = 20
+
+[gamma_poll_deadline_secs]
+default = 600
+
+# --- V-shape strategy — configured but not traded (not in [strategies]).
+# Canonical defaults, unchanged from prior config.
+[v_high1]
+default = 0.70
+
+[v_low]
+default = 0.30
+
+[v_high2]
+default = 0.70
+
+[delta_pct_v]
+default = 0.0
+
+[sl_v_shape]
+default = 0.0
+
+[sl_pnl_v]
+default = 0.30
+
+[unwind_pnl_v]
+default = 0.15
+
+[unwind_time_v]
+default = 25.0
+
+[halt_v]
+default = 1
+
+[halt_reset_hour_v]
+default = 2
+
+# --- High-prob strategy — NOT in [strategies] for this run (reversal only);
+# every field below is inert, carried over unchanged from strategy_20260719.toml
+# only because AssetParams.resolve() still requires a value for every asset.
+[enter_when_time_left]
+default = 20
+
+[delta_pct_hp]
+default = 0.0004
+BTC = 0.0006
+SOL = 0.0009
+XRP = 0.0006
+
+[price_low]
+default = 0.80
+
+[price_high]
+default = 0.93
+ETH = 0.95
+DOGE = 0.95
+
+[sl_high_prob]
+default = 0.49
+
+[unwind_pnl_hp]
+default = 0.07
+ETH = 0.11
+DOGE = 0.09
+BTC = 0.15
+SOL = 0.15
+XRP = 0.10
+
+[sl_pnl_hp]
+default = 0.35
+ETH = 0.50
+DOGE = 0.40
+BTC = 0.20
+SOL = 0.30
+XRP = 0.20
+
+# Max holding time (seconds), high_prob. Inert (not in [strategies]).
+[unwind_time_hp]
+default = 30.0
+BTC = 25.0
+SOL = 25.0
+XRP = 20.0
+
+# HAR beta coefficients [intercept, b_short, b_med, b_long] — unchanged.
+[har_beta]
+default = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+BTC  = [6.75316682223936e-05, 0.3808532101541894, 0.23010976882783898, 0.32151716443117506]
+ETH  = [0.00010774639722600233, 0.41028210718652636, 0.16879124281390837, 0.34134764661346745]
+BNB  = [9.870239348432491e-05, 0.36348294878282317, 0.24245576574401858, 0.31433601533921257]
+SOL  = [0.00012702091247581335, 0.36587737585420954, 0.21487180994216767, 0.3460084555370039]
+XRP  = [0.00010815438481018561, 0.33894604994807576, 0.22961665171783674, 0.3589580240427405]
+DOGE = [0.0001876494507523228, 0.34665144580463614, 0.2202623387509364, 0.3260601733554305]
+
+# Per-coin Student-t dof — unchanged.
+[har_nu]
+default = 4.2469
+BTC  = 4.2469
+ETH  = 4.1581
+SOL  = 4.3356
+BNB  = 4.4485
+XRP  = 4.4959
+DOGE = 4.4249
