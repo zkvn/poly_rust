@@ -33,9 +33,13 @@ this morning, see that file's `meta.source`). The only real delta is **SOL**:
 | sl_pnl_rev | 0.0 (disabled) | 0.5 (enabled) |
 | unwind_time_rev | 30.0 | 25.0 |
 
-Per user decision: SOL's params are updated to Table 2 values, but SOL's trading
-scope is left as-is (`trade_assets`/`[strategies]` unchanged) — no scope expansion,
-params-only update.
+SOL was already structurally in `trade_assets`/`[strategies]` (both apply uniformly
+across all 6 assets — there's no per-asset reversal on/off flag). Its old
+"doesn't trade reversal live" status was empirical, not a config gate: the prior
+params (`reversal=0.70`, tighter `delta_pct_rev`) rarely produced an entry candidate
+(see 2026-07-23 recon: 0 trades fleet-wide). Per explicit user request, SOL is now
+enabled for live reversal trading — the Table 2 param update above is what actually
+makes that happen, no scope-level config change was needed.
 
 ## Paper balance reset
 
